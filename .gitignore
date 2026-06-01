@@ -1,0 +1,8 @@
+# Local secrets / identity — never commit.
+.env
+
+# Per-project generated env files.
+.envs/
+
+# Local allowlist drop-ins (the dir is tracked via .gitkeep; its contents are not).
+extra-allowlist.d/*.conf
