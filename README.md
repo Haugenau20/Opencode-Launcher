@@ -62,6 +62,23 @@ path argument (these are **not** stored in `.env`).
 Just edit `.env` in your editor (it's gitignored). The values take effect on the
 next `./start.sh`.
 
+## Adding your own agents/skills
+
+You can layer in your own personal agents, skills, and commands on top of the
+baked-in bundle. By default they live in a per-project named volume inside the
+container. To make them **host-editable** — so you can edit them from your
+editor without entering the container — set `USER_LAYER_PATH` in `.env` to a
+host directory:
+
+```dotenv
+USER_LAYER_PATH=./user-layer
+```
+
+`start.sh` creates and bind-mounts that directory at
+`/home/dev/.config/opencode`. It's a single "you-only" layer **shared across
+every repo you launch**, so your personal config follows you everywhere. The
+default `./user-layer` dir is gitignored.
+
 ## Updating to a new image
 
 Images are pulled fresh from Artifactory on every `./start.sh` (the `:prod`

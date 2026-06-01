@@ -160,6 +160,20 @@ case "$IMAGE_REGISTRY" in
     warn "Edit .env and set your real Artifactory path, then re-run." ;;
 esac
 
+# --- optional user layer (host-editable personal agents/skills/commands) ----
+# When USER_LAYER_PATH is set, add the user-layer overlay so the dir is
+# bind-mounted at /home/dev/.config/opencode. The overlay uses
+# ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml)
+USER_LAYER_PATH="$(get_env USER_LAYER_PATH)"
+if [ -n "$USER_LAYER_PATH" ]; then
+  mkdir -p "$USER_LAYER_PATH"
+  USER_LAYER_PATH="$(cd -- "$USER_LAYER_PATH" >/dev/null 2>&1 && pwd)" \
+    || die "could not resolve USER_LAYER_PATH"
+  COMPOSE_FILES+=(-f docker-compose.user-layer.yml)
+  info "user layer: $USER_LAYER_PATH -> /home/dev/.config/opencode"
+fi
+
 REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
 PROD_IMAGE="${IMAGE_REGISTRY}:prod"
 
@@ -217,14 +231,16 @@ PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
   echo "PROJECT_SLUG=${SLUG}"
   echo "OPENCODE_PORT=${PORT}"
   echo "REPO_PATH=${REPO_PATH}"
+  # Overwrite USER_LAYER_PATH with the resolved absolute path (a later line
+  # wins on duplicate keys) so the overlay interpolates an unambiguous path.
+  [ -n "$USER_LAYER_PATH" ] && echo "USER_LAYER_PATH=${USER_LAYER_PATH}"
 } > "$PROJECT_ENV"
 
 PROJECT_NAME="opencode-${SLUG}"
 COMPOSE=(docker compose
   --env-file "$PROJECT_ENV"
   -p "$PROJECT_NAME"
-  -f docker-compose.yml
-  -f docker-compose.prod.yml)
+  "${COMPOSE_FILES[@]}")
 
 # --- 7. boot the stack ------------------------------------------------------
 info "pulling images for $PROJECT_NAME ..."
