@@ -150,11 +150,15 @@ if [ ! -f "$ENV_FILE" ]; then
   echo
 fi
 
-# --- load IMAGE_REGISTRY / IMAGE_TAG from .env ------------------------------
+# --- load IMAGE_REGISTRY from .env ------------------------------------------
 IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY)"
-[ -n "$IMAGE_REGISTRY" ] || IMAGE_REGISTRY="artifactory.internal.example/opencode-workplace"
-IMAGE_TAG="$(get_env IMAGE_TAG)"
-[ -n "$IMAGE_TAG" ] || IMAGE_TAG="prod"
+[ -n "$IMAGE_REGISTRY" ] || IMAGE_REGISTRY="CHANGEME.artifactory.example/opencode-workplace"
+
+case "$IMAGE_REGISTRY" in
+  *CHANGEME*|*internal.example*|*artifactory.example*)
+    warn "IMAGE_REGISTRY looks like a placeholder ($IMAGE_REGISTRY)."
+    warn "Edit .env and set your real Artifactory path, then re-run." ;;
+esac
 
 REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
 PROD_IMAGE="${IMAGE_REGISTRY}:prod"

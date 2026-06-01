@@ -91,6 +91,7 @@ launcher repo to pick up topology changes.
 | `.env.example` | Template for the shared `.env` (secrets, identity, toggles). |
 | `extra-allowlist.d/` | Bind-mounted into Squid for local allowlist drop-ins (`*.conf`). |
 
-> **Maintainer note:** before sharing this launcher, replace the
-> `artifactory.internal.example/opencode-workplace` placeholder in `.env.example`
-> (and `docker-compose.prod.yml`) with the real Artifactory path.
+> **Maintainer note:** before first run, replace the
+> `CHANGEME.artifactory.example/opencode-workplace` placeholder for
+> `IMAGE_REGISTRY` in `.env` with your real Artifactory path. `start.sh` warns
+> if it still looks like a placeholder.

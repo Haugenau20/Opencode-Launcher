@@ -22,6 +22,7 @@ services:
       NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
       no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
       OPENCODE_INTERNAL_PORT: "4096"
+      PROJECT_SLUG: ${PROJECT_SLUG:-default}
     volumes:
       - ${REPO_PATH:-./repo}:/workspace
       - oc_state:/home/dev/.local/share/opencode
