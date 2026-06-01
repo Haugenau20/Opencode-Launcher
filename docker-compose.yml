@@ -1,0 +1,89 @@
+name: opencode-${PROJECT_SLUG:-default}
+
+services:
+  opencode:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: opencode/Dockerfile
+      args:
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
+    container_name: opencode-${PROJECT_SLUG:-default}
+    hostname: opencode
+    depends_on:
+      - squid
+    env_file:
+      - .env
+    environment:
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
+      no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
+      OPENCODE_INTERNAL_PORT: "4096"
+    volumes:
+      - ${REPO_PATH:-./repo}:/workspace
+      - oc_state:/home/dev/.local/share/opencode
+      - oc_cfg:/home/dev/.config/opencode
+    networks:
+      - oc_internal
+      - oc_proxy
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    stdin_open: true
+    tty: true
+
+  oc-publish:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
+    container_name: opencode-publish-${PROJECT_SLUG:-default}
+    hostname: oc-publish
+    depends_on:
+      - opencode
+    entrypoint: ["socat"]
+    command: ["TCP-LISTEN:4096,fork,reuseaddr", "TCP:opencode:4096"]
+    ports:
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+    networks:
+      - oc_proxy
+      - oc_publish
+    restart: unless-stopped
+
+  squid:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: squid/Dockerfile
+    container_name: opencode-squid-${PROJECT_SLUG:-default}
+    hostname: squid
+    volumes:
+      - type: bind
+        source: ./extra-allowlist.d
+        target: /etc/squid/extra-allowlist.d
+        read_only: true
+        bind:
+          create_host_path: true
+    networks:
+      - oc_proxy
+      - oc_egress
+
+networks:
+  oc_internal:
+    driver: bridge
+    internal: true
+  oc_proxy:
+    driver: bridge
+    internal: true
+  oc_egress:
+    driver: bridge
+  oc_publish:
+    driver: bridge
+
+volumes:
+  oc_state:
+    name: opencode-${PROJECT_SLUG:-default}_state
+  oc_cfg:
+    name: opencode-${PROJECT_SLUG:-default}_cfg
