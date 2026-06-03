@@ -25,13 +25,16 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--tui] <host-repo-path>
+  ./start.sh [--tui] [--prod] <host-repo-path>
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
 
 Options:
   --tui    After boot, attach the OpenCode TUI in the container.
+  --prod   Apply the docker-compose.prod.yml overlay (pins images to :prod,
+           overriding IMAGE_TAG). By default only docker-compose.yml is used
+           and IMAGE_TAG from .env controls which image tag is pulled.
   --help   Show this help.
 
 First run copies .env.example -> .env and prompts for your secrets. Later runs
@@ -41,10 +44,12 @@ EOF
 
 # --- 1. parse args ----------------------------------------------------------
 WANT_TUI=0
+WANT_PROD=0
 REPO_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --tui)  WANT_TUI=1; shift ;;
+    --prod) WANT_PROD=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --)     shift; break ;;
     -*)     usage; die "unknown option: $1" ;;
@@ -150,7 +155,7 @@ if [ ! -f "$ENV_FILE" ]; then
   echo
 fi
 
-# --- load IMAGE_REGISTRY from .env ------------------------------------------
+# --- load IMAGE_REGISTRY and IMAGE_TAG from .env ----------------------------
 IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY)"
 [ -n "$IMAGE_REGISTRY" ] || IMAGE_REGISTRY="CHANGEME.artifactory.example/opencode-workplace"
 
@@ -160,11 +165,18 @@ case "$IMAGE_REGISTRY" in
     warn "Edit .env and set your real Artifactory path, then re-run." ;;
 esac
 
+IMAGE_TAG="$(get_env IMAGE_TAG)"
+[ -n "$IMAGE_TAG" ] || IMAGE_TAG="local"
+
 # --- optional user layer (host-editable personal agents/skills/commands) ----
 # When USER_LAYER_PATH is set, add the user-layer overlay so the dir is
 # bind-mounted at /home/dev/.config/opencode. The overlay uses
 # ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml)
+COMPOSE_FILES=(-f docker-compose.yml)
+if [ "$WANT_PROD" -eq 1 ]; then
+  COMPOSE_FILES+=(-f docker-compose.prod.yml)
+  info "prod overlay enabled — images pinned to :prod"
+fi
 USER_LAYER_PATH="$(get_env USER_LAYER_PATH)"
 if [ -n "$USER_LAYER_PATH" ]; then
   mkdir -p "$USER_LAYER_PATH"
@@ -175,18 +187,23 @@ if [ -n "$USER_LAYER_PATH" ]; then
 fi
 
 REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
-PROD_IMAGE="${IMAGE_REGISTRY}:prod"
+# When --prod is active the overlay pins :prod regardless of IMAGE_TAG.
+if [ "$WANT_PROD" -eq 1 ]; then
+  CHECK_IMAGE="${IMAGE_REGISTRY}:prod"
+else
+  CHECK_IMAGE="${IMAGE_REGISTRY}:${IMAGE_TAG}"
+fi
 
 # --- 4. verify Artifactory access -------------------------------------------
-info "checking access to $PROD_IMAGE ..."
-if ! docker manifest inspect "$PROD_IMAGE" >/dev/null 2>&1; then
-  inspect_err="$(docker manifest inspect "$PROD_IMAGE" 2>&1 || true)"
+info "checking access to $CHECK_IMAGE ..."
+if ! docker manifest inspect "$CHECK_IMAGE" >/dev/null 2>&1; then
+  inspect_err="$(docker manifest inspect "$CHECK_IMAGE" 2>&1 || true)"
   if printf '%s' "$inspect_err" | grep -qiE 'unauthorized|authentication|denied|forbidden|login'; then
-    err "cannot pull $PROD_IMAGE — looks like an auth problem."
+    err "cannot pull $CHECK_IMAGE — looks like an auth problem."
     err "run:  docker login $REGISTRY_HOST"
     exit 1
   fi
-  warn "could not verify $PROD_IMAGE via 'docker manifest inspect'."
+  warn "could not verify $CHECK_IMAGE via 'docker manifest inspect'."
   warn "(continuing — 'docker compose pull' below will surface the real error)"
   warn "detail: $(printf '%s' "$inspect_err" | tail -n1)"
 fi
