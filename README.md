@@ -91,7 +91,7 @@ launcher repo to pick up topology changes.
 Artifactory access — a fake `docker` stands in:
 
 ```bash
-./run_tests.sh
+./tests/run.sh
 ```
 
 See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
