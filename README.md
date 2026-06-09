@@ -85,6 +85,17 @@ Images are pulled fresh from Artifactory on every `./start.sh` (the `:prod`
 tag), so you generally get updates automatically. Occasionally `git pull` this
 launcher repo to pick up topology changes.
 
+## Testing
+
+`start.sh` has an automated test suite (bats) that needs no Docker daemon or
+Artifactory access — a fake `docker` stands in:
+
+```bash
+./tests/run.sh
+```
+
+See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
+
 ## Troubleshooting
 
 - **`docker login` needed** — the most common first-time failure. If a pull

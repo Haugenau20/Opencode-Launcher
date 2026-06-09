@@ -9,3 +9,6 @@ extra-allowlist.d/*.conf
 
 # Personal user-layer config (host-editable agents/skills/commands).
 user-layer/
+
+# Vendored bats-core fetched by tests/run.sh.
+tests/.bats/
