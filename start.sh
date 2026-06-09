@@ -190,21 +190,21 @@ main() {
     read -rs llm_key || true; echo
     set_env LLM_API_KEY "$llm_key"
 
-    # Bitbucket
+    # Bitbucket (optional — Enter to skip)
     local bb_user bb_pat
-    read -r -p "Bitbucket username: " bb_user || true
+    read -r -p "Bitbucket username (optional, Enter to skip): " bb_user || true
     set_env BITBUCKET_USER "$bb_user"
 
-    printf 'Bitbucket personal access token (input hidden): '
+    printf 'Bitbucket personal access token (optional, Enter to skip, input hidden): '
     read -rs bb_pat || true; echo
     set_env BITBUCKET_PAT "$bb_pat"
 
-    # Git identity
+    # Git identity (optional — Enter to skip)
     local git_name git_email
-    read -r -p "Git user name (for commits in container): " git_name || true
+    read -r -p "Git user name for container commits (optional, Enter to skip): " git_name || true
     set_env GIT_USER_NAME "$git_name"
 
-    read -r -p "Git user email (for commits in container): " git_email || true
+    read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
     set_env GIT_USER_EMAIL "$git_email"
 
     # Image registry — pre-show default, allow Enter to accept.

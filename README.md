@@ -24,9 +24,10 @@ cd opencode-launcher
 ```
 
 On the **first run** the script copies `.env.example` → `.env` and prompts for
-your secrets (LLM key, Bitbucket user/PAT, git identity) plus the Artifactory
-path. It writes them into `.env` and auto-fills your `HOST_UID`/`HOST_GID`.
-Then it pulls the images and boots the stack.
+your LLM endpoint/key and the Artifactory path. The Bitbucket user/PAT and git
+identity are **optional** — press Enter to skip any you don't need. It writes
+the values into `.env` and auto-fills your `HOST_UID`/`HOST_GID`, then pulls the
+images and boots the stack.
 
 When the stack is up, `start.sh` **attaches the OpenCode TUI** in your terminal,
 rooted at `/workspace` (your repo). Exit the TUI (or Ctrl-C) and the stack keeps
