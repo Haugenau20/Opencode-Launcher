@@ -11,7 +11,15 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 BATS_DIR="$HERE/.bats"
 
 if [ "$#" -gt 0 ]; then
-  TARGETS=("$@")
+  # Resolve bare names (e.g. "cli.bats") against the tests dir so the suite can
+  # be targeted from any working directory; leave explicit paths untouched.
+  TARGETS=()
+  for t in "$@"; do
+    case "$t" in
+      */*|/*) TARGETS+=("$t") ;;
+      *)      TARGETS+=("$HERE/$t") ;;
+    esac
+  done
 else
   TARGETS=("$HERE"/*.bats)
 fi

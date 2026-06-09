@@ -174,8 +174,10 @@ setup() {
 }
 
 @test "placeholder IMAGE_REGISTRY triggers a warning" {
-  # keep the CHANGEME default in .env
-  cp "$SANDBOX/.env.example" "$SANDBOX/.env"
+  # Construct a placeholder value explicitly rather than relying on whatever
+  # .env.example happens to ship (a real deployment edits that file).
+  seed_env
+  sed -i 's|^IMAGE_REGISTRY=.*|IMAGE_REGISTRY=CHANGEME.artifactory.example/opencode-workplace|' "$SANDBOX/.env"
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   [[ "$output" == *"IMAGE_REGISTRY looks like a placeholder"* ]]
