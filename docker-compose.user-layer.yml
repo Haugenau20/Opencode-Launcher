@@ -5,8 +5,8 @@ name: opencode-${PROJECT_SLUG:-default}
 services:
   opencode:
     volumes:
-      - type: bind
-        source: ${USER_LAYER_PATH:?USER_LAYER_PATH must be set when using docker-compose.user-layer.yml}
-        target: /home/dev/.config/opencode
-        bind:
-          create_host_path: true
+      # Short syntax so the SELinux :z relabel is expressible (shared, not :Z —
+      # one personal layer is reused across every repo you launch). The :? guard
+      # still fails fast if USER_LAYER_PATH is empty. start.sh mkdir -p's the
+      # path before this overlay is applied, so create_host_path isn't needed.
+      - ${USER_LAYER_PATH:?USER_LAYER_PATH must be set when using docker-compose.user-layer.yml}:/home/dev/.config/opencode:z

@@ -24,7 +24,9 @@ services:
       OPENCODE_INTERNAL_PORT: "4096"
       PROJECT_SLUG: ${PROJECT_SLUG:-default}
     volumes:
-      - ${REPO_PATH:-./repo}:/workspace
+      # :z relabels the host repo for SELinux (shared, not :Z) so an enforcing
+      # host doesn't deny the container access. Named volumes are auto-labelled.
+      - ${REPO_PATH:-./repo}:/workspace:z
       - oc_state:/home/dev/.local/share/opencode
       - oc_cfg:/home/dev/.config/opencode
     networks:
@@ -61,12 +63,11 @@ services:
     container_name: opencode-squid-${PROJECT_SLUG:-default}
     hostname: squid
     volumes:
-      - type: bind
-        source: ./extra-allowlist.d
-        target: /etc/squid/extra-allowlist.d
-        read_only: true
-        bind:
-          create_host_path: true
+      # Short syntax so the SELinux flag is expressible: ro = read-only,
+      # z = shared relabel (the same host dir is mounted across every project's
+      # stack, so :z not :Z). create_host_path isn't available in short form;
+      # extra-allowlist.d is committed to the repo so it always exists.
+      - ./extra-allowlist.d:/etc/squid/extra-allowlist.d:ro,z
     networks:
       - oc_proxy
       - oc_egress

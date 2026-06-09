@@ -121,6 +121,49 @@ setup() {
   ! grep -q 'docker-compose.prod.yml' "$FAKE_DOCKER_LOG"
 }
 
+# --- TUI-default frontend ---------------------------------------------------
+
+@test "default boot attaches the TUI rooted at /workspace" {
+  seed_env
+  run_launcher "$(make_repo_arg "My Service")"
+  [ "$status" -eq 0 ]
+  # the stack still comes up first (keepalive), then the TUI attaches
+  grep -q 'compose .*up -d' "$FAKE_DOCKER_LOG"
+  grep -qE 'exec .*-w /workspace .*-it opencode-my-service opencode' "$FAKE_DOCKER_LOG"
+}
+
+@test "default boot prints the web-UI 1.16.2 caveat with the workaround" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1.16.2"* ]]
+  [[ "$output" == *"cd /workspace"* ]]
+  [[ "$output" == *"14445"* ]]
+}
+
+@test "--detach boots the stack but does NOT attach the TUI" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*up -d' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"detached: stack is running"* ]]
+}
+
+@test "--no-tui is an alias for --detach" {
+  seed_env
+  run_launcher --no-tui "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--tui is accepted as a back-compat no-op (still attaches)" {
+  seed_env
+  run_launcher --tui "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'exec .*-w /workspace .*-it ' "$FAKE_DOCKER_LOG"
+}
+
 @test "--prod adds the prod overlay and checks the :prod image" {
   seed_env
   run_launcher --prod "$(make_repo_arg)"

@@ -2,7 +2,7 @@
 #
 # start.sh — boot a locked-down OpenCode workplace against your own code repo.
 #
-#   ./start.sh [--tui] <host-repo-path>
+#   ./start.sh [--detach] <host-repo-path>
 #   ./start.sh --help
 #
 # One launcher clone handles many repos: per-project settings (slug, port,
@@ -28,17 +28,26 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--tui] [--prod] <host-repo-path>
+  ./start.sh [--detach] [--prod] <host-repo-path>
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
+By default the OpenCode TUI is attached in the foreground once the stack is up;
+the stack (opencode serve) keeps running after you exit the TUI.
 
 Options:
-  --tui    After boot, attach the OpenCode TUI in the container.
-  --prod   Apply the docker-compose.prod.yml overlay (pins images to :prod,
-           overriding IMAGE_TAG). By default only docker-compose.yml is used
-           and IMAGE_TAG from .env controls which image tag is pulled.
-  --help   Show this help.
+  --detach   Boot the stack but do NOT attach the TUI (headless). Use this for
+             scripted/CI runs, or when you only want the web UI. Alias: --no-tui.
+  --tui      Attach the TUI (this is the default; accepted for back-compat).
+  --prod     Apply the docker-compose.prod.yml overlay (pins images to :prod,
+             overriding IMAGE_TAG). By default only docker-compose.yml is used
+             and IMAGE_TAG from .env controls which image tag is pulled.
+  --help     Show this help.
+
+Why TUI-default: on the OpenCode version baked into the current image (1.16.2)
+the web/desktop UI roots the agent at / instead of /workspace (upstream bug
+anomalyco/opencode#14445, #14460). The TUI is pinned to /workspace and is
+correct. Re-flip to "all frontends equal" once the image ships a serve --cwd.
 
 First run copies .env.example -> .env and prompts for your secrets. Later runs
 reuse .env (edit it by hand any time).
@@ -113,12 +122,16 @@ main() {
   cd "$SCRIPT_DIR"
 
   # --- 1. parse args --------------------------------------------------------
-  local WANT_TUI=0
+  # ATTACH_TUI defaults to 1: the TUI is the default frontend (see usage() for
+  # why — the 1.16.2 web UI roots the agent at / not /workspace). --detach /
+  # --no-tui opt out for headless/scripted runs; --tui is a back-compat no-op.
+  local ATTACH_TUI=1
   local WANT_PROD=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --tui)  WANT_TUI=1; shift ;;
+      --detach|--no-tui) ATTACH_TUI=0; shift ;;
+      --tui)  ATTACH_TUI=1; shift ;;
       --prod) WANT_PROD=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
@@ -277,7 +290,7 @@ main() {
   if port_in_use 4096; then
     PORT_OK=0
     PORT="$(find_free_port 4097 4196)"
-    warn "port 4096 in use; booting $SLUG on $PORT — web UI won't work on this port, use ./start.sh --tui $REPO_ARG"
+    warn "port 4096 in use; booting $SLUG on $PORT — web UI won't work on this port. The default TUI (no flag) works regardless."
   fi
 
   # --- 6. generate per-project env file (superset of .env) ------------------
@@ -317,19 +330,34 @@ main() {
   if [ "$PORT_OK" -eq 1 ]; then
     info "web UI:  http://localhost:${PORT}"
   else
-    info "web UI:  http://localhost:${PORT}  (note: opencode web UI is hardwired to 4096 — use --tui on this port)"
+    info "web UI:  http://localhost:${PORT}  (note: opencode web UI is hardwired to 4096 — only one project gets the browser UI at a time)"
   fi
+  # Web-UI caveat — keep this visible on every boot. Remove once the image ships
+  # an `opencode serve --cwd` (upstream anomalyco/opencode#14445, #14460) and
+  # the web/desktop UI roots the agent at /workspace again.
+  warn "web/desktop UI caveat (OpenCode 1.16.2): the browser UI roots the agent"
+  warn "  at / instead of /workspace. WORKAROUND: make your first prompt"
+  warn "  'cd /workspace' so the agent works in your repo. The default TUI is"
+  warn "  unaffected. Tracking: anomalyco/opencode#14445, #14460."
   echo
 
-  # --- 9. optional TUI attach -----------------------------------------------
-  if [ "$WANT_TUI" -eq 1 ]; then
-    info "attaching TUI (Ctrl-C / exit to detach the stack keeps running) ..."
+  # --- 9. attach the TUI (default) ------------------------------------------
+  # TUI is the default frontend: docker exec pins -w /workspace, so the agent is
+  # correctly rooted at the repo (unlike the 1.16.2 web UI — see the caveat
+  # above). --detach / --no-tui skips this for headless/scripted runs. The stack
+  # keeps running either way: opencode serve is PID 1; the TUI only attaches.
+  if [ "$ATTACH_TUI" -eq 1 ]; then
+    info "attaching TUI (exit/Ctrl-C detaches; the stack keeps running) ..."
+    info "  re-attach later with: docker exec -u dev -w /workspace -it opencode-${SLUG} opencode"
     exec docker exec -u dev \
       -e HOME=/home/dev \
       -e XDG_CONFIG_HOME=/home/dev/.config \
       -e XDG_DATA_HOME=/home/dev/.local/share \
       -w /workspace \
       -it "opencode-${SLUG}" opencode
+  else
+    info "detached: stack is running. Attach the TUI any time with:"
+    info "  docker exec -u dev -w /workspace -it opencode-${SLUG} opencode"
   fi
 }
 

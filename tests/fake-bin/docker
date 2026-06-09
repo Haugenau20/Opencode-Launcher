@@ -13,7 +13,7 @@
 #   FAKE_DOCKER_COMPOSE_RC        rc for `docker compose <pull|up|…>` (default 0)
 #   FAKE_DOCKER_MANIFEST_RC       rc for `docker manifest inspect`    (default 0)
 #   FAKE_DOCKER_MANIFEST_STDERR   stderr emitted by manifest inspect  (default "")
-#   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (--tui path)   (default 0)
+#   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach)   (default 0)
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"

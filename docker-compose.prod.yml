@@ -6,3 +6,8 @@ services:
   squid:
     image: ${IMAGE_REGISTRY:-artifactory.internal.example/opencode-workplace}-squid:prod
     build: !reset null
+  # Pin the socat publisher to the same :prod squid image as the others. Without
+  # this it would resolve via ${IMAGE_TAG} from .env and could drift to a
+  # different/absent tag under --prod, silently breaking localhost:4096.
+  oc-publish:
+    image: ${IMAGE_REGISTRY:-artifactory.internal.example/opencode-workplace}-squid:prod

@@ -28,13 +28,39 @@ your secrets (LLM key, Bitbucket user/PAT, git identity) plus the Artifactory
 path. It writes them into `.env` and auto-fills your `HOST_UID`/`HOST_GID`.
 Then it pulls the images and boots the stack.
 
-When it finishes it prints a URL — open it in your browser:
-
-```
-web UI: http://localhost:4096
-```
+When the stack is up, `start.sh` **attaches the OpenCode TUI** in your terminal,
+rooted at `/workspace` (your repo). Exit the TUI (or Ctrl-C) and the stack keeps
+running in the background — re-attach any time with the command it prints, or
+boot headless with `--detach` (see below).
 
 Later runs reuse `.env`, so there's no prompt.
+
+### Frontends: TUI (default) vs. web UI
+
+The launcher prints a web-UI URL too (`http://localhost:4096`), but the **TUI is
+the default and the recommended frontend right now**:
+
+> ⚠️ **Web/desktop UI caveat (OpenCode 1.16.2).** On the OpenCode version baked
+> into the current image, the **web and desktop UIs root the agent at `/`
+> instead of `/workspace`** — so it can read across the container but writes to
+> your repo fail unless you name full paths. This is a confirmed upstream bug
+> ([anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
+> [#14460](https://github.com/anomalyco/opencode/issues/14460)), not a launcher
+> defect, and `opencode serve` on 1.16.2 has no `--cwd` to override it.
+>
+> The web UI stays available and is still useful — just make your **first prompt
+> `cd /workspace`** so the agent works inside your repo. The **TUI is
+> unaffected** (the launcher attaches it with `-w /workspace`).
+>
+> This will be reverted to "all frontends equal" once a newer image ships
+> `opencode serve --cwd /workspace`.
+
+**Headless / scripted runs.** To boot the stack without attaching the TUI (CI,
+or when you only want the web UI), pass `--detach` (alias `--no-tui`):
+
+```bash
+./start.sh --detach ~/code/your-repo
+```
 
 ## Running more than one repo
 
@@ -50,12 +76,8 @@ path argument (these are **not** stored in `.env`).
 > **Port-4096 caveat.** The OpenCode web/desktop UI hardcodes port **4096** in
 > its API calls, so only **one** project can use the browser UI at a time. If
 > 4096 is already taken, `start.sh` boots the new project on the next free port
-> and warns you — that project still works fully via the **TUI**, it just can't
-> use the browser UI on the alternate port:
->
-> ```bash
-> ./start.sh --tui ~/code/another-service
-> ```
+> and warns you — that project still works fully via the **TUI** (the default),
+> it just can't use the browser UI on the alternate port.
 
 ## Updating your secrets later
 
@@ -103,21 +125,25 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
   retry.
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
-- **Don't run `docker compose up` by hand** without the prod overlay. Always go
-  through `start.sh`, which passes both `-f docker-compose.yml` **and**
-  `-f docker-compose.prod.yml`. Without the overlay, compose tries to *build*
-  the images (there are no Dockerfiles here) and fails.
+- **Don't run `docker compose up` by hand.** Always go through `start.sh`, which
+  wires up the per-project env file, project name, and (with `--prod`) the
+  `docker-compose.prod.yml` overlay. Note the base `docker-compose.yml` carries
+  `build:` blocks for the maintainer repo's benefit, but there are no Dockerfiles
+  here, so a hand-run compose that tries to build will fail — `--prod` (which
+  `start.sh` applies for you) drops those blocks and pulls the `:prod` images.
 - **Linux only** — matches the parent system's supported scope.
 
 ## What's in this repo
 
 | File | Purpose |
 | --- | --- |
-| `start.sh` | The launcher. Prompts for secrets, computes per-project settings, boots the stack. |
-| `docker-compose.yml` | Topology (networks, volumes, services). Copied verbatim from the parent repo. |
-| `docker-compose.prod.yml` | Overlay that drops the `build:` blocks and points at the `:prod` images. **Always applied.** |
+| `start.sh` | The launcher. Prompts for secrets, computes per-project settings, boots the stack, attaches the TUI. |
+| `docker-compose.yml` | Topology (networks, volumes, services). A near-copy of the maintainer repo's — see [`SYNC.md`](SYNC.md) for the deltas that must stay mirrored. |
+| `docker-compose.prod.yml` | Overlay that drops the `build:` blocks and pins all three services to the `:prod` images. Applied with `--prod`. |
+| `docker-compose.user-layer.yml` | Optional overlay bind-mounting your personal config layer (see *Adding your own agents/skills*). |
 | `.env.example` | Template for the shared `.env` (secrets, identity, toggles). |
-| `extra-allowlist.d/` | Bind-mounted into Squid for local allowlist drop-ins (`*.conf`). |
+| `extra-allowlist.d/` | Bind-mounted (read-only) into Squid for local allowlist drop-ins (`*.conf`). |
+| `SYNC.md` | The list of intentional deltas between this launcher's compose and the maintainer repo's. |
 
 > **Maintainer note:** before first run, replace the
 > `CHANGEME.artifactory.example/opencode-workplace` placeholder for
