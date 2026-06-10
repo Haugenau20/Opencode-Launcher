@@ -122,9 +122,11 @@ or absent `extra-packages.txt` does nothing (no extra build).
 
 ## Updating to a new image
 
-Images are pulled fresh from Artifactory on every `./start.sh` (the `:prod`
-tag), so you generally get updates automatically. Occasionally `git pull` this
-launcher repo to pick up topology changes.
+Images are pulled fresh from Artifactory on every `./start.sh`. By default
+`IMAGE_TAG` is `latest` (the moving tag that always points at the newest
+upload), so you generally get updates automatically. To pin a specific version,
+set `IMAGE_TAG` in `.env` to an explicit number (e.g. `0.0.2`). Occasionally
+`git pull` this launcher repo to pick up topology changes.
 
 ## Testing
 
@@ -145,11 +147,11 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
 - **Don't run `docker compose up` by hand.** Always go through `start.sh`, which
-  wires up the per-project env file, project name, and (with `--prod`) the
-  `docker-compose.prod.yml` overlay. Note the base `docker-compose.yml` carries
-  `build:` blocks for the maintainer repo's benefit, but there are no Dockerfiles
-  here, so a hand-run compose that tries to build will fail — `--prod` (which
-  `start.sh` applies for you) drops those blocks and pulls the `:prod` images.
+  wires up the per-project env file and project name and pulls the images before
+  bringing the stack up. Note the base `docker-compose.yml` carries `build:`
+  blocks for the maintainer repo's benefit, but there are no Dockerfiles here for
+  `opencode`/`squid`; `start.sh` pulls first so `up` uses the pulled images and
+  never tries to build them. (A hand-run compose that forces a build would fail.)
 - **Linux only** — matches the parent system's supported scope.
 
 ## What's in this repo
@@ -158,7 +160,6 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
 | --- | --- |
 | `start.sh` | The launcher. Prompts for secrets, computes per-project settings, boots the stack, attaches the TUI. |
 | `docker-compose.yml` | Topology (networks, volumes, services). A near-copy of the maintainer repo's — see [`SYNC.md`](SYNC.md) for the deltas that must stay mirrored. |
-| `docker-compose.prod.yml` | Overlay that drops the `build:` blocks and pins all three services to the `:prod` images. Applied with `--prod`. |
 | `docker-compose.user-layer.yml` | Optional overlay bind-mounting your personal config layer (see *Adding your own agents/skills*). |
 | `docker-compose.user-packages.yml` | Optional overlay (with `Dockerfile.user-packages`) that bakes your `extra-packages.txt` into a local opencode layer at build time (see *Adding system packages*). |
 | `extra-packages.txt.example` | Template for the per-developer `extra-packages.txt` (gitignored) list of apt packages to bake in. |

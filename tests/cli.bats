@@ -15,7 +15,7 @@ setup() {
   run_launcher --help
   [ "$status" -eq 0 ]
   [[ "$output" == *"Usage:"* ]]
-  [[ "$output" == *"--prod"* ]]
+  [[ "$output" == *"--detach"* ]]
 }
 
 @test "missing repo path fails with a clear error" {
@@ -113,12 +113,11 @@ setup() {
   grep -q 'compose .*-p opencode-my-service .*up -d' "$FAKE_DOCKER_LOG"
 }
 
-@test "default boot uses only the base compose file (no prod overlay)" {
+@test "default boot uses the base compose file" {
   seed_env
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   grep -q 'docker-compose.yml' "$FAKE_DOCKER_LOG"
-  ! grep -q 'docker-compose.prod.yml' "$FAKE_DOCKER_LOG"
 }
 
 # --- TUI-default frontend ---------------------------------------------------
@@ -164,13 +163,26 @@ setup() {
   grep -qE 'exec .*-w /workspace .*-it ' "$FAKE_DOCKER_LOG"
 }
 
-@test "--prod adds the prod overlay and checks the :prod image" {
+@test "--prod is gone: it is rejected as an unknown option" {
   seed_env
   run_launcher --prod "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unknown option: --prod"* ]]
+}
+
+@test "IMAGE_TAG drives the access-check image (defaults to latest)" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"prod overlay enabled"* ]]
-  grep -q 'docker-compose.prod.yml' "$FAKE_DOCKER_LOG"
-  grep -q 'manifest inspect reg.test.local/opencode:prod' "$FAKE_DOCKER_LOG"
+  grep -q 'manifest inspect reg.test.local/opencode:latest' "$FAKE_DOCKER_LOG"
+}
+
+@test "a pinned IMAGE_TAG is used for the access-check image" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'manifest inspect reg.test.local/opencode:0.0.2' "$FAKE_DOCKER_LOG"
 }
 
 @test "USER_LAYER_PATH adds the user-layer overlay and records the abs path" {
@@ -209,7 +221,7 @@ setup() {
 
 @test "non-empty extra-packages.txt: builds a local opencode layer" {
   seed_env
-  # distinct tag so the default-mode base image differs from :prod
+  # pin a distinct tag so the base image is unambiguous in the assertion below
   sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=local|' "$SANDBOX/.env"
   printf '%s\n' '# tools' 'cmake' > "$SANDBOX/extra-packages.txt"
   run_launcher "$(make_repo_arg)"
@@ -229,15 +241,15 @@ setup() {
   [[ "$output" == *"cmake"* ]]
 }
 
-@test "--prod + packages: base is :prod and the overlay follows prod" {
+@test "pinned IMAGE_TAG + packages: base image carries the pinned tag" {
   seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
   printf '%s\n' 'cmake' > "$SANDBOX/extra-packages.txt"
-  run_launcher --prod "$(make_repo_arg)"
+  run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:prod$' "$SANDBOX/.envs/myrepo.env"
-  # the package overlay must be applied AFTER docker-compose.prod.yml so it can
-  # re-add opencode's build: block (prod resets it to null) and win
-  grep -qE 'docker-compose.prod.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:0.0.2$' "$SANDBOX/.envs/myrepo.env"
+  # the package overlay is applied last so it wins (overrides opencode's build:)
+  grep -qE 'docker-compose.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
 }
 
 # --- first-run secrets flow -------------------------------------------------

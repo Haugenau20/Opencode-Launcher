@@ -22,7 +22,7 @@ The suite has two styles:
 | File | Style | Covers |
 | --- | --- | --- |
 | `unit_helpers.bats` | sources `start.sh`, calls helpers directly | `derive_slug`, `sed_escape`, `set_env`/`get_env` round-trips, `find_free_port`, `extra_packages_active`/`strip_pkg_comments`, `compute_base_image` |
-| `cli.bats` | runs a sandboxed copy of `start.sh` as a subprocess | arg parsing & errors, Docker preflight messages, Artifactory auth handling, slug → per-project env, `--prod`, user-layer and system-package overlay wiring, the first-run secrets flow |
+| `cli.bats` | runs a sandboxed copy of `start.sh` as a subprocess | arg parsing & errors, Docker preflight messages, Artifactory auth handling, slug → per-project env, IMAGE_TAG selection, user-layer and system-package overlay wiring, the first-run secrets flow |
 
 This is the part of the system that's testable without infrastructure: the
 script's own logic. Actually pulling images and booting the stack (does the

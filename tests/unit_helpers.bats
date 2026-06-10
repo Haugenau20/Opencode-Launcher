@@ -119,12 +119,12 @@ setup() {
 
 # --- compute_base_image -----------------------------------------------------
 
-@test "compute_base_image: default mode uses REGISTRY:TAG" {
-  run compute_base_image reg.test.local/opencode local 0
-  [ "$output" = "reg.test.local/opencode:local" ]
+@test "compute_base_image: joins REGISTRY and TAG" {
+  run compute_base_image reg.test.local/opencode latest
+  [ "$output" = "reg.test.local/opencode:latest" ]
 }
 
-@test "compute_base_image: --prod pins :prod regardless of IMAGE_TAG" {
-  run compute_base_image reg.test.local/opencode local 1
-  [ "$output" = "reg.test.local/opencode:prod" ]
+@test "compute_base_image: passes a pinned version tag through" {
+  run compute_base_image reg.test.local/opencode 0.0.2
+  [ "$output" = "reg.test.local/opencode:0.0.2" ]
 }

@@ -29,7 +29,7 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--detach] [--prod] <host-repo-path>
+  ./start.sh [--detach] <host-repo-path>
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -40,10 +40,10 @@ Options:
   --detach   Boot the stack but do NOT attach the TUI (headless). Use this for
              scripted/CI runs, or when you only want the web UI. Alias: --no-tui.
   --tui      Attach the TUI (this is the default; accepted for back-compat).
-  --prod     Apply the docker-compose.prod.yml overlay (pins images to :prod,
-             overriding IMAGE_TAG). By default only docker-compose.yml is used
-             and IMAGE_TAG from .env controls which image tag is pulled.
   --help     Show this help.
+
+Which image tag is used is controlled by IMAGE_TAG in .env (defaults to
+'latest'; set it to a specific version like 0.0.2 to pin).
 
 Why TUI-default: on the OpenCode version baked into the current image (1.16.2)
 the web/desktop UI roots the agent at / instead of /workspace (upstream bug
@@ -130,17 +130,12 @@ extra_packages_active() {
   [ -n "$(strip_pkg_comments "${1:-$EXTRA_PACKAGES_FILE}")" ]
 }
 
-# compute_base_image REGISTRY TAG WANT_PROD — echo the registry image start.sh
-# would otherwise run for `opencode`: REGISTRY:prod under --prod (which pins
-# :prod regardless of IMAGE_TAG), else REGISTRY:TAG. Used both as the access
-# check target and as BASE_IMAGE for the package overlay's build.
+# compute_base_image REGISTRY TAG — echo the registry image start.sh runs for
+# `opencode` (REGISTRY:TAG, where TAG comes from IMAGE_TAG in .env). Used both as
+# the access-check target and as BASE_IMAGE for the package overlay's build.
 compute_base_image() {
-  local registry="$1" tag="$2" want_prod="$3"
-  if [ "$want_prod" -eq 1 ]; then
-    printf '%s' "${registry}:prod"
-  else
-    printf '%s' "${registry}:${tag}"
-  fi
+  local registry="$1" tag="$2"
+  printf '%s' "${registry}:${tag}"
 }
 
 # --- main flow --------------------------------------------------------------
@@ -156,13 +151,11 @@ main() {
   # why — the 1.16.2 web UI roots the agent at / not /workspace). --detach /
   # --no-tui opt out for headless/scripted runs; --tui is a back-compat no-op.
   local ATTACH_TUI=1
-  local WANT_PROD=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --detach|--no-tui) ATTACH_TUI=0; shift ;;
       --tui)  ATTACH_TUI=1; shift ;;
-      --prod) WANT_PROD=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
@@ -264,7 +257,7 @@ main() {
   esac
 
   IMAGE_TAG="$(get_env IMAGE_TAG)"
-  [ -n "$IMAGE_TAG" ] || IMAGE_TAG="local"
+  [ -n "$IMAGE_TAG" ] || IMAGE_TAG="latest"
 
   # --- optional user layer (host-editable personal agents/skills/commands) --
   # When USER_LAYER_PATH is set, add the user-layer overlay so the dir is
@@ -272,10 +265,6 @@ main() {
   # ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
   local COMPOSE_FILES
   COMPOSE_FILES=(-f docker-compose.yml)
-  if [ "$WANT_PROD" -eq 1 ]; then
-    COMPOSE_FILES+=(-f docker-compose.prod.yml)
-    info "prod overlay enabled — images pinned to :prod"
-  fi
   local USER_LAYER_PATH
   USER_LAYER_PATH="$(get_env USER_LAYER_PATH)"
   if [ -n "$USER_LAYER_PATH" ]; then
@@ -288,16 +277,16 @@ main() {
 
   local REGISTRY_HOST CHECK_IMAGE
   REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
-  CHECK_IMAGE="$(compute_base_image "$IMAGE_REGISTRY" "$IMAGE_TAG" "$WANT_PROD")"
+  CHECK_IMAGE="$(compute_base_image "$IMAGE_REGISTRY" "$IMAGE_TAG")"
 
   # --- optional system-package layer (host-built, build-time apt) -----------
   # When extra-packages.txt lists real packages, bake them into a thin LOCAL
   # image layered on the pulled opencode base. apt runs at BUILD time on this
   # host (NOT through Squid), and the base drops root->dev via gosu at runtime,
   # so the packages are usable by the agent at runtime with no runtime egress or
-  # root. The overlay points opencode at a local tag and re-adds its build:
-  # block, so it MUST be applied AFTER docker-compose.prod.yml (which resets
-  # build: to null). Empty/absent file => nothing here changes.
+  # root. The overlay points opencode at a distinct local tag and overrides its
+  # build: block to use Dockerfile.user-packages; it is applied last so it wins.
+  # Empty/absent file => nothing here changes.
   local PKG_LAYER_ACTIVE=0 OC_BASE_IMAGE=""
   if extra_packages_active "$EXTRA_PACKAGES_FILE"; then
     PKG_LAYER_ACTIVE=1
