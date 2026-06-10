@@ -1,0 +1,14 @@
+# extra-packages.txt — extra apt packages to bake into YOUR OpenCode image.
+#
+# Copy this file to `extra-packages.txt` (gitignored) and list one apt package
+# per line. start.sh installs them with `apt-get` at BUILD time on your host —
+# which has normal internet, it does NOT go through the runtime Squid proxy —
+# then bakes them into a thin LOCAL image layered on top of the pulled base.
+# The locked-down runtime is unchanged: no new egress, no root for `dev`.
+#
+# Blank lines and lines starting with `#` are ignored. An empty or absent
+# extra-packages.txt turns the feature off entirely (no extra build, current
+# behaviour exactly).
+#
+# Example (uncomment to use):
+# cmake

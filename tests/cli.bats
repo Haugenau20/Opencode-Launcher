@@ -15,7 +15,7 @@ setup() {
   run_launcher --help
   [ "$status" -eq 0 ]
   [[ "$output" == *"Usage:"* ]]
-  [[ "$output" == *"--prod"* ]]
+  [[ "$output" == *"--detach"* ]]
 }
 
 @test "missing repo path fails with a clear error" {
@@ -113,12 +113,11 @@ setup() {
   grep -q 'compose .*-p opencode-my-service .*up -d' "$FAKE_DOCKER_LOG"
 }
 
-@test "default boot uses only the base compose file (no prod overlay)" {
+@test "default boot uses the base compose file" {
   seed_env
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   grep -q 'docker-compose.yml' "$FAKE_DOCKER_LOG"
-  ! grep -q 'docker-compose.prod.yml' "$FAKE_DOCKER_LOG"
 }
 
 # --- TUI-default frontend ---------------------------------------------------
@@ -164,13 +163,26 @@ setup() {
   grep -qE 'exec .*-w /workspace .*-it ' "$FAKE_DOCKER_LOG"
 }
 
-@test "--prod adds the prod overlay and checks the :prod image" {
+@test "--prod is gone: it is rejected as an unknown option" {
   seed_env
   run_launcher --prod "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unknown option: --prod"* ]]
+}
+
+@test "IMAGE_TAG drives the access-check image (defaults to latest)" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"prod overlay enabled"* ]]
-  grep -q 'docker-compose.prod.yml' "$FAKE_DOCKER_LOG"
-  grep -q 'manifest inspect reg.test.local/opencode:prod' "$FAKE_DOCKER_LOG"
+  grep -q 'manifest inspect reg.test.local/opencode:latest' "$FAKE_DOCKER_LOG"
+}
+
+@test "a pinned IMAGE_TAG is used for the access-check image" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'manifest inspect reg.test.local/opencode:0.0.2' "$FAKE_DOCKER_LOG"
 }
 
 @test "USER_LAYER_PATH adds the user-layer overlay and records the abs path" {
@@ -183,6 +195,61 @@ setup() {
   [[ "$output" == *"user layer:"* ]]
   grep -q 'docker-compose.user-layer.yml' "$FAKE_DOCKER_LOG"
   grep -q "^USER_LAYER_PATH=${SANDBOX}/user-layer$" "$SANDBOX/.envs/myrepo.env"
+}
+
+# --- system-package layer ---------------------------------------------------
+
+@test "absent extra-packages.txt: no overlay, plain pull, no OC_BASE_IMAGE" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  ! grep -q 'build opencode' "$FAKE_DOCKER_LOG"
+  ! grep -q '^OC_BASE_IMAGE=' "$SANDBOX/.envs/myrepo.env"
+  # plain blanket pull (no per-service split) preserves current behavior
+  grep -qE 'compose .*pull$' "$FAKE_DOCKER_LOG"
+}
+
+@test "comment/blank-only extra-packages.txt is treated as inactive" {
+  seed_env
+  printf '%s\n' '# just a comment' '' '   ' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  ! grep -q '^OC_BASE_IMAGE=' "$SANDBOX/.envs/myrepo.env"
+}
+
+@test "non-empty extra-packages.txt: builds a local opencode layer" {
+  seed_env
+  # pin a distinct tag so the base image is unambiguous in the assertion below
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=local|' "$SANDBOX/.env"
+  printf '%s\n' '# tools' 'cmake' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+
+  # overlay added; base image handed to the build via the per-project env file
+  grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:local$' "$SANDBOX/.envs/myrepo.env"
+
+  # registry services pulled by name, then opencode is built (not pulled)
+  grep -qE 'compose .*pull squid oc-publish' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*build opencode' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*up -d' "$FAKE_DOCKER_LOG"
+
+  # an info line announces the active layer and the package
+  [[ "$output" == *"system packages:"* ]]
+  [[ "$output" == *"cmake"* ]]
+}
+
+@test "pinned IMAGE_TAG + packages: base image carries the pinned tag" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  printf '%s\n' 'cmake' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:0.0.2$' "$SANDBOX/.envs/myrepo.env"
+  # the package overlay is applied last so it wins (overrides opencode's build:)
+  grep -qE 'docker-compose.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
 }
 
 # --- first-run secrets flow -------------------------------------------------

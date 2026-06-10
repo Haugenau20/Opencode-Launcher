@@ -23,11 +23,18 @@ this list and mirror the change.
    - Named volumes (`oc_state`, `oc_cfg`) are left alone — Docker auto-labels them.
 
 2. **`oc-publish` image tag.** The socat publisher sidecar must resolve to the
-   **same image tag** as `opencode` and `squid` under every launch mode. In the
-   default mode all three read `${IMAGE_TAG}`; in `--prod` all three are pinned
-   to `:prod`. `oc-publish` is therefore listed in `docker-compose.prod.yml`
-   (without it, the publisher would drift to `${IMAGE_TAG}` under `--prod` and
-   could pull a different/absent tag, silently breaking `localhost:4096`).
+   **same image tag** as `opencode` and `squid`. All three read `${IMAGE_TAG}`
+   from `.env` (defaults to `latest`; pin to a version like `0.0.2` if you want).
+   Keep them sharing the one variable so the publisher can never drift to a
+   different/absent tag and silently break `localhost:4096`.
+
+## Intentional launcher-only deltas (not mirrored to the maintainer repo)
+
+- **System-package layer** (`docker-compose.user-packages.yml`,
+  `Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
+  launcher bakes on top of the pulled base when a developer lists packages. This
+  is launcher-only by design: the maintainer image repo builds its base
+  differently and doesn't need it. Do **not** port it back.
 
 ## Reversibility marker — the web-UI / TUI-default flip
 

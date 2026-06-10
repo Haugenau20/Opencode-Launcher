@@ -1,0 +1,20 @@
+# Overlay: bake the packages listed in extra-packages.txt into a thin LOCAL
+# image layered on top of the pulled opencode base. start.sh applies this only
+# when extra-packages.txt has real package lines, and last in the overlay list
+# so it wins: it overrides opencode's build: to use Dockerfile.user-packages and
+# points image: at a distinct local tag. apt runs at BUILD time on the host (not
+# through Squid), so the packages are usable by `dev` at runtime with no runtime
+# egress or root.
+#
+# Only opencode is layered. squid and oc-publish keep their pulled registry
+# images (untouched here), so the egress model — Squid, allowlist, networks — is
+# unchanged. image: points at a distinct LOCAL tag so it never clobbers or gets
+# confused with the pulled registry image.
+services:
+  opencode:
+    image: opencode-workplace-local-${PROJECT_SLUG:-default}:user-packages
+    build:
+      context: .
+      dockerfile: Dockerfile.user-packages
+      args:
+        BASE_IMAGE: ${OC_BASE_IMAGE:?OC_BASE_IMAGE must be set when using docker-compose.user-packages.yml}
