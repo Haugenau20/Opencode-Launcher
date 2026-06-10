@@ -16,6 +16,7 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Usage:"* ]]
   [[ "$output" == *"--detach"* ]]
+  [[ "$output" == *"--persist"* ]]
 }
 
 @test "missing repo path fails with a clear error" {
@@ -161,6 +162,58 @@ setup() {
   run_launcher --tui "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   grep -qE 'exec .*-w /workspace .*-it ' "$FAKE_DOCKER_LOG"
+}
+
+@test "default boot tears the stack down after the TUI exits" {
+  seed_env
+  run_launcher "$(make_repo_arg "My Service")"
+  [ "$status" -eq 0 ]
+  # attaches, then runs `compose ... down` for this project once the TUI exits
+  grep -qE 'exec .*-it opencode-my-service opencode' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*-p opencode-my-service .*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"tearing down"* ]]
+}
+
+@test "--persist attaches the TUI but keeps the stack running (no teardown)" {
+  seed_env
+  run_launcher --persist "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'exec .*-w /workspace .*-it ' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"the stack keeps running"* ]]
+}
+
+@test "--web is an alias for --persist (no teardown)" {
+  seed_env
+  run_launcher --web "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'exec .*-it ' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--detach keeps the stack running (no teardown, no attach)" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+# --- podman overlay ---------------------------------------------------------
+
+@test "default boot does NOT add the podman overlay" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.podman.yml' "$FAKE_DOCKER_LOG"
+}
+
+@test "--podman adds the podman overlay" {
+  seed_env
+  run_launcher --podman "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'docker-compose.podman.yml' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"podman:"* ]]
 }
 
 @test "--prod is gone: it is rejected as an unknown option" {

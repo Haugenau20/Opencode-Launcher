@@ -1,0 +1,19 @@
+# Podman overlay — applied by start.sh ONLY under Podman (auto-detected from
+# `docker --version`, or forced with --podman). Keeping these lines out of the
+# base docker-compose.yml is deliberate: `userns_mode: keep-id` is a Podman-only
+# value that Docker rejects, so the base file must never carry it.
+#
+# What it does:
+#   * userns_mode: keep-id — under rootless Podman, map the host user's UID/GID
+#     into the container so the bind-mounted repo (/workspace) and the named
+#     volumes keep correct ownership (without it the agent can't write your repo).
+#   * x-podman.in_pod: false — tell podman-compose NOT to place the services in a
+#     single shared pod, so the per-service networks/aliases match Docker's. This
+#     is an `x-` extension field; Docker Compose ignores it (harmless either way).
+
+x-podman:
+  in_pod: false
+
+services:
+  opencode:
+    userns_mode: keep-id

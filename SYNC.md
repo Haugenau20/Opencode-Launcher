@@ -36,6 +36,13 @@ this list and mirror the change.
   is launcher-only by design: the maintainer image repo builds its base
   differently and doesn't need it. Do **not** port it back.
 
+- **Podman overlay** (`docker-compose.podman.yml`). Adds `userns_mode: keep-id`
+  (and the `x-podman` no-op extension) so rootless Podman maps the host user into
+  the container and bind-mount ownership stays correct. `start.sh` applies it only
+  under Podman (auto-detected, or `--podman`). It is a separate overlay on purpose:
+  `keep-id` is a Podman-only value Docker rejects, so it must never land in the
+  base `docker-compose.yml`. Launcher-only; do **not** port it back.
+
 ## Reversibility marker — the web-UI / TUI-default flip
 
 The current image bakes **OpenCode 1.16.2**, whose web/desktop UI roots the

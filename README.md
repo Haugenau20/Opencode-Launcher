@@ -14,6 +14,9 @@ policy, allowlist, CA) lives inside the images; this repo is just the glue.
   (`sudo usermod -aG docker $USER && newgrp docker`).
 - **Access to Artifactory** for the images. If a pull fails with an auth error,
   run: `docker login <registry-host>`.
+- **Podman** (rootless, with the `podman-docker` shim) works too — `start.sh`
+  auto-detects it and applies a `keep-id` userns overlay so bind-mount ownership
+  stays correct. Force it with `--podman` if detection misses.
 
 ## Quickstart
 
@@ -30,9 +33,14 @@ the values into `.env` and auto-fills your `HOST_UID`/`HOST_GID`, then pulls the
 images and boots the stack.
 
 When the stack is up, `start.sh` **attaches the OpenCode TUI** in your terminal,
-rooted at `/workspace` (your repo). Exit the TUI (or Ctrl-C) and the stack keeps
-running in the background — re-attach any time with the command it prints, or
-boot headless with `--detach` (see below).
+rooted at `/workspace` (your repo). By default, **exiting the TUI (or Ctrl-C)
+tears the stack down** again — a clean one-command-in, one-command-out flow with
+no stacks left running in the background.
+
+Want it to stay up after you exit? Pass **`--persist`** (alias `--web`): the
+stack (and its web UI) keeps running, and you can **resume your last session**
+later with the `opencode -c` command `start.sh` prints. For a headless boot that
+never attaches the TUI, use **`--detach`** (see below).
 
 Later runs reuse `.env`, so there's no prompt.
 
@@ -56,8 +64,17 @@ the default and the recommended frontend right now**:
 > This will be reverted to "all frontends equal" once a newer image ships
 > `opencode serve --cwd /workspace`.
 
-**Headless / scripted runs.** To boot the stack without attaching the TUI (CI,
-or when you only want the web UI), pass `--detach` (alias `--no-tui`):
+**Keeping the stack alive.** Exiting the TUI tears the stack down by default. To
+keep it running after you exit — so the web UI stays up and you can resume with
+`opencode -c` later — boot with `--persist` (alias `--web`):
+
+```bash
+./start.sh --persist ~/code/your-repo
+```
+
+**Headless / scripted runs.** To boot the stack without attaching the TUI at all
+(CI, or when you only want the web UI), pass `--detach` (alias `--no-tui`) — this
+also leaves the stack running:
 
 ```bash
 ./start.sh --detach ~/code/your-repo
@@ -162,6 +179,7 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
 | `docker-compose.yml` | Topology (networks, volumes, services). A near-copy of the maintainer repo's — see [`SYNC.md`](SYNC.md) for the deltas that must stay mirrored. |
 | `docker-compose.user-layer.yml` | Optional overlay bind-mounting your personal config layer (see *Adding your own agents/skills*). |
 | `docker-compose.user-packages.yml` | Optional overlay (with `Dockerfile.user-packages`) that bakes your `extra-packages.txt` into a local opencode layer at build time (see *Adding system packages*). |
+| `docker-compose.podman.yml` | Optional overlay applied under rootless Podman (`keep-id` userns + `x-podman`); auto-detected by `start.sh`, or forced with `--podman`. |
 | `extra-packages.txt.example` | Template for the per-developer `extra-packages.txt` (gitignored) list of apt packages to bake in. |
 | `.env.example` | Template for the shared `.env` (secrets, identity, toggles). |
 | `extra-allowlist.d/` | Bind-mounted (read-only) into Squid for local allowlist drop-ins (`*.conf`). |

@@ -29,16 +29,21 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--detach] <host-repo-path>
+  ./start.sh [--persist] [--detach] [--podman] <host-repo-path>
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
-By default the OpenCode TUI is attached in the foreground once the stack is up;
-the stack (opencode serve) keeps running after you exit the TUI.
+By default the OpenCode TUI is attached in the foreground once the stack is up,
+and exiting the TUI tears the stack down again (a clean one-in/one-out flow).
 
 Options:
-  --detach   Boot the stack but do NOT attach the TUI (headless). Use this for
-             scripted/CI runs, or when you only want the web UI. Alias: --no-tui.
+  --persist  Keep the stack (and its web UI) running after you exit the TUI, so
+             you can resume your session later. Without it, exiting the TUI
+             tears the stack down. Alias: --web.
+  --detach   Boot the stack but do NOT attach the TUI (headless; the stack keeps
+             running). Use this for scripted/CI runs or web-only. Alias: --no-tui.
+  --podman   Add the Podman overlay (keep-id userns) for rootless Podman. This is
+             auto-detected when `docker` is Podman; use the flag to force it.
   --tui      Attach the TUI (this is the default; accepted for back-compat).
   --help     Show this help.
 
@@ -148,13 +153,23 @@ main() {
 
   # --- 1. parse args --------------------------------------------------------
   # ATTACH_TUI defaults to 1: the TUI is the default frontend (see usage() for
-  # why — the 1.16.2 web UI roots the agent at / not /workspace). --detach /
-  # --no-tui opt out for headless/scripted runs; --tui is a back-compat no-op.
+  # why — the 1.16.2 web UI roots the agent at / not /workspace).
+  # PERSIST defaults to 0: exiting the TUI tears the stack down again (a clean
+  #   one-command-in/one-command-out flow). --persist/--web keeps it running
+  #   (web UI stays up; resume later). --detach/--no-tui skips the TUI for
+  #   headless/scripted runs and implies persist — nothing is attached, so there
+  #   is nothing to tear down on exit. --tui is a back-compat no-op.
+  # USE_PODMAN adds the Podman overlay (keep-id userns); auto-detected below from
+  #   `docker --version`, or forced with --podman.
   local ATTACH_TUI=1
+  local PERSIST=0
+  local USE_PODMAN=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --detach|--no-tui) ATTACH_TUI=0; shift ;;
+      --detach|--no-tui) ATTACH_TUI=0; PERSIST=1; shift ;;
+      --persist|--web)   PERSIST=1; shift ;;
+      --podman) USE_PODMAN=1; shift ;;
       --tui)  ATTACH_TUI=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
@@ -188,6 +203,14 @@ main() {
 
   # docker compose v2 (plugin) required.
   docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) not available. Install the Docker Compose plugin."
+
+  # Podman ships a `docker` shim (podman-docker); detect it so we can add the
+  # Podman overlay, which carries a keep-id userns Docker would reject. --podman
+  # forces it on regardless of what `docker` reports.
+  if [ "$USE_PODMAN" -eq 0 ] && docker --version 2>&1 | grep -qi podman; then
+    USE_PODMAN=1
+    info "detected Podman (via 'docker --version'); enabling the Podman overlay."
+  fi
 
   # Resolve the repo path to an absolute path.
   [ -e "$REPO_ARG" ] || die "repo path does not exist: $REPO_ARG"
@@ -265,6 +288,12 @@ main() {
   # ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
   local COMPOSE_FILES
   COMPOSE_FILES=(-f docker-compose.yml)
+  # Podman overlay (keep-id userns + no shared pod). Kept out of the base file so
+  # docker-compose.yml stays Docker-valid; applied only under Podman.
+  if [ "$USE_PODMAN" -eq 1 ]; then
+    COMPOSE_FILES+=(-f docker-compose.podman.yml)
+    info "podman: adding overlay (keep-id userns so bind-mount ownership matches)."
+  fi
   local USER_LAYER_PATH
   USER_LAYER_PATH="$(get_env USER_LAYER_PATH)"
   if [ -n "$USER_LAYER_PATH" ]; then
@@ -391,20 +420,40 @@ main() {
   # --- 9. attach the TUI (default) ------------------------------------------
   # TUI is the default frontend: docker exec pins -w /workspace, so the agent is
   # correctly rooted at the repo (unlike the 1.16.2 web UI — see the caveat
-  # above). --detach / --no-tui skips this for headless/scripted runs. The stack
-  # keeps running either way: opencode serve is PID 1; the TUI only attaches.
+  # above). By default, exiting the TUI tears the stack down (clean one-in/one-
+  # out, no orphaned stacks). --persist/--web keeps it running so the web UI
+  # stays up and you can resume; --detach/--no-tui skips the TUI entirely
+  # (headless — opencode serve is PID 1 and keeps running).
   if [ "$ATTACH_TUI" -eq 1 ]; then
-    info "attaching TUI (exit/Ctrl-C detaches; the stack keeps running) ..."
-    info "  re-attach later with: docker exec -u dev -w /workspace -it opencode-${SLUG} opencode"
-    exec docker exec -u dev \
-      -e HOME=/home/dev \
-      -e XDG_CONFIG_HOME=/home/dev/.config \
-      -e XDG_DATA_HOME=/home/dev/.local/share \
-      -w /workspace \
-      -it "opencode-${SLUG}" opencode
+    if [ "$PERSIST" -eq 1 ]; then
+      # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
+      # straight to docker exec (the stack outlives this script either way).
+      info "attaching TUI (exit/Ctrl-C detaches; the stack keeps running) ..."
+      info "  resume later with: docker exec -u dev -w /workspace -it opencode-${SLUG} opencode -c"
+      exec docker exec -u dev \
+        -e HOME=/home/dev \
+        -e XDG_CONFIG_HOME=/home/dev/.config \
+        -e XDG_DATA_HOME=/home/dev/.local/share \
+        -w /workspace \
+        -it "opencode-${SLUG}" opencode
+    else
+      # Default: attach, then tear the stack down once the TUI exits. No `exec`
+      # here — we need to run `compose down` afterwards. `|| true` so a non-zero
+      # TUI exit (e.g. Ctrl-C => 130) still reaches the teardown under set -e.
+      info "attaching TUI (exit/Ctrl-C tears the stack down; pass --persist to keep it up) ..."
+      docker exec -u dev \
+        -e HOME=/home/dev \
+        -e XDG_CONFIG_HOME=/home/dev/.config \
+        -e XDG_DATA_HOME=/home/dev/.local/share \
+        -w /workspace \
+        -it "opencode-${SLUG}" opencode || true
+      echo
+      info "TUI exited — tearing down $PROJECT_NAME (pass --persist next time to keep it running) ..."
+      "${COMPOSE[@]}" down
+    fi
   else
     info "detached: stack is running. Attach the TUI any time with:"
-    info "  docker exec -u dev -w /workspace -it opencode-${SLUG} opencode"
+    info "  docker exec -u dev -w /workspace -it opencode-${SLUG} opencode -c"
   fi
 }
 
