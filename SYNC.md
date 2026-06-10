@@ -29,6 +29,14 @@ this list and mirror the change.
    (without it, the publisher would drift to `${IMAGE_TAG}` under `--prod` and
    could pull a different/absent tag, silently breaking `localhost:4096`).
 
+## Intentional launcher-only deltas (not mirrored to the maintainer repo)
+
+- **System-package layer** (`docker-compose.user-packages.yml`,
+  `Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
+  launcher bakes on top of the pulled base when a developer lists packages. This
+  is launcher-only by design: the maintainer image repo builds its base
+  differently and doesn't need it. Do **not** port it back.
+
 ## Reversibility marker — the web-UI / TUI-default flip
 
 The current image bakes **OpenCode 1.16.2**, whose web/desktop UI roots the

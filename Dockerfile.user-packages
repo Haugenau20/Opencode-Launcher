@@ -1,0 +1,18 @@
+# Thin LOCAL layer that bakes developer-requested apt packages onto the pulled
+# OpenCode base image. Built on the developer's HOST at launch time, where
+# apt-get reaches the internet directly — it does NOT go through the runtime
+# Squid egress proxy. The base image is built as root and drops to `dev` via
+# gosu at runtime, so anything installed here is available to the agent at
+# runtime with no runtime egress or root.
+#
+# Inherits USER root, ENTRYPOINT, CMD and WORKDIR from the base image — do NOT
+# reset them. Changing extra-packages.txt invalidates the COPY layer below and
+# triggers a rebuild.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+COPY extra-packages.txt /tmp/extra-packages.txt
+RUN apt-get update \
+ && grep -vE '^[[:space:]]*(#|$)' /tmp/extra-packages.txt \
+    | xargs -r apt-get install -y \
+ && rm -rf /var/lib/apt/lists/* /tmp/extra-packages.txt

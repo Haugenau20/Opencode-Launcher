@@ -87,3 +87,44 @@ setup() {
   run find_free_port 4097 4100
   [ "$output" = "4100" ]
 }
+
+# --- extra_packages_active / strip_pkg_comments -----------------------------
+
+@test "extra_packages_active: false when the file is absent" {
+  run extra_packages_active "$BATS_TEST_TMPDIR/nope.txt"
+  [ "$status" -ne 0 ]
+}
+
+@test "extra_packages_active: false when only comments and blank lines" {
+  local f="$BATS_TEST_TMPDIR/pk.txt"
+  printf '%s\n' '# a comment' '' '   ' '# cmake' > "$f"
+  run extra_packages_active "$f"
+  [ "$status" -ne 0 ]
+}
+
+@test "extra_packages_active: true when a real package line is present" {
+  local f="$BATS_TEST_TMPDIR/pk.txt"
+  printf '%s\n' '# pick your tools' '' 'cmake' > "$f"
+  run extra_packages_active "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "strip_pkg_comments: drops comments/blanks, keeps package lines" {
+  local f="$BATS_TEST_TMPDIR/pk.txt"
+  printf '%s\n' '# header' '' 'cmake' '  ' 'ripgrep' > "$f"
+  run strip_pkg_comments "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'cmake\nripgrep')" ]
+}
+
+# --- compute_base_image -----------------------------------------------------
+
+@test "compute_base_image: default mode uses REGISTRY:TAG" {
+  run compute_base_image reg.test.local/opencode local 0
+  [ "$output" = "reg.test.local/opencode:local" ]
+}
+
+@test "compute_base_image: --prod pins :prod regardless of IMAGE_TAG" {
+  run compute_base_image reg.test.local/opencode local 1
+  [ "$output" = "reg.test.local/opencode:prod" ]
+}

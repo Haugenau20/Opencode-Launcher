@@ -18,6 +18,7 @@
 ENV_FILE="${ENV_FILE:-.env}"
 ENV_EXAMPLE="${ENV_EXAMPLE:-.env.example}"
 ENVS_DIR="${ENVS_DIR:-.envs}"
+EXTRA_PACKAGES_FILE="${EXTRA_PACKAGES_FILE:-extra-packages.txt}"
 
 # --- tiny output helpers ----------------------------------------------------
 err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; }
@@ -111,6 +112,35 @@ find_free_port() {
     p=$((p + 1))
   done
   printf '%s' "$p"
+}
+
+# --- system-package layer helpers -------------------------------------------
+# strip_pkg_comments FILE — echo only the meaningful package lines of FILE
+# (drops blank lines and '#' comment lines). Missing file => no output. Mirrors
+# the filter baked into Dockerfile.user-packages so detection and the build agree.
+strip_pkg_comments() {
+  local f="${1:-$EXTRA_PACKAGES_FILE}"
+  [ -f "$f" ] || return 0
+  grep -vE '^[[:space:]]*(#|$)' "$f" || true
+}
+
+# extra_packages_active [FILE] — exit 0 iff FILE lists at least one package
+# (after stripping comments/blanks). Empty or absent => non-zero (feature off).
+extra_packages_active() {
+  [ -n "$(strip_pkg_comments "${1:-$EXTRA_PACKAGES_FILE}")" ]
+}
+
+# compute_base_image REGISTRY TAG WANT_PROD — echo the registry image start.sh
+# would otherwise run for `opencode`: REGISTRY:prod under --prod (which pins
+# :prod regardless of IMAGE_TAG), else REGISTRY:TAG. Used both as the access
+# check target and as BASE_IMAGE for the package overlay's build.
+compute_base_image() {
+  local registry="$1" tag="$2" want_prod="$3"
+  if [ "$want_prod" -eq 1 ]; then
+    printf '%s' "${registry}:prod"
+  else
+    printf '%s' "${registry}:${tag}"
+  fi
 }
 
 # --- main flow --------------------------------------------------------------
@@ -258,11 +288,25 @@ main() {
 
   local REGISTRY_HOST CHECK_IMAGE
   REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
-  # When --prod is active the overlay pins :prod regardless of IMAGE_TAG.
-  if [ "$WANT_PROD" -eq 1 ]; then
-    CHECK_IMAGE="${IMAGE_REGISTRY}:prod"
-  else
-    CHECK_IMAGE="${IMAGE_REGISTRY}:${IMAGE_TAG}"
+  CHECK_IMAGE="$(compute_base_image "$IMAGE_REGISTRY" "$IMAGE_TAG" "$WANT_PROD")"
+
+  # --- optional system-package layer (host-built, build-time apt) -----------
+  # When extra-packages.txt lists real packages, bake them into a thin LOCAL
+  # image layered on the pulled opencode base. apt runs at BUILD time on this
+  # host (NOT through Squid), and the base drops root->dev via gosu at runtime,
+  # so the packages are usable by the agent at runtime with no runtime egress or
+  # root. The overlay points opencode at a local tag and re-adds its build:
+  # block, so it MUST be applied AFTER docker-compose.prod.yml (which resets
+  # build: to null). Empty/absent file => nothing here changes.
+  local PKG_LAYER_ACTIVE=0 OC_BASE_IMAGE=""
+  if extra_packages_active "$EXTRA_PACKAGES_FILE"; then
+    PKG_LAYER_ACTIVE=1
+    OC_BASE_IMAGE="$CHECK_IMAGE"
+    COMPOSE_FILES+=(-f docker-compose.user-packages.yml)
+    local pkg_list
+    pkg_list="$(strip_pkg_comments "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    info "system packages: baking a local opencode layer (build-time apt): $pkg_list"
+    info "  fetched on this host; the locked-down runtime is unchanged."
   fi
 
   # --- 4. verify Artifactory access -----------------------------------------
@@ -307,6 +351,9 @@ main() {
     # Overwrite USER_LAYER_PATH with the resolved absolute path (a later line
     # wins on duplicate keys) so the overlay interpolates an unambiguous path.
     [ -n "$USER_LAYER_PATH" ] && echo "USER_LAYER_PATH=${USER_LAYER_PATH}"
+    # When the package layer is active, hand the overlay the base image to build
+    # FROM (the registry image start.sh would otherwise run for opencode).
+    [ -n "$OC_BASE_IMAGE" ] && echo "OC_BASE_IMAGE=${OC_BASE_IMAGE}"
   } > "$PROJECT_ENV"
 
   local PROJECT_NAME COMPOSE
@@ -317,8 +364,19 @@ main() {
     "${COMPOSE_FILES[@]}")
 
   # --- 7. boot the stack ----------------------------------------------------
-  info "pulling images for $PROJECT_NAME ..."
-  "${COMPOSE[@]}" pull
+  # With the package layer active, opencode is a buildable LOCAL image: a blanket
+  # `compose pull` would fail trying to pull that local tag. Pull only the
+  # registry-backed services, then build opencode (which auto-pulls its FROM
+  # base). Without the layer, behaviour is byte-for-byte unchanged.
+  if [ "$PKG_LAYER_ACTIVE" -eq 1 ]; then
+    info "pulling registry images (squid, oc-publish) for $PROJECT_NAME ..."
+    "${COMPOSE[@]}" pull squid oc-publish
+    info "building local opencode package layer for $PROJECT_NAME ..."
+    "${COMPOSE[@]}" build opencode
+  else
+    info "pulling images for $PROJECT_NAME ..."
+    "${COMPOSE[@]}" pull
+  fi
 
   info "starting $PROJECT_NAME ..."
   "${COMPOSE[@]}" up -d

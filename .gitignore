@@ -10,5 +10,9 @@ extra-allowlist.d/*.conf
 # Personal user-layer config (host-editable agents/skills/commands).
 user-layer/
 
+# Personal system-package list (baked into a local image at build time).
+# Ship extra-packages.txt.example (tracked); the real file is per-developer.
+extra-packages.txt
+
 # Vendored bats-core fetched by tests/run.sh.
 tests/.bats/

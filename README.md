@@ -102,6 +102,24 @@ USER_LAYER_PATH=./user-layer
 every repo you launch**, so your personal config follows you everywhere. The
 default `./user-layer` dir is gitignored.
 
+## Adding system packages
+
+Need a system tool like `cmake` in the environment? List it, self-service,
+without bloating the shared base image for everyone else. Copy
+`extra-packages.txt.example` → `extra-packages.txt` (gitignored) and add one apt
+package per line (`#` comments and blank lines are ignored):
+
+```text
+cmake
+```
+
+On the next `./start.sh`, the packages are fetched with `apt-get` at **build
+time on your host** — which has normal internet, so this step does **not** go
+through the Squid proxy — and baked into a thin local image layered on top of
+the pulled base. The locked-down **runtime is unchanged**: no new egress, no
+root for `dev`; the packages are simply present for the agent to use. An empty
+or absent `extra-packages.txt` does nothing (no extra build).
+
 ## Updating to a new image
 
 Images are pulled fresh from Artifactory on every `./start.sh` (the `:prod`
@@ -142,6 +160,8 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
 | `docker-compose.yml` | Topology (networks, volumes, services). A near-copy of the maintainer repo's — see [`SYNC.md`](SYNC.md) for the deltas that must stay mirrored. |
 | `docker-compose.prod.yml` | Overlay that drops the `build:` blocks and pins all three services to the `:prod` images. Applied with `--prod`. |
 | `docker-compose.user-layer.yml` | Optional overlay bind-mounting your personal config layer (see *Adding your own agents/skills*). |
+| `docker-compose.user-packages.yml` | Optional overlay (with `Dockerfile.user-packages`) that bakes your `extra-packages.txt` into a local opencode layer at build time (see *Adding system packages*). |
+| `extra-packages.txt.example` | Template for the per-developer `extra-packages.txt` (gitignored) list of apt packages to bake in. |
 | `.env.example` | Template for the shared `.env` (secrets, identity, toggles). |
 | `extra-allowlist.d/` | Bind-mounted (read-only) into Squid for local allowlist drop-ins (`*.conf`). |
 | `SYNC.md` | The list of intentional deltas between this launcher's compose and the maintainer repo's. |

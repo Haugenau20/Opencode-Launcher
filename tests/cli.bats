@@ -185,6 +185,61 @@ setup() {
   grep -q "^USER_LAYER_PATH=${SANDBOX}/user-layer$" "$SANDBOX/.envs/myrepo.env"
 }
 
+# --- system-package layer ---------------------------------------------------
+
+@test "absent extra-packages.txt: no overlay, plain pull, no OC_BASE_IMAGE" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  ! grep -q 'build opencode' "$FAKE_DOCKER_LOG"
+  ! grep -q '^OC_BASE_IMAGE=' "$SANDBOX/.envs/myrepo.env"
+  # plain blanket pull (no per-service split) preserves current behavior
+  grep -qE 'compose .*pull$' "$FAKE_DOCKER_LOG"
+}
+
+@test "comment/blank-only extra-packages.txt is treated as inactive" {
+  seed_env
+  printf '%s\n' '# just a comment' '' '   ' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  ! grep -q '^OC_BASE_IMAGE=' "$SANDBOX/.envs/myrepo.env"
+}
+
+@test "non-empty extra-packages.txt: builds a local opencode layer" {
+  seed_env
+  # distinct tag so the default-mode base image differs from :prod
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=local|' "$SANDBOX/.env"
+  printf '%s\n' '# tools' 'cmake' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+
+  # overlay added; base image handed to the build via the per-project env file
+  grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:local$' "$SANDBOX/.envs/myrepo.env"
+
+  # registry services pulled by name, then opencode is built (not pulled)
+  grep -qE 'compose .*pull squid oc-publish' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*build opencode' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*up -d' "$FAKE_DOCKER_LOG"
+
+  # an info line announces the active layer and the package
+  [[ "$output" == *"system packages:"* ]]
+  [[ "$output" == *"cmake"* ]]
+}
+
+@test "--prod + packages: base is :prod and the overlay follows prod" {
+  seed_env
+  printf '%s\n' 'cmake' > "$SANDBOX/extra-packages.txt"
+  run_launcher --prod "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:prod$' "$SANDBOX/.envs/myrepo.env"
+  # the package overlay must be applied AFTER docker-compose.prod.yml so it can
+  # re-add opencode's build: block (prod resets it to null) and win
+  grep -qE 'docker-compose.prod.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+}
+
 # --- first-run secrets flow -------------------------------------------------
 
 @test "first run creates .env from the template and stores fed secrets" {
