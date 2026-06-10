@@ -64,6 +64,12 @@ the default and the recommended frontend right now**:
 > This will be reverted to "all frontends equal" once a newer image ships
 > `opencode serve --cwd /workspace`.
 
+**Resuming a session.** By default `start.sh` opens a fresh opencode session.
+Pass `--continue` (or `-c`) to resume your most recent one instead — this maps
+1:1 to opencode's own `--continue`/`-c`, so check opencode's docs for its
+semantics. If there is no previous session, opencode prints a harmless server
+error and starts a new one on your first prompt.
+
 **Keeping the stack alive.** Exiting the TUI tears the stack down by default. To
 keep it running after you exit — so the web UI stays up and you can resume with
 `opencode -c` later — boot with `--persist` (alias `--web`):

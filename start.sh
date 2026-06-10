@@ -29,7 +29,7 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--persist] [--detach] [--podman] <host-repo-path>
+  ./start.sh [--continue] [--persist] [--detach] [--podman] <host-repo-path>
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -37,6 +37,9 @@ By default the OpenCode TUI is attached in the foreground once the stack is up,
 and exiting the TUI tears the stack down again (a clean one-in/one-out flow).
 
 Options:
+  --continue Resume your most recent opencode session instead of starting a
+             fresh one (passes opencode's own -c). No-op with --detach. If no
+             previous session exists, opencode starts a new one. Alias: -c.
   --persist  Keep the stack (and its web UI) running after you exit the TUI, so
              you can resume your session later. Without it, exiting the TUI
              tears the stack down. Alias: --web.
@@ -161,9 +164,12 @@ main() {
   #   is nothing to tear down on exit. --tui is a back-compat no-op.
   # USE_PODMAN adds the Podman overlay (keep-id userns); auto-detected below from
   #   `docker --version`, or forced with --podman.
+  # CONTINUE passes opencode's own -c to the attached TUI to resume the most
+  #   recent session instead of starting a fresh one.
   local ATTACH_TUI=1
   local PERSIST=0
   local USE_PODMAN=0
+  local CONTINUE=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -171,6 +177,7 @@ main() {
       --persist|--web)   PERSIST=1; shift ;;
       --podman) USE_PODMAN=1; shift ;;
       --tui)  ATTACH_TUI=1; shift ;;
+      --continue|-c) CONTINUE=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
@@ -184,6 +191,10 @@ main() {
   [ $# -gt 0 ] && [ -z "$REPO_ARG" ] && { REPO_ARG="$1"; shift; }
 
   [ -n "$REPO_ARG" ] || { usage; die "missing <host-repo-path>"; }
+
+  if [ "$CONTINUE" -eq 1 ] && [ "$ATTACH_TUI" -eq 0 ]; then
+    warn "--continue has no effect with --detach (no TUI is attached)."
+  fi
 
   # --- 2. preflight checks --------------------------------------------------
   command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
@@ -424,6 +435,8 @@ main() {
   # out, no orphaned stacks). --persist/--web keeps it running so the web UI
   # stays up and you can resume; --detach/--no-tui skips the TUI entirely
   # (headless — opencode serve is PID 1 and keeps running).
+  local OC_ARGS=()
+  [ "$CONTINUE" -eq 1 ] && OC_ARGS+=(-c)
   if [ "$ATTACH_TUI" -eq 1 ]; then
     if [ "$PERSIST" -eq 1 ]; then
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
@@ -435,7 +448,7 @@ main() {
         -e XDG_CONFIG_HOME=/home/dev/.config \
         -e XDG_DATA_HOME=/home/dev/.local/share \
         -w /workspace \
-        -it "opencode-${SLUG}" opencode
+        -it "opencode-${SLUG}" opencode ${OC_ARGS[@]+"${OC_ARGS[@]}"}
     else
       # Default: attach, then tear the stack down once the TUI exits. No `exec`
       # here — we need to run `compose down` afterwards. `|| true` so a non-zero
@@ -446,7 +459,7 @@ main() {
         -e XDG_CONFIG_HOME=/home/dev/.config \
         -e XDG_DATA_HOME=/home/dev/.local/share \
         -w /workspace \
-        -it "opencode-${SLUG}" opencode || true
+        -it "opencode-${SLUG}" opencode ${OC_ARGS[@]+"${OC_ARGS[@]}"} || true
       echo
       info "TUI exited — tearing down $PROJECT_NAME (pass --persist next time to keep it running) ..."
       "${COMPOSE[@]}" down

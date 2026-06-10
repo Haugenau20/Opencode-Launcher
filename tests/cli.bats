@@ -216,6 +216,43 @@ setup() {
   [[ "$output" == *"podman:"* ]]
 }
 
+@test "--continue passes -c to the attached TUI" {
+  seed_env
+  run_launcher --continue "$(make_repo_arg "My Service")"
+  [ "$status" -eq 0 ]
+  grep -qE 'exec .*-it opencode-my-service opencode -c$' "$FAKE_DOCKER_LOG"
+}
+
+@test "-c is an alias for --continue" {
+  seed_env
+  run_launcher -c "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'opencode -c$' "$FAKE_DOCKER_LOG"
+}
+
+@test "default boot does NOT pass -c (fresh session)" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  ! grep -q 'opencode -c' "$FAKE_DOCKER_LOG"
+}
+
+@test "--continue works together with --persist" {
+  seed_env
+  run_launcher --continue --persist "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'opencode -c$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--continue with --detach warns and attaches nothing" {
+  seed_env
+  run_launcher --continue --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no effect with --detach"* ]]
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
 @test "--prod is gone: it is rejected as an unknown option" {
   seed_env
   run_launcher --prod "$(make_repo_arg)"
