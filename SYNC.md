@@ -82,7 +82,9 @@ should:
 
 Search the tree for `14445` / `14460` to find every spot to flip.
 
-> **Worth checking on the next image bump:** the OpenCode version was pinned to
-> 1.17.3 on the image side. If `opencode serve --help` in that image now lists
-> `--cwd` (i.e. #14445/#14460 are fixed), this whole marker fires — do the flip
+> **Status — still present as of the 1.17.3 image.** The image's OpenCode build
+> was bumped to 1.17.3, but that does **not** fix #14445/#14460: the web/desktop
+> UI still roots the agent at `/`, and `opencode serve` still has no `--cwd`. So
+> the caveat and TUI-default stay. Re-check on each future bump: once
+> `opencode serve --help` lists `--cwd`, this whole marker fires — do the flip
 > above instead of carrying the caveat forward.
