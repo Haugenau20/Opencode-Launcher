@@ -59,11 +59,14 @@ this list and mirror the change.
 
 ## Reversibility marker — the web-UI / TUI-default flip
 
-The current image bakes **OpenCode 1.16.2**, whose web/desktop UI roots the
-agent at `/` instead of `/workspace` (upstream
+The OpenCode build baked into the current image (pinned via `OPENCODE_VERSION`
+in the maintainer repo) has a web/desktop UI that roots the agent at `/` instead
+of `/workspace` (upstream
 [anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
-[#14460](https://github.com/anomalyco/opencode/issues/14460)). Because of this
-the launcher currently:
+[#14460](https://github.com/anomalyco/opencode/issues/14460)). User-facing prose
+deliberately does **not** name the exact version (it moves with image bumps); the
+upstream issue numbers are the stable anchor. Because of this the launcher
+currently:
 
 - makes the **TUI the default frontend** (`start.sh`, `ATTACH_TUI=1`), and
 - prints a **web-UI caveat** on every boot and in the README.
@@ -77,4 +80,9 @@ should:
   the unremarkable headless option), and
 - remove the web-UI caveat from `start.sh` and the README.
 
-Search the tree for `14445` / `14460` / `1.16.2` to find every spot to flip.
+Search the tree for `14445` / `14460` to find every spot to flip.
+
+> **Worth checking on the next image bump:** the OpenCode version was pinned to
+> 1.17.3 on the image side. If `opencode serve --help` in that image now lists
+> `--cwd` (i.e. #14445/#14460 are fixed), this whole marker fires — do the flip
+> above instead of carrying the caveat forward.

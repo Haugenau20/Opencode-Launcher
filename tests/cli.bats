@@ -132,11 +132,12 @@ setup() {
   grep -qE 'exec .*-w /workspace .*-it opencode-my-service opencode' "$FAKE_DOCKER_LOG"
 }
 
-@test "default boot prints the web-UI 1.16.2 caveat with the workaround" {
+@test "default boot prints the web-UI caveat with the workaround" {
   seed_env
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"1.16.2"* ]]
+  # Anchor on the stable upstream issue number and the workaround, not a version
+  # string (user-facing prose no longer names the exact OpenCode version).
   [[ "$output" == *"cd /workspace"* ]]
   [[ "$output" == *"14445"* ]]
 }
@@ -369,10 +370,10 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]   # precondition: no .env yet
   local repo; repo="$(make_repo_arg)"
 
-  # 7 prompts in order: LLM base, LLM key, BB user, BB PAT, git name, git email,
-  # image registry. Feed a key with sed-special chars to exercise sed_escape.
-  # Feed via a redirect (not a pipe): `printf | run` would run `run` in a
-  # subshell, losing $status.
+  # 8 prompts in order: LLM base, LLM key, BB user, BB PAT, git name, git email,
+  # plugins, image registry. Feed a key with sed-special chars to exercise
+  # sed_escape and a space-bearing plugin list. Feed via a redirect (not a pipe):
+  # `printf | run` would run `run` in a subshell, losing $status.
   printf '%s\n' \
     'https://llm.test/v1' \
     'sk-a&b|c' \
@@ -380,6 +381,7 @@ setup() {
     'bbpat' \
     'Bob Builder' \
     'bob@test.dev' \
+    'superpowers dcp' \
     'reg.test.local/opencode' \
     > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
@@ -390,8 +392,23 @@ setup() {
   grep -q '^LLM_API_KEY=sk-a&b|c$' "$SANDBOX/.env"       # sed_escape round-trip
   grep -q '^BITBUCKET_USER=bobu$' "$SANDBOX/.env"
   grep -q '^GIT_USER_NAME=Bob Builder$' "$SANDBOX/.env"
+  grep -q '^ENABLED_PLUGINS=superpowers dcp$' "$SANDBOX/.env"  # opt-in, space kept
   grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
   grep -q "^HOST_GID=$(id -g)$" "$SANDBOX/.env"
+}
+
+@test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  # Same 8 prompts, but press Enter past the plugins one (empty line).
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-key' 'bobu' 'bbpat' 'Bob Builder' 'bob@test.dev' \
+    '' \
+    'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  grep -q '^ENABLED_PLUGINS=$' "$SANDBOX/.env"
 }
 
 @test "placeholder IMAGE_REGISTRY triggers a warning" {

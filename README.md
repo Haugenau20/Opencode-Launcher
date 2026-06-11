@@ -49,13 +49,13 @@ Later runs reuse `.env`, so there's no prompt.
 The launcher prints a web-UI URL too (`http://localhost:4096`), but the **TUI is
 the default and the recommended frontend right now**:
 
-> ⚠️ **Web/desktop UI caveat (OpenCode 1.16.2).** On the OpenCode version baked
-> into the current image, the **web and desktop UIs root the agent at `/`
-> instead of `/workspace`** — so it can read across the container but writes to
-> your repo fail unless you name full paths. This is a confirmed upstream bug
+> ⚠️ **Web/desktop UI caveat.** On the OpenCode version baked into the current
+> image, the **web and desktop UIs root the agent at `/` instead of
+> `/workspace`** — so it can read across the container but writes to your repo
+> fail unless you name full paths. This is a confirmed upstream bug
 > ([anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
 > [#14460](https://github.com/anomalyco/opencode/issues/14460)), not a launcher
-> defect, and `opencode serve` on 1.16.2 has no `--cwd` to override it.
+> defect, and `opencode serve` in the current image has no `--cwd` to override it.
 >
 > The web UI stays available and is still useful — just make your **first prompt
 > `cd /workspace`** so the agent works inside your repo. The **TUI is
@@ -162,7 +162,8 @@ comma-separated list:
 ENABLED_PLUGINS=superpowers dcp
 ```
 
-Leave it empty for none. On boot the image symlinks the listed plugins into
+The **first run also offers to enable them** (an optional prompt, default none),
+so you can opt in without editing `.env` by hand. Leave it empty for none. On boot the image symlinks the listed plugins into
 OpenCode's plugin directory. **OpenCode only loads plugins at startup, so a
 restart applies your change — and re-running `./start.sh` IS the restart.** Once
 inside the TUI, the **`/plugins`** command lists the catalog and each plugin's

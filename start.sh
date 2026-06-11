@@ -20,6 +20,12 @@ ENV_EXAMPLE="${ENV_EXAMPLE:-.env.example}"
 ENVS_DIR="${ENVS_DIR:-.envs}"
 EXTRA_PACKAGES_FILE="${EXTRA_PACKAGES_FILE:-extra-packages.txt}"
 
+# Plugins baked into the image, all OFF by default. Shown as a hint during
+# first-run setup so users can opt in interactively. This is only a convenience
+# list: the prompt accepts any value (so a newer image's plugins still work even
+# if this is stale), and the authoritative catalog is the /plugins TUI command.
+KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
+
 # --- tiny output helpers ----------------------------------------------------
 err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -53,8 +59,8 @@ Options:
 Which image tag is used is controlled by IMAGE_TAG in .env (defaults to
 'latest'; set it to a specific version like 0.0.2 to pin).
 
-Why TUI-default: on the OpenCode version baked into the current image (1.16.2)
-the web/desktop UI roots the agent at / instead of /workspace (upstream bug
+Why TUI-default: on the OpenCode version baked into the current image the
+web/desktop UI roots the agent at / instead of /workspace (upstream bug
 anomalyco/opencode#14445, #14460). The TUI is pinned to /workspace and is
 correct. Re-flip to "all frontends equal" once the image ships a serve --cwd.
 
@@ -156,7 +162,7 @@ main() {
 
   # --- 1. parse args --------------------------------------------------------
   # ATTACH_TUI defaults to 1: the TUI is the default frontend (see usage() for
-  # why — the 1.16.2 web UI roots the agent at / not /workspace).
+  # why — the current image's web UI roots the agent at / not /workspace).
   # PERSIST defaults to 0: exiting the TUI tears the stack down again (a clean
   #   one-command-in/one-command-out flow). --persist/--web keeps it running
   #   (web UI stays up; resume later). --detach/--no-tui skips the TUI for
@@ -263,6 +269,14 @@ main() {
 
     read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
     set_env GIT_USER_EMAIL "$git_email"
+
+    # Plugins (optional — all OFF by default). The image bakes these in; list the
+    # ones to enable, space-separated. Free-form so a newer image's plugins still
+    # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
+    local plugins
+    info "available plugins (all off by default): ${KNOWN_PLUGINS}"
+    read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
+    set_env ENABLED_PLUGINS "$plugins"
 
     # Image registry — pre-show default, allow Enter to accept.
     local cur_reg new_reg
@@ -422,7 +436,7 @@ main() {
   # Web-UI caveat — keep this visible on every boot. Remove once the image ships
   # an `opencode serve --cwd` (upstream anomalyco/opencode#14445, #14460) and
   # the web/desktop UI roots the agent at /workspace again.
-  warn "web/desktop UI caveat (OpenCode 1.16.2): the browser UI roots the agent"
+  warn "web/desktop UI caveat: the browser UI roots the agent"
   warn "  at / instead of /workspace. WORKAROUND: make your first prompt"
   warn "  'cd /workspace' so the agent works in your repo. The default TUI is"
   warn "  unaffected. Tracking: anomalyco/opencode#14445, #14460."
@@ -430,7 +444,7 @@ main() {
 
   # --- 9. attach the TUI (default) ------------------------------------------
   # TUI is the default frontend: docker exec pins -w /workspace, so the agent is
-  # correctly rooted at the repo (unlike the 1.16.2 web UI — see the caveat
+  # correctly rooted at the repo (unlike the current web UI — see the caveat
   # above). By default, exiting the TUI tears the stack down (clean one-in/one-
   # out, no orphaned stacks). --persist/--web keeps it running so the web UI
   # stays up and you can resume; --detach/--no-tui skips the TUI entirely
