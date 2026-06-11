@@ -43,13 +43,30 @@ this list and mirror the change.
   `keep-id` is a Podman-only value Docker rejects, so it must never land in the
   base `docker-compose.yml`. Launcher-only; do **not** port it back.
 
+## Verified: needs no mirroring
+
+- **Opt-in plugins (`ENABLED_PLUGINS`).** The image bakes in three plugins
+  (`superpowers`, `dcp`, `opencode-workspace`), all OFF by default, and its
+  entrypoint reads `ENABLED_PLUGINS` on boot to symlink the requested ones in.
+  On the launcher side this is **just a plain env var the user sets in `.env`**.
+  The opencode service already injects `.env` into the container via
+  `env_file: - .env`, so the value reaches the entrypoint with **no compose or
+  `start.sh` change** — verified with `docker compose config` that a
+  space-separated value (e.g. `superpowers dcp`) survives env_file injection
+  intact. The plugin loading itself lives entirely in the image (entrypoint +
+  Dockerfile in OpenCode-Setup); nothing here mirrors it. Do **not** add an
+  `environment:` entry or any docker-exec/YAML-editing flow for it.
+
 ## Reversibility marker — the web-UI / TUI-default flip
 
-The current image bakes **OpenCode 1.16.2**, whose web/desktop UI roots the
-agent at `/` instead of `/workspace` (upstream
+The OpenCode build baked into the current image (pinned via `OPENCODE_VERSION`
+in the maintainer repo) has a web/desktop UI that roots the agent at `/` instead
+of `/workspace` (upstream
 [anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
-[#14460](https://github.com/anomalyco/opencode/issues/14460)). Because of this
-the launcher currently:
+[#14460](https://github.com/anomalyco/opencode/issues/14460)). User-facing prose
+deliberately does **not** name the exact version (it moves with image bumps); the
+upstream issue numbers are the stable anchor. Because of this the launcher
+currently:
 
 - makes the **TUI the default frontend** (`start.sh`, `ATTACH_TUI=1`), and
 - prints a **web-UI caveat** on every boot and in the README.
@@ -63,4 +80,11 @@ should:
   the unremarkable headless option), and
 - remove the web-UI caveat from `start.sh` and the README.
 
-Search the tree for `14445` / `14460` / `1.16.2` to find every spot to flip.
+Search the tree for `14445` / `14460` to find every spot to flip.
+
+> **Status — still present as of the 1.17.3 image.** The image's OpenCode build
+> was bumped to 1.17.3, but that does **not** fix #14445/#14460: the web/desktop
+> UI still roots the agent at `/`, and `opencode serve` still has no `--cwd`. So
+> the caveat and TUI-default stay. Re-check on each future bump: once
+> `opencode serve --help` lists `--cwd`, this whole marker fires — do the flip
+> above instead of carrying the caveat forward.
