@@ -342,6 +342,27 @@ setup() {
   grep -qE 'docker-compose.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
 }
 
+# --- opt-in plugins (ENABLED_PLUGINS) ---------------------------------------
+
+@test "ENABLED_PLUGINS with a space survives into the per-project env file" {
+  seed_env
+  # A space-separated list is the documented form; the value must reach the
+  # opencode container unmangled. start.sh cats .env verbatim into the
+  # per-project env, and the compose opencode service injects .env via env_file,
+  # so a value preserved here is the value the container sees.
+  sed -i 's|^ENABLED_PLUGINS=.*|ENABLED_PLUGINS=superpowers dcp|' "$SANDBOX/.env"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q '^ENABLED_PLUGINS=superpowers dcp$' "$SANDBOX/.envs/myrepo.env"
+}
+
+@test "an empty ENABLED_PLUGINS stays empty (no plugins enabled by default)" {
+  seed_env
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q '^ENABLED_PLUGINS=$' "$SANDBOX/.envs/myrepo.env"
+}
+
 # --- first-run secrets flow -------------------------------------------------
 
 @test "first run creates .env from the template and stores fed secrets" {

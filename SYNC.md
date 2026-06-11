@@ -43,6 +43,20 @@ this list and mirror the change.
   `keep-id` is a Podman-only value Docker rejects, so it must never land in the
   base `docker-compose.yml`. Launcher-only; do **not** port it back.
 
+## Verified: needs no mirroring
+
+- **Opt-in plugins (`ENABLED_PLUGINS`).** The image bakes in three plugins
+  (`superpowers`, `dcp`, `opencode-workspace`), all OFF by default, and its
+  entrypoint reads `ENABLED_PLUGINS` on boot to symlink the requested ones in.
+  On the launcher side this is **just a plain env var the user sets in `.env`**.
+  The opencode service already injects `.env` into the container via
+  `env_file: - .env`, so the value reaches the entrypoint with **no compose or
+  `start.sh` change** — verified with `docker compose config` that a
+  space-separated value (e.g. `superpowers dcp`) survives env_file injection
+  intact. The plugin loading itself lives entirely in the image (entrypoint +
+  Dockerfile in OpenCode-Setup); nothing here mirrors it. Do **not** add an
+  `environment:` entry or any docker-exec/YAML-editing flow for it.
+
 ## Reversibility marker — the web-UI / TUI-default flip
 
 The current image bakes **OpenCode 1.16.2**, whose web/desktop UI roots the

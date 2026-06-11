@@ -143,6 +143,36 @@ the pulled base. The locked-down **runtime is unchanged**: no new egress, no
 root for `dev`; the packages are simply present for the agent to use. An empty
 or absent `extra-packages.txt` does nothing (no extra build).
 
+## Plugins
+
+The image ships three OpenCode plugins, **baked in but OFF by default** (opt-in).
+They load offline from files inside the image, so enabling them adds **no network
+access**:
+
+| Plugin | What it adds |
+| --- | --- |
+| `superpowers` | Extra agent capabilities |
+| `dcp` | Dynamic context pruning |
+| `opencode-workspace` | Plan tools + background-agent delegation |
+
+Turn them on with a single host-side variable in `.env` — a space- or
+comma-separated list:
+
+```dotenv
+ENABLED_PLUGINS=superpowers dcp
+```
+
+Leave it empty for none. On boot the image symlinks the listed plugins into
+OpenCode's plugin directory. **OpenCode only loads plugins at startup, so a
+restart applies your change — and re-running `./start.sh` IS the restart.** Once
+inside the TUI, the **`/plugins`** command lists the catalog and each plugin's
+on/off state.
+
+> **Pin `IMAGE_TAG` for reproducible plugins.** Now that plugin behavior is baked
+> into the image, the available plugins and their versions move with the image.
+> If you rely on a specific plugin set, pin `IMAGE_TAG` in `.env` to an explicit
+> version (e.g. `0.0.2`) rather than the moving `latest` (see below).
+
 ## Updating to a new image
 
 Images are pulled fresh from Artifactory on every `./start.sh`. By default
