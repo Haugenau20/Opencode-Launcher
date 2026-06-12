@@ -149,11 +149,19 @@ The image ships three OpenCode plugins, **baked in but OFF by default** (opt-in)
 They load offline from files inside the image, so enabling them adds **no network
 access**:
 
-| Plugin | What it adds |
-| --- | --- |
-| `superpowers` | Extra agent capabilities |
-| `dcp` | Dynamic context pruning |
-| `opencode-workspace` | Plan tools + background-agent delegation |
+| Name | What it does | Upstream |
+| --- | --- | --- |
+| `superpowers` | Skills library: brainstorming, writing-plans, systematic-debugging, TDD, code review, etc. | [obra/superpowers](https://github.com/obra/superpowers) |
+| `dcp` | Dynamic context pruning — silently trims stale tool output from the context window to save tokens (no user-facing tool). | [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) |
+| `opencode-workspace` | `plan_save`/`plan_read` planning tools + background-agent delegation (async sub-agents). | [kdcokenny/opencode-workspace](https://github.com/kdcokenny/opencode-workspace) |
+
+> **Versions live in the image, not here.** This launcher *pulls* a pre-built
+> image, so the exact pinned plugin versions track the image (via `IMAGE_TAG`),
+> not this repo — don't treat anything here as the authoritative version. The
+> **live set and versions** are shown by the **`/plugins`** command in the TUI,
+> and the canonical pins live in the image repo
+> ([Haugenau20/OpenCode-Setup](https://github.com/Haugenau20/OpenCode-Setup) →
+> `opencode/Dockerfile` and its README "Plugins" table).
 
 Turn them on with a single host-side variable in `.env` — a space- or
 comma-separated list:
@@ -169,10 +177,10 @@ restart applies your change — and re-running `./start.sh` IS the restart.** On
 inside the TUI, the **`/plugins`** command lists the catalog and each plugin's
 on/off state.
 
-> **Pin `IMAGE_TAG` for reproducible plugins.** Now that plugin behavior is baked
-> into the image, the available plugins and their versions move with the image.
-> If you rely on a specific plugin set, pin `IMAGE_TAG` in `.env` to an explicit
-> version (e.g. `0.0.2`) rather than the moving `latest` (see below).
+> **Pin `IMAGE_TAG` for reproducible plugins.** Because the plugin set and its
+> versions move with the image, pin `IMAGE_TAG` in `.env` to an explicit version
+> (e.g. `0.0.2`) rather than the moving `latest` (see below) if you rely on a
+> specific plugin set.
 
 ## Updating to a new image
 
