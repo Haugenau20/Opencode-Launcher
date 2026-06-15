@@ -127,19 +127,30 @@ default `./user-layer` dir is gitignored.
 
 ## Adding system packages
 
-Need a system tool like `cmake` in the environment? List it, self-service,
-without bloating the shared base image for everyone else. Copy
-`extra-packages.txt.example` → `extra-packages.txt` (gitignored) and add one apt
-package per line (`#` comments and blank lines are ignored):
+Need a system tool like `cmake`, or a Python library, in the environment? List
+it, self-service, without bloating the shared base image for everyone else. Copy
+`extra-packages.txt.example` → `extra-packages.txt` (gitignored) and add one
+package per line. Each line is one of (`#` comments and blank lines are ignored):
+
+| Line          | Installs with | Notes                                  |
+| ------------- | ------------- | -------------------------------------- |
+| `NAME`        | `apt-get`     | no prefix — backward compatible        |
+| `apt:NAME`    | `apt-get`     | explicit, same as no prefix            |
+| `pip:SPEC`    | `pip3`        | e.g. `pip:requests`, `pip:numpy==1.26.0` |
 
 ```text
 cmake
+apt:ripgrep
+pip:requests
+pip:httpx==0.27.0
 ```
 
-On the next `./start.sh`, the packages are fetched with `apt-get` at **build
-time on your host** — which has normal internet, so this step does **not** go
-through the Squid proxy — and baked into a thin local image layered on top of
-the pulled base. The locked-down **runtime is unchanged**: no new egress, no
+On the next `./start.sh`, the packages are fetched with `apt-get`/`pip3` at
+**build time on your host** — which has normal internet, so this step does
+**not** go through the Squid proxy — and baked into a thin local image layered
+on top of the pulled base. pip requirements are installed system-wide (and
+auto-pull `python3-pip` if the base image lacks it), so they land on the agent's
+`PATH` at runtime. The locked-down **runtime is unchanged**: no new egress, no
 root for `dev`; the packages are simply present for the agent to use. An empty
 or absent `extra-packages.txt` does nothing (no extra build).
 
@@ -225,7 +236,7 @@ See [`tests/README.md`](tests/README.md) for what's covered and how to add more.
 | `docker-compose.user-layer.yml` | Optional overlay bind-mounting your personal config layer (see *Adding your own agents/skills*). |
 | `docker-compose.user-packages.yml` | Optional overlay (with `Dockerfile.user-packages`) that bakes your `extra-packages.txt` into a local opencode layer at build time (see *Adding system packages*). |
 | `docker-compose.podman.yml` | Optional overlay applied under rootless Podman (`keep-id` userns + `x-podman`); auto-detected by `start.sh`, or forced with `--podman`. |
-| `extra-packages.txt.example` | Template for the per-developer `extra-packages.txt` (gitignored) list of apt packages to bake in. |
+| `extra-packages.txt.example` | Template for the per-developer `extra-packages.txt` (gitignored) list of apt and `pip:` packages to bake in. |
 | `.env.example` | Template for the shared `.env` (secrets, identity, toggles). |
 | `extra-allowlist.d/` | Bind-mounted (read-only) into Squid for local allowlist drop-ins (`*.conf`). |
 | `SYNC.md` | The list of intentional deltas between this launcher's compose and the maintainer repo's. |

@@ -1,9 +1,16 @@
-# Thin LOCAL layer that bakes developer-requested apt packages onto the pulled
+# Thin LOCAL layer that bakes developer-requested packages onto the pulled
 # OpenCode base image. Built on the developer's HOST at launch time, where
-# apt-get reaches the internet directly — it does NOT go through the runtime
-# Squid egress proxy. The base image is built as root and drops to `dev` via
-# gosu at runtime, so anything installed here is available to the agent at
+# apt-get and pip reach the internet directly — they do NOT go through the
+# runtime Squid egress proxy. The base image is built as root and drops to `dev`
+# via gosu at runtime, so anything installed here is available to the agent at
 # runtime with no runtime egress or root.
+#
+# extra-packages.txt carries both apt and pip requests in one file, one per line:
+#   * no prefix  -> apt package (backward compatible)
+#   * apt:NAME   -> apt package (explicit)
+#   * pip:SPEC   -> pip requirement (e.g. pip:requests, pip:numpy==1.26.0)
+# Blank lines and '#' comments are ignored. pip installs go system-wide (no
+# --user) so the console scripts and modules are on `dev`'s PATH at runtime.
 #
 # Inherits USER root, ENTRYPOINT, CMD and WORKDIR from the base image — do NOT
 # reset them. Changing extra-packages.txt invalidates the COPY layer below and
@@ -12,7 +19,18 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 COPY extra-packages.txt /tmp/extra-packages.txt
-RUN apt-get update \
- && grep -vE '^[[:space:]]*(#|$)' /tmp/extra-packages.txt \
-    | xargs -r apt-get install -y \
- && rm -rf /var/lib/apt/lists/* /tmp/extra-packages.txt
+RUN set -eu; \
+    meaningful() { grep -vE '^[[:space:]]*(#|$)' /tmp/extra-packages.txt || true; }; \
+    apt_pkgs="$(meaningful | grep -vE '^[[:space:]]*pip:' \
+                 | sed -E 's/^[[:space:]]*apt:[[:space:]]*//;s/^[[:space:]]+//;s/[[:space:]]+$//')"; \
+    pip_pkgs="$(meaningful | grep -E '^[[:space:]]*pip:' \
+                 | sed -E 's/^[[:space:]]*pip:[[:space:]]*//')"; \
+    if [ -n "$apt_pkgs" ] || [ -n "$pip_pkgs" ]; then apt-get update; fi; \
+    if [ -n "$apt_pkgs" ]; then \
+      printf '%s\n' "$apt_pkgs" | xargs -r apt-get install -y; \
+    fi; \
+    if [ -n "$pip_pkgs" ]; then \
+      command -v pip3 >/dev/null 2>&1 || apt-get install -y python3-pip; \
+      printf '%s\n' "$pip_pkgs" | xargs -r pip3 install --break-system-packages; \
+    fi; \
+    rm -rf /var/lib/apt/lists/* /tmp/extra-packages.txt

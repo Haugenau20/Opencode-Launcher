@@ -1,14 +1,26 @@
-# extra-packages.txt — extra apt packages to bake into YOUR OpenCode image.
+# extra-packages.txt — extra packages to bake into YOUR OpenCode image.
 #
-# Copy this file to `extra-packages.txt` (gitignored) and list one apt package
-# per line. start.sh installs them with `apt-get` at BUILD time on your host —
-# which has normal internet, it does NOT go through the runtime Squid proxy —
-# then bakes them into a thin LOCAL image layered on top of the pulled base.
-# The locked-down runtime is unchanged: no new egress, no root for `dev`.
+# Copy this file to `extra-packages.txt` (gitignored) and list one package per
+# line. start.sh installs them at BUILD time on your host — which has normal
+# internet, it does NOT go through the runtime Squid proxy — then bakes them
+# into a thin LOCAL image layered on top of the pulled base. The locked-down
+# runtime is unchanged: no new egress, no root for `dev`.
+#
+# Each line is one of:
+#   NAME        an apt package (no prefix — backward compatible)
+#   apt:NAME    an apt package (explicit, same as no prefix)
+#   pip:SPEC    a pip requirement, e.g. pip:requests or pip:numpy==1.26.0
+#
+# apt packages are installed with `apt-get`; pip requirements with `pip3`
+# (system-wide, so they land on the agent's PATH at runtime). pip packages
+# auto-pull python3-pip if the base image doesn't already ship it.
 #
 # Blank lines and lines starting with `#` are ignored. An empty or absent
 # extra-packages.txt turns the feature off entirely (no extra build, current
 # behaviour exactly).
 #
-# Example (uncomment to use):
+# Examples (uncomment to use):
 # cmake
+# apt:ripgrep
+# pip:requests
+# pip:httpx==0.27.0

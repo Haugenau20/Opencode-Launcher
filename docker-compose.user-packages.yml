@@ -2,9 +2,9 @@
 # image layered on top of the pulled opencode base. start.sh applies this only
 # when extra-packages.txt has real package lines, and last in the overlay list
 # so it wins: it overrides opencode's build: to use Dockerfile.user-packages and
-# points image: at a distinct local tag. apt runs at BUILD time on the host (not
-# through Squid), so the packages are usable by `dev` at runtime with no runtime
-# egress or root.
+# points image: at a distinct local tag. apt-get/pip run at BUILD time on the
+# host (not through Squid), so the packages are usable by `dev` at runtime with
+# no runtime egress or root.
 #
 # Only opencode is layered. squid and oc-publish keep their pulled registry
 # images (untouched here), so the egress model — Squid, allowlist, networks — is

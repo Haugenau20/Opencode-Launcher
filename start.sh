@@ -144,6 +144,22 @@ extra_packages_active() {
   [ -n "$(strip_pkg_comments "${1:-$EXTRA_PACKAGES_FILE}")" ]
 }
 
+# extra_apt_packages [FILE] / extra_pip_packages [FILE] — split the meaningful
+# lines into the apt and pip buckets, mirroring the classification baked into
+# Dockerfile.user-packages. apt = lines without a `pip:` prefix (the optional
+# `apt:` prefix is stripped); pip = `pip:`-prefixed lines (prefix stripped).
+# Used only to report what's being baked; the build does its own parsing.
+extra_apt_packages() {
+  strip_pkg_comments "${1:-$EXTRA_PACKAGES_FILE}" \
+    | grep -vE '^[[:space:]]*pip:' \
+    | sed -E 's/^[[:space:]]*apt:[[:space:]]*//;s/^[[:space:]]+//;s/[[:space:]]+$//' || true
+}
+extra_pip_packages() {
+  strip_pkg_comments "${1:-$EXTRA_PACKAGES_FILE}" \
+    | grep -E '^[[:space:]]*pip:' \
+    | sed -E 's/^[[:space:]]*pip:[[:space:]]*//' || true
+}
+
 # compute_base_image REGISTRY TAG — echo the registry image start.sh runs for
 # `opencode` (REGISTRY:TAG, where TAG comes from IMAGE_TAG in .env). Used both as
 # the access-check target and as BASE_IMAGE for the package overlay's build.
@@ -346,9 +362,12 @@ main() {
     PKG_LAYER_ACTIVE=1
     OC_BASE_IMAGE="$CHECK_IMAGE"
     COMPOSE_FILES+=(-f docker-compose.user-packages.yml)
-    local pkg_list
-    pkg_list="$(strip_pkg_comments "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    info "system packages: baking a local opencode layer (build-time apt): $pkg_list"
+    local apt_list pip_list
+    apt_list="$(extra_apt_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    pip_list="$(extra_pip_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    info "system packages: baking a local opencode layer (build-time, on this host):"
+    [ -n "$apt_list" ] && info "  apt: $apt_list"
+    [ -n "$pip_list" ] && info "  pip: $pip_list"
     info "  fetched on this host; the locked-down runtime is unchanged."
   fi
 

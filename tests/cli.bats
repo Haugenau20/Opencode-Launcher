@@ -343,6 +343,32 @@ setup() {
   grep -qE 'docker-compose.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
 }
 
+@test "pip:-only extra-packages.txt activates the build layer" {
+  seed_env
+  printf '%s\n' '# python deps' 'pip:requests' > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  # a pip-only file is still "active": the local layer is built
+  grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*build opencode' "$FAKE_DOCKER_LOG"
+  # the pip list is reported, and no spurious apt line appears
+  [[ "$output" == *"pip: requests"* ]]
+  [[ "$output" != *"apt: "* ]]
+}
+
+@test "mixed apt/pip extra-packages.txt is split into the right buckets" {
+  seed_env
+  printf '%s\n' 'cmake' 'apt:ripgrep' 'pip:requests' 'pip:httpx==0.27.0' \
+    > "$SANDBOX/extra-packages.txt"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
+  # apt bucket: bare name + apt:-prefixed name (prefix stripped), no pip entries
+  [[ "$output" == *"apt: cmake ripgrep"* ]]
+  # pip bucket: pip:-prefixed specs (prefix stripped), version specifier kept
+  [[ "$output" == *"pip: requests httpx==0.27.0"* ]]
+}
+
 # --- opt-in plugins (ENABLED_PLUGINS) ---------------------------------------
 
 @test "ENABLED_PLUGINS with a space survives into the per-project env file" {
