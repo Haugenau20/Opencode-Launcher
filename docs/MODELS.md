@@ -8,16 +8,16 @@ cheaper on context, and more accurate.
 This page is a short field guide: what each model is good at, how they compare,
 and **when to reach for which**.
 
-> **Read me first.** The benchmark numbers below come from public vendor and
-> third-party sources and are here for *relative* orientation only — they may
-> differ from how each model behaves on our internal deployment. The model list
-> is maintained by hand and reflects what the internal provider currently
-> serves, so it can lag a model being added or removed. The **context windows
-> shown are the values configured for this setup.**
+**About the numbers below.** The benchmark figures are drawn from public vendor
+and third-party sources and are here for *relative* orientation only — they may
+differ from how each model behaves on our internal deployment. The model list is
+maintained by hand and reflects what the internal provider currently serves, so
+it can lag a model being added or removed. The **context windows shown are the
+values configured for this setup.**
 
 ## The models at a glance
 
-| Model | Best for | Architecture | Context (this setup) | Plugin notes |
+| Model | Best for | Architecture | Context | Plugin notes |
 | --- | --- | --- | --- | --- |
 | **MiniMax-M2.5** | Long, autonomous, multi-file coding and tool-loop work | ~230B MoE, 10B active | 190K | ✅ all plugins |
 | **Qwen3.5-122B-A10B** | Hard reasoning, large-context reads, documents, multilingual | 122B MoE (10B active), 256 experts | 262K | ⚠️ **`opencode-workspace` incompatible** — see below |
