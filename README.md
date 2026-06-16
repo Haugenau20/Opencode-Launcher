@@ -174,6 +174,12 @@ access**:
 > ([Haugenau20/OpenCode-Setup](https://github.com/Haugenau20/OpenCode-Setup) →
 > `opencode/Dockerfile` and its README "Plugins" table).
 
+> **WARNING! Do not enable `opencode-workspace` if you use Qwen.** The extra tools and
+> system prompt it injects are rejected by Qwen's upstream, so every prompt then
+> fails with `AI_APICallError: Failed to communicate with the upstream service`.
+> Other models (e.g. MiniMax, Gemma) are unaffected. Leave this plugin disabled
+> when working with Qwen.
+
 Turn them on with a single host-side variable in `.env` — a space- or
 comma-separated list:
 
