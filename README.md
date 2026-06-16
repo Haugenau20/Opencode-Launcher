@@ -154,6 +154,15 @@ auto-pull `python3-pip` if the base image lacks it), so they land on the agent's
 root for `dev`; the packages are simply present for the agent to use. An empty
 or absent `extra-packages.txt` does nothing (no extra build).
 
+## Choosing a model
+
+The internal LLM endpoint serves a few different models, and they are not
+interchangeable — MiniMax for long autonomous coding, Qwen for heavy reasoning
+and large-context/multilingual work, Gemma for fast well-scoped tasks and
+anything with an image. See [`docs/MODELS.md`](docs/MODELS.md) for a side-by-side
+comparison (with benchmarks) and a "when to reach for which" guide. Switching the
+active model is handled by OpenCode itself.
+
 ## Plugins
 
 The image ships three OpenCode plugins, **baked in but OFF by default** (opt-in).
