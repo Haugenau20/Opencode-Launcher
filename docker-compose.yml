@@ -39,6 +39,7 @@ services:
       - DAC_OVERRIDE
     stdin_open: true
     tty: true
+    stop_grace_period: 1s
 
   oc-publish:
     image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
@@ -54,6 +55,7 @@ services:
       - oc_proxy
       - oc_publish
     restart: unless-stopped
+    stop_grace_period: 1s
 
   squid:
     image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
@@ -71,6 +73,7 @@ services:
     networks:
       - oc_proxy
       - oc_egress
+    stop_grace_period: 1s
 
 networks:
   oc_internal:
