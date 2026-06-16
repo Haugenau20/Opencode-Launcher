@@ -49,3 +49,12 @@ auto-pull `python3-pip` if the base image lacks it), so they land on the agent's
 `PATH` at runtime. The locked-down **runtime is unchanged**: no new egress, no
 root for `dev`; the packages are simply present for the agent to use. An empty
 or absent `extra-packages.txt` does nothing (no extra build).
+
+## Extending the egress allowlist
+
+The agent's egress is restricted to the baked-in Squid allowlist. To allow extra
+destinations locally, drop a `*.conf` file into `extra-allowlist.d/` (Squid
+config syntax) — it's bind-mounted read-only into Squid at
+`/etc/squid/extra-allowlist.d`. The directory is tracked but its `*.conf`
+contents are gitignored, so your additions stay local. A restart (`./start.sh`)
+applies them.
