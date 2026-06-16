@@ -291,6 +291,8 @@ main() {
     # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
     local plugins
     info "available plugins (all off by default): ${KNOWN_PLUGINS}"
+    warn "do NOT enable 'opencode-workspace' with Qwen — its injected tools/prompt"
+    warn "are rejected by Qwen's upstream and every prompt fails (AI_APICallError)."
     read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
     set_env ENABLED_PLUGINS "$plugins"
 
