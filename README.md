@@ -100,8 +100,7 @@ entering the container or rebuilding the shared base. See
 The endpoint serves several models, each with a different sweet spot — some
 suit long autonomous coding, others heavy reasoning, large-context work, or fast
 well-scoped tasks. See [`docs/MODELS.md`](docs/MODELS.md) for a benchmarked
-comparison and a "when to reach for which" guide. Model switching is handled by
-OpenCode itself.
+comparison and a "when to reach for which" guide.
 
 ## Plugins
 
