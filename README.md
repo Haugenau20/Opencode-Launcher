@@ -171,8 +171,7 @@ access**:
 > not this repo — don't treat anything here as the authoritative version. The
 > **live set and versions** are shown by the **`/plugins`** command in the TUI,
 > and the canonical pins live in the image repo
-> ([Haugenau20/OpenCode-Setup](https://github.com/Haugenau20/OpenCode-Setup) →
-> `opencode/Dockerfile` and its README "Plugins" table).
+> (`opencode/Dockerfile` and its README "Plugins" table).
 
 > **WARNING! Do not enable `opencode-workspace` if you use Qwen.** The extra tools and
 > system prompt it injects are rejected by Qwen's upstream, so every prompt then
