@@ -97,11 +97,11 @@ entering the container or rebuilding the shared base. See
 
 ## Choosing a model
 
-The endpoint serves several models, each with a sweet spot — MiniMax for long
-autonomous coding, Qwen for heavy reasoning and large-context/multilingual work,
-Gemma for fast well-scoped tasks and anything with an image. See
-[`docs/MODELS.md`](docs/MODELS.md) for a benchmarked comparison and a "when to
-reach for which" guide. Model switching is handled by OpenCode itself.
+The endpoint serves several models, each with a different sweet spot — some
+suit long autonomous coding, others heavy reasoning, large-context work, or fast
+well-scoped tasks. See [`docs/MODELS.md`](docs/MODELS.md) for a benchmarked
+comparison and a "when to reach for which" guide. Model switching is handled by
+OpenCode itself.
 
 ## Plugins
 
@@ -115,11 +115,12 @@ access**:
 | `dcp` | Dynamic context pruning — silently trims stale tool output from the context window to save tokens (no user-facing tool). | [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) |
 | `opencode-workspace` | `plan_save`/`plan_read` planning tools + background-agent delegation (async sub-agents). | [kdcokenny/opencode-workspace](https://github.com/kdcokenny/opencode-workspace) |
 
-> **WARNING! Do not enable `opencode-workspace` if you use Qwen.** The extra tools and
-> system prompt it injects are rejected by Qwen's upstream, so every prompt then
-> fails with `AI_APICallError: Failed to communicate with the upstream service`.
-> Other models (e.g. MiniMax, Gemma) are unaffected. Leave this plugin disabled
-> when working with Qwen.
+> **WARNING! `opencode-workspace` is incompatible with some models.** The extra
+> tools and system prompt it injects are rejected by certain upstreams, so every
+> prompt then fails with
+> `AI_APICallError: Failed to communicate with the upstream service`. See
+> [`docs/MODELS.md`](docs/MODELS.md) for which models are affected, and leave this
+> plugin disabled when using one of them.
 
 Turn them on with a single host-side variable in `.env` — a space- or
 comma-separated list:
