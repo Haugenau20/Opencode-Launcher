@@ -166,13 +166,6 @@ access**:
 | `dcp` | Dynamic context pruning — silently trims stale tool output from the context window to save tokens (no user-facing tool). | [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) |
 | `opencode-workspace` | `plan_save`/`plan_read` planning tools + background-agent delegation (async sub-agents). | [kdcokenny/opencode-workspace](https://github.com/kdcokenny/opencode-workspace) |
 
-> **Versions live in the image, not here.** This launcher *pulls* a pre-built
-> image, so the exact pinned plugin versions track the image (via `IMAGE_TAG`),
-> not this repo — don't treat anything here as the authoritative version. The
-> **live set and versions** are shown by the **`/plugins`** command in the TUI,
-> and the canonical pins live in the image repo
-> (`opencode/Dockerfile` and its README "Plugins" table).
-
 > **WARNING! Do not enable `opencode-workspace` if you use Qwen.** The extra tools and
 > system prompt it injects are rejected by Qwen's upstream, so every prompt then
 > fails with `AI_APICallError: Failed to communicate with the upstream service`.
