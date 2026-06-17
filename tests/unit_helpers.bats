@@ -128,3 +128,84 @@ setup() {
   run compute_base_image reg.test.local/opencode 0.0.2
   [ "$output" = "reg.test.local/opencode:0.0.2" ]
 }
+
+# --- doctor_line --------------------------------------------------------------
+
+@test "doctor_line: PASS with no detail prints just status and label" {
+  run doctor_line PASS "docker on PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "[PASS] docker on PATH" ]]
+}
+
+@test "doctor_line: includes the detail when given one" {
+  run doctor_line FAIL "docker daemon reachable" "permission denied"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[FAIL]"* ]]
+  [[ "$output" == *"docker daemon reachable"* ]]
+  [[ "$output" == *"permission denied"* ]]
+}
+
+# --- doctor_check_env_keys ----------------------------------------------------
+
+@test "doctor_check_env_keys: PASSes required keys when all are set" {
+  printf '%s\n' 'LLM_API_BASE=https://llm.test/v1' 'LLM_API_KEY=sk-secret' \
+    'IMAGE_REGISTRY=reg.test.local/opencode' > "$ENV_FILE"
+  run doctor_check_env_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] env: LLM_API_BASE"* ]]
+  [[ "$output" == *"[PASS] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"[PASS] env: IMAGE_REGISTRY"* ]]
+}
+
+@test "doctor_check_env_keys: FAILs and returns non-zero when a required key is empty" {
+  printf '%s\n' 'LLM_API_BASE=https://llm.test/v1' 'LLM_API_KEY=' \
+    'IMAGE_REGISTRY=reg.test.local/opencode' > "$ENV_FILE"
+  run doctor_check_env_keys
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"unset"* ]]
+}
+
+@test "doctor_check_env_keys: optional unset keys are WARN, not FAIL" {
+  printf '%s\n' 'LLM_API_BASE=https://llm.test/v1' 'LLM_API_KEY=sk-secret' \
+    'IMAGE_REGISTRY=reg.test.local/opencode' > "$ENV_FILE"
+  run doctor_check_env_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] env: BITBUCKET_USER"* ]]
+  [[ "$output" == *"[WARN] env: BITBUCKET_PAT"* ]]
+}
+
+@test "doctor_check_env_keys: never prints the secret value, only set/unset" {
+  printf '%s\n' 'LLM_API_BASE=https://llm.test/v1' 'LLM_API_KEY=sk-super-secret-xyz' \
+    'IMAGE_REGISTRY=reg.test.local/opencode' 'BITBUCKET_PAT=another-secret-token' \
+    > "$ENV_FILE"
+  run doctor_check_env_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-xyz"* ]]
+  [[ "$output" != *"another-secret-token"* ]]
+}
+
+@test "doctor_check_env_keys: missing env file FAILs all required keys" {
+  rm -f "$ENV_FILE"
+  run doctor_check_env_keys
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] env: LLM_API_BASE"* ]]
+  [[ "$output" == *"[FAIL] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"[FAIL] env: IMAGE_REGISTRY"* ]]
+}
+
+# --- doctor_check_port ---------------------------------------------------------
+
+@test "doctor_check_port: PASSes a free port" {
+  port_in_use() { return 1; }
+  run doctor_check_port 4096 "web UI"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] port 4096 free (web UI)"* ]]
+}
+
+@test "doctor_check_port: WARNs (not FAILs) a busy port" {
+  port_in_use() { return 0; }
+  run doctor_check_port 4096 "web UI"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] port 4096 free (web UI)"* ]]
+}

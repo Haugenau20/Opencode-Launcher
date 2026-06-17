@@ -146,9 +146,17 @@ Images are pulled fresh on every `./start.sh`:
 
 ## Troubleshooting
 
+- **Run `./start.sh --doctor` first.** It checks Docker (on PATH, daemon
+  reachable, compose v2 plugin), the registry (auth/login state), your `.env`
+  (required keys set, optional keys listed as set/unset), and ports — then
+  prints one pasteable PASS/WARN/FAIL report. Optionally pass a repo path to
+  also check that project's derived port: `./start.sh --doctor ~/code/your-repo`.
+  It never prints secret values, exits non-zero only on a FAIL, and never pulls
+  an image or attaches the TUI — paste its output when asking for help instead
+  of describing the error by hand.
 - **`docker login` needed** — the most common first-time failure. If a pull
   fails with `unauthorized`/`denied`, run `docker login <registry-host>` and
-  retry.
+  retry. `--doctor` surfaces this with the exact command to run.
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
 - **Don't run `docker compose up` by hand.** Always go through `start.sh` — it

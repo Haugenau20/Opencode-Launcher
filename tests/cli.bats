@@ -446,3 +446,144 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"IMAGE_REGISTRY looks like a placeholder"* ]]
 }
+
+# --- --doctor -----------------------------------------------------------------
+
+# seed_env_doctor — seed_env plus a non-empty LLM_API_KEY, so the "all required
+# keys set" path is reachable (seed_env alone leaves LLM_API_KEY empty).
+seed_env_doctor() {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-test-secret-value|' "$SANDBOX/.env"
+}
+
+@test "--doctor short-circuits: no pull, no up, no exec" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher doctor report"* ]]
+  ! grep -qE 'compose .*pull' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*up -d' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--doctor all-good: every check passes and exit is 0" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] docker on PATH"* ]]
+  [[ "$output" == *"[PASS] docker daemon reachable"* ]]
+  [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
+  [[ "$output" == *"[PASS] .env present"* ]]
+  [[ "$output" == *"[PASS] env: LLM_API_BASE"* ]]
+  [[ "$output" == *"[PASS] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"[PASS] env: IMAGE_REGISTRY"* ]]
+  [[ "$output" == *"[PASS] registry access"* ]]
+  [[ "$output" == *"[PASS] port 4096 free"* ]]
+  [[ "$output" == *"all critical checks passed"* ]]
+  ! [[ "$output" == *"[FAIL]"* ]]
+}
+
+@test "--doctor: daemon-down FAILs that check and exits non-zero" {
+  seed_env_doctor
+  FAKE_DOCKER_INFO_RC=1 run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
+  [[ "$output" == *"one or more critical checks FAILED"* ]]
+}
+
+@test "--doctor: permission-denied daemon failure surfaces the usermod hint" {
+  seed_env_doctor
+  FAKE_DOCKER_INFO_RC=1 \
+    FAKE_DOCKER_INFO_STDERR="Got permission denied while trying to connect" \
+    run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
+  [[ "$output" == *"usermod -aG docker"* ]]
+}
+
+@test "--doctor: missing required env key FAILs and exits non-zero" {
+  seed_env_doctor
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"unset — required"* ]]
+  [[ "$output" == *"one or more critical checks FAILED"* ]]
+}
+
+@test "--doctor: optional unset keys are reported as WARN, not FAIL" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] env: BITBUCKET_USER"* ]]
+  [[ "$output" == *"unset (optional)"* ]]
+}
+
+@test "--doctor: registry auth failure reports it and gives the docker login hint" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST_RC=1 \
+    FAKE_DOCKER_MANIFEST_STDERR="unauthorized: authentication required" \
+    run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] registry access"* ]]
+  [[ "$output" == *"auth problem"* ]]
+  [[ "$output" == *"docker login reg.test.local"* ]]
+}
+
+@test "--doctor: a non-auth registry error WARNs but does not fail the run" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST_RC=1 \
+    FAKE_DOCKER_MANIFEST_STDERR="manifest unknown: not found" \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] registry access"* ]]
+  [[ "$output" == *"could not verify"* ]]
+}
+
+@test "--doctor: podman shim is reported as WARN, not FAIL" {
+  seed_env_doctor
+  FAKE_DOCKER_VERSION_OUTPUT="Docker version 0.0.0, podman" \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] podman shim detected"* ]]
+}
+
+@test "--doctor: no podman shim reports PASS" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] podman shim"* ]]
+}
+
+@test "--doctor: an optional repo path also checks that project's port" {
+  seed_env_doctor
+  run_launcher --doctor "$(make_repo_arg "My Service")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"project: my-service"* ]]
+}
+
+@test "--doctor: never prints the secret LLM_API_KEY value" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-test-secret-value"* ]]
+}
+
+@test "--doctor: never prints a configured BITBUCKET_PAT value" {
+  seed_env_doctor
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=super-secret-token-xyz|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-token-xyz"* ]]
+  [[ "$output" == *"[PASS] env: BITBUCKET_PAT"* ]]
+}
+
+@test "--doctor exits non-zero overall even when only one of several checks FAILs" {
+  seed_env_doctor
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -ne 0 ]
+  # the rest of the report still ran (not an early abort)
+  [[ "$output" == *"[PASS] docker on PATH"* ]]
+  [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
+}
