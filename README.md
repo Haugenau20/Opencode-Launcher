@@ -18,6 +18,45 @@ this repo is just the glue.
   auto-detects it and applies a `keep-id` userns overlay so bind-mount ownership
   stays correct. Force it with `--podman` if detection misses.
 
+## Install
+
+### Quick install (one-liner)
+
+```bash
+curl -fsSL https://CHANGEME.internal.example/opencode-launcher/install.sh | bash
+```
+
+> **Replace `https://CHANGEME.internal.example/opencode-launcher/install.sh`**
+> with the real raw-file URL for `install.sh` on your internal git host (e.g.
+> a Bitbucket/GitHub raw-content URL). The placeholder above is intentionally
+> not a real, reachable address.
+
+This fetches and runs [`install.sh`](install.sh), which clones this launcher
+repo (if it isn't already checked out next to the script), checks for Docker
+and the `docker compose` v2 plugin, and prints the exact `cd ... && ./start.sh
+<your-repo>` command to run next. It is safe to run more than once — it never
+overwrites an existing clone or an existing `.env`.
+
+### Manual equivalent
+
+```bash
+git clone <this-launcher-repo>
+cd opencode-launcher
+./start.sh ~/code/your-repo
+```
+
+Either way, only the very first run does anything different (see Quickstart
+below) — `install.sh` is just a convenience wrapper around the same clone +
+`./start.sh` flow, handy for colleagues who'd rather not hand-type the
+prerequisite checks.
+
+### Tab completion
+
+Optional, but handy: [`completions/`](completions/) has bash and zsh
+completion scripts for every `start.sh` flag (plus directory completion for
+`<host-repo-path>`). See [`completions/README.md`](completions/README.md) for
+install instructions.
+
 ## Quickstart
 
 ```bash
