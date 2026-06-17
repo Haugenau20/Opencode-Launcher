@@ -14,6 +14,7 @@
 #   FAKE_DOCKER_MANIFEST_RC       rc for `docker manifest inspect`    (default 0)
 #   FAKE_DOCKER_MANIFEST_STDERR   stderr emitted by manifest inspect  (default "")
 #   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach)   (default 0)
+#   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
@@ -38,6 +39,10 @@ case "$sub" in
     ;;
   exec)
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
+    ;;
+  --version)
+    printf '%s\n' "${FAKE_DOCKER_VERSION_OUTPUT:-Docker version 99.0.0-fake}"
+    exit 0
     ;;
   *)
     exit 0
