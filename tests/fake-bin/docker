@@ -11,6 +11,8 @@
 #   FAKE_DOCKER_INFO_STDERR       stderr emitted by `docker info`     (default "")
 #   FAKE_DOCKER_COMPOSE_VERSION_RC rc for `docker compose version`    (default 0)
 #   FAKE_DOCKER_COMPOSE_RC        rc for `docker compose <pull|up|…>` (default 0)
+#   FAKE_DOCKER_COMPOSE_LS_OUTPUT  stdout for `docker compose ls ...` (default "")
+#                                  one "name<TAB>status" pair per line.
 #   FAKE_DOCKER_MANIFEST_RC       rc for `docker manifest inspect`    (default 0)
 #   FAKE_DOCKER_MANIFEST_STDERR   stderr emitted by manifest inspect  (default "")
 #   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach)   (default 0)
@@ -30,7 +32,11 @@ case "$sub" in
       echo "Docker Compose version v2.99.0-fake"
       exit "${FAKE_DOCKER_COMPOSE_VERSION_RC:-0}"
     fi
-    # pull / up -d / anything else
+    if [ "${2:-}" = ls ]; then
+      [ -n "${FAKE_DOCKER_COMPOSE_LS_OUTPUT:-}" ] && printf '%s\n' "$FAKE_DOCKER_COMPOSE_LS_OUTPUT"
+      exit "${FAKE_DOCKER_COMPOSE_RC:-0}"
+    fi
+    # pull / up -d / down / anything else
     exit "${FAKE_DOCKER_COMPOSE_RC:-0}"
     ;;
   manifest)

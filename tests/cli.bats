@@ -587,3 +587,253 @@ seed_env_doctor() {
   [[ "$output" == *"[PASS] docker on PATH"* ]]
   [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
 }
+
+# --- --status -----------------------------------------------------------------
+
+@test "--help mentions --status, --down/--stop and --reconfigure" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--status"* ]]
+  [[ "$output" == *"--down"* ]]
+  [[ "$output" == *"--stop"* ]]
+  [[ "$output" == *"--reconfigure"* ]]
+}
+
+@test "--status with a repo path reports a down stack" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"status:  down"* ]]
+  # never pulls or attaches
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with a repo path reports an up stack with its port and URL" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  # Boot once (--detach: no TUI exec) so the per-project env file (and thus
+  # the same SLUG/PORT) exists, which --status reads OPENCODE_PORT from.
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --status call below
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"status:  up"* ]]
+  [[ "$output" == *"web UI:  http://localhost:"* ]]
+  [[ "$output" == *"resume:"* ]]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with no repo path lists all running opencode-* stacks" {
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="$(printf '%s\n%s' \
+    'opencode-my-service	running(3)' \
+    'opencode-other	exited(0)')" \
+    run_launcher --status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"opencode-other"* ]]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with no repo path and nothing running says so" {
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no launcher stacks found"* ]]
+}
+
+@test "--status does not require .env to exist" {
+  [ ! -f "$SANDBOX/.env" ]
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status
+  [ "$status" -eq 0 ]
+  [ ! -f "$SANDBOX/.env" ]   # still never created
+}
+
+@test "--status rejects a nonexistent repo path" {
+  run_launcher --status "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+# --- --down / --stop -----------------------------------------------------------
+
+@test "--down re-derives the project and invokes compose down with the right -p" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  # Boot first so the per-project env file (and thus the same SLUG/PORT) exists.
+  run_launcher "$repo"
+  [ "$status" -eq 0 ]
+
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*-p opencode-my-service .*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"opencode-my-service is down"* ]]
+}
+
+@test "--stop is an alias for --down" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --stop "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--down is graceful when nothing was ever started (no .env)" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+  ! grep -q 'compose' "$FAKE_DOCKER_LOG"
+}
+
+@test "--down surfaces a warning (not a hard failure) when compose down errors" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_RC=1 run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"may not have been running"* ]]
+}
+
+@test "--down requires a repo path" {
+  seed_env
+  run_launcher --down
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--down rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --down "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--down does not pull images or attach the TUI" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --down call below
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -q 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+# --- --reconfigure ---------------------------------------------------------
+
+@test "--reconfigure round-trips an edited value and keeps untouched ones" {
+  seed_env
+  # Pre-seed a few values so we can verify both "change" and "keep" behavior.
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
+  sed -i 's|^GIT_USER_EMAIL=.*|GIT_USER_EMAIL=old@test.dev|' "$SANDBOX/.env"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
+
+  # 8 prompts in order: LLM base (keep), LLM key (keep/empty), BB user (keep),
+  # BB PAT (keep/empty), git name (CHANGE), git email (keep), plugins (keep),
+  # registry (keep).
+  printf '%s\n' \
+    '' \
+    '' \
+    '' \
+    '' \
+    'New Name' \
+    '' \
+    '' \
+    '' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^GIT_USER_NAME=New Name$' "$SANDBOX/.env"        # changed
+  grep -q '^GIT_USER_EMAIL=old@test.dev$' "$SANDBOX/.env"   # kept
+  grep -q '^LLM_API_BASE=https://old.example/v1$' "$SANDBOX/.env"  # kept
+  grep -q '^BITBUCKET_USER=olduser$' "$SANDBOX/.env"        # kept
+}
+
+@test "--reconfigure does not clobber HOST_UID/HOST_GID" {
+  seed_env
+  sed -i 's|^HOST_UID=.*|HOST_UID=42|' "$SANDBOX/.env"
+  sed -i 's|^HOST_GID=.*|HOST_GID=43|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^HOST_UID=42$' "$SANDBOX/.env"
+  grep -q '^HOST_GID=43$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure preserves unrelated keys it doesn't own" {
+  seed_env
+  sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
+  sed -i 's|^ENABLE_SESSION_LOGS=.*|ENABLE_SESSION_LOGS=0|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^ALLOW_REMOTE_GIT=1$' "$SANDBOX/.env"
+  grep -q '^ENABLE_SESSION_LOGS=0$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure masks existing secrets instead of echoing them" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=super-secret-value|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-value"* ]]
+  [[ "$output" == *"set, press Enter to keep"* ]]
+  grep -q '^LLM_API_KEY=super-secret-value$' "$SANDBOX/.env"   # kept (Enter)
+}
+
+@test "--reconfigure creates .env from the template when none exists yet" {
+  [ ! -f "$SANDBOX/.env" ]
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-newkey' 'newuser' 'newpat' \
+    'New Person' 'new@test.dev' 'superpowers' 'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  [ -f "$SANDBOX/.env" ]
+  grep -q '^LLM_API_KEY=sk-newkey$' "$SANDBOX/.env"
+  grep -q '^GIT_USER_NAME=New Person$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure rejects a repo-path argument" {
+  seed_env
+  run_launcher --reconfigure "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--reconfigure takes no"* ]]
+}
+
+@test "--reconfigure notes that changes apply on the next run" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"next"* ]]
+}
+
+@test "--reconfigure never pulls images or attaches the TUI" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}

@@ -45,10 +45,18 @@ Flags that change the default attach-and-teardown behavior:
 | `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume your last session with the `opencode -c` command `start.sh` prints. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only). Also leaves the stack running. |
 | `--continue` (`-c`)   | Resume your most recent session instead of a fresh one. Maps 1:1 to opencode's own `--continue`/`-c`. |
+| `--doctor [<repo-path>]` | Run all environment checks (Docker, compose, registry auth, `.env` keys, ports, disk space) and print one pasteable PASS/WARN/FAIL report. No pull, no TUI attach. |
+| `--status [<repo-path>]` | Report on running launcher stacks. With a repo path: that project's up/down state, web UI URL, and resume command. Without one: every running `opencode-*` stack. Read-only — no secrets needed. |
+| `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
+| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. Changes apply next run. |
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
 ./start.sh --detach  ~/code/your-repo    # headless, never attach the TUI
+./start.sh --status                      # list every running stack
+./start.sh --status ~/code/your-repo     # status for one project
+./start.sh --down    ~/code/your-repo    # tear that stack down
+./start.sh --reconfigure                 # edit your secrets interactively
 ```
 
 > `--continue` with no previous session is harmless: opencode prints a server
@@ -159,9 +167,17 @@ Images are pulled fresh on every `./start.sh`:
   retry. `--doctor` surfaces this with the exact command to run.
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
-- **Don't run `docker compose up` by hand.** Always go through `start.sh` — it
-  wires up the per-project env file and project name and pulls the images first.
-  (The base `docker-compose.yml` carries `build:` blocks for the maintainer repo,
-  but the images are pulled, not built here; a hand-run `up` that forces a build
-  would fail.)
+- **Don't run `docker compose up`/`down` by hand.** Always go through
+  `start.sh` — it wires up the per-project env file and project name and pulls
+  the images first. (The base `docker-compose.yml` carries `build:` blocks for
+  the maintainer repo, but the images are pulled, not built here; a hand-run
+  `up` that forces a build would fail.) To tear down a stack left running by
+  `--persist`/`--detach`, use `./start.sh --down ~/code/your-repo` instead — it
+  re-derives the same project so the right stack comes down.
+- **Forgot what's running, or what port it's on?** `./start.sh --status` lists
+  every running stack; `./start.sh --status ~/code/your-repo` reports one
+  project's web UI URL and resume command.
+- **Changed your mind about a secret or plugin?** `./start.sh --reconfigure`
+  re-runs the setup wizard pre-filled with your current `.env` values — Enter
+  keeps each one.
 - **Linux only** — matches the parent system's supported scope.

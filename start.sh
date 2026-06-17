@@ -37,6 +37,9 @@ usage() {
 Usage:
   ./start.sh [--continue] [--persist] [--detach] [--podman] <host-repo-path>
   ./start.sh --doctor [<host-repo-path>]
+  ./start.sh --status [<host-repo-path>]
+  ./start.sh --down|--stop <host-repo-path>
+  ./start.sh --reconfigure
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -60,6 +63,20 @@ Options:
              report, then exit — no image pull, no TUI attach. Optionally pass
              a <host-repo-path> to also check that project's derived port.
              Never prints secret values. Exits non-zero if any check FAILs.
+  --status   Report on running launcher stacks, then exit — no image pull, no
+             TUI attach, no .env secrets required. With a <host-repo-path>,
+             re-derives that project's slug/port and reports whether it's up,
+             its web UI URL, and the resume command. Without one, lists every
+             running opencode-* stack (project, status, port).
+  --down     Tear down the stack for <host-repo-path> via `docker compose
+  --stop     down`, re-deriving the same slug / per-project env file / compose
+             invocation boot uses. Aliases: --down, --stop. Safe to run even
+             if nothing is up; does not require .env secrets.
+  --reconfigure
+             Re-run the secrets setup wizard, pre-filled with your current
+             .env values (press Enter on any prompt to keep it). Existing
+             secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
+             any unrelated keys untouched. Changes apply on your next run.
   --help     Show this help.
 
 Which image tag is used is controlled by IMAGE_TAG in .env (defaults to
@@ -97,6 +114,18 @@ prompt_with_default() {
   local label="$1" current="$2" reply
   read -r -p "$label [$current]: " reply || true
   printf '%s' "${reply:-$current}"
+}
+
+# mask_secret VALUE -> a short, non-reversible hint for use as a prompt
+# default when displaying a secret ("(empty)" or "(set, press Enter to
+# keep)"). Never echoes the actual value.
+mask_secret() {
+  local value="$1"
+  if [ -z "$value" ]; then
+    printf '%s' "(empty)"
+  else
+    printf '%s' "(set, press Enter to keep)"
+  fi
 }
 
 # --- per-project derivations ------------------------------------------------
@@ -397,6 +426,255 @@ cmd_doctor() {
   return "$overall_rc"
 }
 
+# --- setup wizard (first-run and --reconfigure) ------------------------------
+# run_setup_wizard [--reconfigure] — prompts for the secrets/config that
+# first-run handles, writing each answer via set_env. In default (first-run)
+# mode, secrets start blank. In --reconfigure mode every prompt is pre-filled
+# from the CURRENT .env value (Enter keeps it); secret values are shown masked
+# (never echoed) but still round-trip correctly when left untouched. Never
+# touches HOST_UID/HOST_GID (or any other key it doesn't explicitly own) when
+# reconfiguring. Both first-run and --reconfigure call this so behavior stays
+# identical between the two entry points.
+run_setup_wizard() {
+  local reconfigure=0
+  [ "${1:-}" = "--reconfigure" ] && reconfigure=1
+
+  # LLM
+  local cur_base new_base
+  cur_base="$(get_env LLM_API_BASE)"
+  new_base="$(prompt_with_default "LLM API base URL" "$cur_base")"
+  set_env LLM_API_BASE "$new_base"
+
+  local cur_key llm_key
+  cur_key="$(get_env LLM_API_KEY)"
+  if [ "$reconfigure" -eq 1 ]; then
+    printf 'LLM API key %s (input hidden): ' "$(mask_secret "$cur_key")"
+  else
+    printf 'LLM API key (input hidden): '
+  fi
+  read -rs llm_key || true; echo
+  [ -n "$llm_key" ] || llm_key="$cur_key"
+  set_env LLM_API_KEY "$llm_key"
+
+  # Bitbucket (optional — Enter to skip/keep)
+  local cur_bb_user bb_user
+  cur_bb_user="$(get_env BITBUCKET_USER)"
+  if [ "$reconfigure" -eq 1 ]; then
+    bb_user="$(prompt_with_default "Bitbucket username (optional)" "$cur_bb_user")"
+  else
+    read -r -p "Bitbucket username (optional, Enter to skip): " bb_user || true
+  fi
+  set_env BITBUCKET_USER "$bb_user"
+
+  local cur_bb_pat bb_pat
+  cur_bb_pat="$(get_env BITBUCKET_PAT)"
+  if [ "$reconfigure" -eq 1 ]; then
+    printf 'Bitbucket personal access token %s (input hidden): ' "$(mask_secret "$cur_bb_pat")"
+  else
+    printf 'Bitbucket personal access token (optional, Enter to skip, input hidden): '
+  fi
+  read -rs bb_pat || true; echo
+  [ -n "$bb_pat" ] || bb_pat="$cur_bb_pat"
+  set_env BITBUCKET_PAT "$bb_pat"
+
+  # Git identity (optional — Enter to skip/keep)
+  local cur_git_name git_name
+  cur_git_name="$(get_env GIT_USER_NAME)"
+  if [ "$reconfigure" -eq 1 ]; then
+    git_name="$(prompt_with_default "Git user name for container commits (optional)" "$cur_git_name")"
+  else
+    read -r -p "Git user name for container commits (optional, Enter to skip): " git_name || true
+  fi
+  set_env GIT_USER_NAME "$git_name"
+
+  local cur_git_email git_email
+  cur_git_email="$(get_env GIT_USER_EMAIL)"
+  if [ "$reconfigure" -eq 1 ]; then
+    git_email="$(prompt_with_default "Git user email for container commits (optional)" "$cur_git_email")"
+  else
+    read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
+  fi
+  set_env GIT_USER_EMAIL "$git_email"
+
+  # Plugins (optional — all OFF by default). The image bakes these in; list the
+  # ones to enable, space-separated. Free-form so a newer image's plugins still
+  # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
+  local cur_plugins plugins
+  cur_plugins="$(get_env ENABLED_PLUGINS)"
+  info "available plugins (all off by default): ${KNOWN_PLUGINS}"
+  warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
+  if [ "$reconfigure" -eq 1 ]; then
+    plugins="$(prompt_with_default "Enable plugins (space-separated)" "$cur_plugins")"
+  else
+    read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
+  fi
+  set_env ENABLED_PLUGINS "$plugins"
+
+  # Image registry — pre-show default, allow Enter to accept.
+  local cur_reg new_reg
+  cur_reg="$(get_env IMAGE_REGISTRY)"
+  new_reg="$(prompt_with_default "Image registry (Artifactory path)" "$cur_reg")"
+  set_env IMAGE_REGISTRY "$new_reg"
+
+  if [ "$reconfigure" -eq 0 ]; then
+    # Auto-fill UID/GID for bind-mount permissions (first run only —
+    # reconfigure must never clobber these).
+    set_env HOST_UID "$(id -u)"
+    set_env HOST_GID "$(id -g)"
+  fi
+}
+
+# --- per-project derivation (shared by boot, --status, --down) --------------
+# derive_project_settings REPO_PATH — sets SLUG, PORT, PORT_OK, PROJECT_ENV,
+# PROJECT_NAME, COMPOSE in the caller's scope, mirroring exactly what the boot
+# flow computes in steps 5/6, WITHOUT pulling/booting/attaching anything.
+# Shared by the boot flow and the --status/--down management commands so they
+# all agree on which stack a given repo path maps to. Like boot, this
+# (re)writes the per-project env file at .envs/<slug>.env so --env-file always
+# matches what's actually running.
+derive_project_settings() {
+  local repo_path="$1"
+
+  SLUG="$(derive_slug "$repo_path")"
+
+  PORT=4096
+  PORT_OK=1
+  if port_in_use 4096; then
+    PORT_OK=0
+    PORT="$(find_free_port 4097 4196)"
+  fi
+
+  local user_layer_path
+  user_layer_path="$(get_env USER_LAYER_PATH)"
+  local compose_files
+  compose_files=(-f docker-compose.yml)
+  if [ -n "$user_layer_path" ]; then
+    mkdir -p "$user_layer_path"
+    user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
+      || die "could not resolve USER_LAYER_PATH"
+    compose_files+=(-f docker-compose.user-layer.yml)
+  fi
+
+  mkdir -p "$ENVS_DIR"
+  PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
+  {
+    cat "$ENV_FILE"
+    echo
+    echo "# --- per-project (generated by start.sh; do not edit by hand) ---"
+    echo "PROJECT_SLUG=${SLUG}"
+    echo "OPENCODE_PORT=${PORT}"
+    echo "REPO_PATH=${repo_path}"
+    [ -n "$user_layer_path" ] && echo "USER_LAYER_PATH=${user_layer_path}"
+  } > "$PROJECT_ENV"
+
+  PROJECT_NAME="opencode-${SLUG}"
+  COMPOSE=(docker compose
+    --env-file "$PROJECT_ENV"
+    -p "$PROJECT_NAME"
+    "${compose_files[@]}")
+}
+
+# --- management commands: --status / --down / --stop / --reconfigure --------
+# Like --doctor, these short-circuit the normal boot flow: no image pull, no
+# TUI attach.
+
+# cmd_status [REPO_ARG] — read-only report on running launcher stacks. Never
+# requires .env/secrets, never pulls or attaches anything.
+cmd_status() {
+  local repo_arg="${1:-}"
+
+  if [ -z "$repo_arg" ]; then
+    info "running launcher stacks:"
+    local found=0 name status_str
+    while IFS=$'\t' read -r name status_str; do
+      [ -n "$name" ] || continue
+      found=1
+      printf '  %-30s %s\n' "$name" "$status_str"
+    done < <(docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null | grep '^opencode-' || true)
+    if [ "$found" -eq 0 ]; then
+      info "no launcher stacks found (docker compose ls shows nothing matching opencode-*)"
+    fi
+    return 0
+  fi
+
+  [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
+  [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
+  local repo_path
+  repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+
+  local slug project_name port penv running
+  slug="$(derive_slug "$repo_path")"
+  project_name="opencode-${slug}"
+
+  # Re-derive the port the same way boot would, from the last-generated
+  # per-project env file if there is one (best-effort guess when down).
+  penv="${ENVS_DIR}/${slug}.env"
+  port=""
+  if [ -f "$penv" ]; then
+    port="$(sed -n 's|^OPENCODE_PORT=\(.*\)$|\1|p' "$penv" | head -n1)"
+  fi
+  [ -n "$port" ] || port=4096
+
+  running="$(docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null | awk -F'\t' -v p="$project_name" '$1==p{print $2}')"
+
+  info "project: $project_name"
+  info "repo:    $repo_path"
+  if [ -n "$running" ]; then
+    info "status:  up ($running)"
+    info "web UI:  http://localhost:${port}"
+    info "resume:  docker exec -u dev -w /workspace -it ${project_name} opencode -c"
+  else
+    info "status:  down"
+    info "resume:  ./start.sh $repo_arg"
+  fi
+}
+
+# cmd_down REPO_ARG — re-derive the same project boot would, then `compose
+# down`. Never requires .env secrets to be filled in; gracefully no-ops when
+# there's no .env at all (nothing could have been started).
+cmd_down() {
+  local repo_arg="${1:-}"
+  [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
+  [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
+  [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
+
+  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
+
+  local repo_path
+  repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+
+  if [ ! -f "$ENV_FILE" ]; then
+    info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
+    return 0
+  fi
+
+  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local COMPOSE
+  derive_project_settings "$repo_path"
+
+  info "tearing down $PROJECT_NAME ..."
+  if "${COMPOSE[@]}" down; then
+    info "$PROJECT_NAME is down."
+  else
+    warn "compose down reported an error for $PROJECT_NAME (it may not have been running)."
+  fi
+}
+
+# cmd_reconfigure — re-run the setup wizard pre-filled from the current .env.
+cmd_reconfigure() {
+  if [ ! -f "$ENV_FILE" ]; then
+    [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
+    cp "$ENV_EXAMPLE" "$ENV_FILE"
+    info "no $ENV_FILE found — created one from $ENV_EXAMPLE to reconfigure."
+  fi
+
+  info "reconfigure: press Enter on any prompt to keep the current value."
+  echo
+  run_setup_wizard --reconfigure
+  echo
+  info "wrote $ENV_FILE — changes apply on your next ./start.sh run."
+}
+
 # --- main flow --------------------------------------------------------------
 main() {
   set -euo pipefail
@@ -422,6 +700,9 @@ main() {
   local USE_PODMAN=0
   local CONTINUE=0
   local WANT_DOCTOR=0
+  local WANT_STATUS=0
+  local WANT_DOWN=0
+  local WANT_RECONFIGURE=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -431,6 +712,9 @@ main() {
       --tui)  ATTACH_TUI=1; shift ;;
       --continue|-c) CONTINUE=1; shift ;;
       --doctor) WANT_DOCTOR=1; shift ;;
+      --status) WANT_STATUS=1; shift ;;
+      --down|--stop) WANT_DOWN=1; shift ;;
+      --reconfigure) WANT_RECONFIGURE=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
@@ -450,6 +734,27 @@ main() {
   if [ "$WANT_DOCTOR" -eq 1 ]; then
     cmd_doctor "$REPO_ARG"
     exit $?
+  fi
+
+  # --reconfigure/--status/--down also short-circuit everything else: no
+  # image pull, no TUI attach. --reconfigure takes no repo path; --status's
+  # is optional; --down requires one (cmd_down itself enforces that so the
+  # error message matches the rest of the script).
+  if [ "$WANT_RECONFIGURE" -eq 1 ]; then
+    [ -z "$REPO_ARG" ] || { usage; die "--reconfigure takes no <host-repo-path> argument"; }
+    cmd_reconfigure
+    return 0
+  fi
+
+  if [ "$WANT_STATUS" -eq 1 ]; then
+    command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
+    cmd_status "$REPO_ARG"
+    return 0
+  fi
+
+  if [ "$WANT_DOWN" -eq 1 ]; then
+    cmd_down "$REPO_ARG"
+    return 0
   fi
 
   [ -n "$REPO_ARG" ] || { usage; die "missing <host-repo-path>"; }
@@ -498,52 +803,7 @@ main() {
     info "first run: created $ENV_FILE from $ENV_EXAMPLE. Let's fill in your secrets."
     echo
 
-    # LLM
-    local cur_base new_base
-    cur_base="$(get_env LLM_API_BASE)"
-    new_base="$(prompt_with_default "LLM API base URL" "$cur_base")"
-    set_env LLM_API_BASE "$new_base"
-
-    local llm_key
-    printf 'LLM API key (input hidden): '
-    read -rs llm_key || true; echo
-    set_env LLM_API_KEY "$llm_key"
-
-    # Bitbucket (optional — Enter to skip)
-    local bb_user bb_pat
-    read -r -p "Bitbucket username (optional, Enter to skip): " bb_user || true
-    set_env BITBUCKET_USER "$bb_user"
-
-    printf 'Bitbucket personal access token (optional, Enter to skip, input hidden): '
-    read -rs bb_pat || true; echo
-    set_env BITBUCKET_PAT "$bb_pat"
-
-    # Git identity (optional — Enter to skip)
-    local git_name git_email
-    read -r -p "Git user name for container commits (optional, Enter to skip): " git_name || true
-    set_env GIT_USER_NAME "$git_name"
-
-    read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
-    set_env GIT_USER_EMAIL "$git_email"
-
-    # Plugins (optional — all OFF by default). The image bakes these in; list the
-    # ones to enable, space-separated. Free-form so a newer image's plugins still
-    # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
-    local plugins
-    info "available plugins (all off by default): ${KNOWN_PLUGINS}"
-    warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
-    read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
-    set_env ENABLED_PLUGINS "$plugins"
-
-    # Image registry — pre-show default, allow Enter to accept.
-    local cur_reg new_reg
-    cur_reg="$(get_env IMAGE_REGISTRY)"
-    new_reg="$(prompt_with_default "Image registry (Artifactory path)" "$cur_reg")"
-    set_env IMAGE_REGISTRY "$new_reg"
-
-    # Auto-fill UID/GID for bind-mount permissions.
-    set_env HOST_UID "$(id -u)"
-    set_env HOST_GID "$(id -g)"
+    run_setup_wizard
 
     echo
     info "wrote $ENV_FILE — you can edit it later in your editor."

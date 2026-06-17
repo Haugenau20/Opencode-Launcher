@@ -54,6 +54,20 @@ setup() {
   [ "$output" = 'https://h/v1?a=b&c=d' ]
 }
 
+# --- mask_secret -------------------------------------------------------------
+
+@test "mask_secret: reports '(empty)' for an empty value" {
+  run mask_secret ""
+  [ "$output" = "(empty)" ]
+}
+
+@test "mask_secret: never echoes a non-empty secret value" {
+  run mask_secret "sk-super-secret-xyz"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-xyz"* ]]
+  [[ "$output" == *"press Enter to keep"* ]]
+}
+
 @test "set_env: only rewrites the anchored key, not a same-prefixed one" {
   printf 'HOST_UID=1\nHOST_GID=2\n' > "$ENV_FILE"
   set_env HOST_UID 1000
