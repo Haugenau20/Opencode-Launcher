@@ -15,7 +15,11 @@
 #                                  one "name<TAB>status" pair per line.
 #   FAKE_DOCKER_MANIFEST_RC       rc for `docker manifest inspect`    (default 0)
 #   FAKE_DOCKER_MANIFEST_STDERR   stderr emitted by manifest inspect  (default "")
-#   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach)   (default 0)
+#   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach,
+#                                  --shell's real interactive exec)  (default 0)
+#   FAKE_DOCKER_EXEC_PROBE_RC     rc for the `sh -c 'command -v bash'` probe
+#                                  --shell runs to pick bash vs sh    (default
+#                                  0 == bash is present)
 #   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
 #   FAKE_DOCKER_IMAGE_INSPECT_RC      rc for `docker image inspect`       (default 0)
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
@@ -48,6 +52,12 @@ case "$sub" in
     exit "${FAKE_DOCKER_MANIFEST_RC:-0}"
     ;;
   exec)
+    # Distinguish --shell's `sh -c 'command -v bash'` capability probe (no -it,
+    # no -u dev) from the real interactive exec, so tests can control each
+    # independently (e.g. "container running, but no bash => falls back to sh").
+    case "$*" in
+      *"sh -c"*"command -v bash"*) exit "${FAKE_DOCKER_EXEC_PROBE_RC:-0}" ;;
+    esac
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
     ;;
   image)

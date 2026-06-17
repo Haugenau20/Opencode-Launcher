@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# Fake `xdg-open` for the test suite. Records its argv (the URL it was asked
+# to open) to $FAKE_XDG_OPEN_LOG so --open tests can assert the right URL was
+# passed, without actually launching a browser. Exit code is controllable so
+# a test can simulate a flaky/failing opener without start.sh's boot failing.
+#
+# Knobs (all optional, read from the environment):
+#   FAKE_XDG_OPEN_LOG   file to append argv to (default: /dev/null)
+#   FAKE_XDG_OPEN_RC     exit code to return (default 0)
+
+: "${FAKE_XDG_OPEN_LOG:=/dev/null}"
+printf '%s\n' "$*" >> "$FAKE_XDG_OPEN_LOG"
+exit "${FAKE_XDG_OPEN_RC:-0}"

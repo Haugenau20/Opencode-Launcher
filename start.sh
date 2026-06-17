@@ -35,10 +35,12 @@ die()  { err "$*"; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--continue] [--persist] [--detach] [--podman] <host-repo-path>
+  ./start.sh [--continue] [--persist] [--detach] [--podman] [--open] <host-repo-path>
   ./start.sh --doctor [<host-repo-path>]
   ./start.sh --status [<host-repo-path>]
   ./start.sh --down|--stop <host-repo-path>
+  ./start.sh --logs <host-repo-path>
+  ./start.sh --shell <host-repo-path>
   ./start.sh --reconfigure
   ./start.sh --show-allowlist [<host-repo-path>]
   ./start.sh --help
@@ -59,6 +61,10 @@ Options:
   --podman   Add the Podman overlay (keep-id userns) for rootless Podman. This is
              auto-detected when `docker` is Podman; use the flag to force it.
   --tui      Attach the TUI (this is the default; accepted for back-compat).
+  --open     Once the web UI URL is known, open it in your default browser via
+             `xdg-open`. Works alongside --web/--persist/--detach. Non-fatal if
+             `xdg-open` isn't available (warns and continues; the URL is always
+             printed regardless).
   --doctor   Run all environment checks (Docker, compose, registry auth, .env
              keys, ports, disk space) and print one pasteable PASS/WARN/FAIL
              report, then exit — no image pull, no TUI attach. Optionally pass
@@ -73,6 +79,15 @@ Options:
   --stop     down`, re-deriving the same slug / per-project env file / compose
              invocation boot uses. Aliases: --down, --stop. Safe to run even
              if nothing is up; does not require .env secrets.
+  --logs     Tail (follow) the running stack's logs for <host-repo-path>, then
+             exit — no image pull, no TUI attach, no LLM key required. Ctrl-C
+             detaches without affecting the stack. Gracefully no-ops if
+             nothing is running for that project.
+  --shell    Drop into an interactive shell inside the running opencode
+             container for <host-repo-path>, as the `dev` user rooted at
+             /workspace (falls back to `sh` if `bash` is unavailable) — no
+             image pull, no LLM key required. Gracefully no-ops if the
+             container isn't running.
   --reconfigure
              Re-run the secrets setup wizard, pre-filled with your current
              .env values (press Enter on any prompt to keep it). Existing
@@ -171,6 +186,24 @@ find_free_port() {
     p=$((p + 1))
   done
   printf '%s' "$p"
+}
+
+# open_url URL — best-effort launch of the user's default browser on URL via
+# `xdg-open` (Linux-only project, matching --help/README scope). Resolved via
+# PATH (never a hard-coded absolute path) so tests can put a fake-bin stub
+# first on PATH; OPENER lets a caller override the binary name entirely (also
+# resolved via `command -v`, so it stays stubbable). Launched in the
+# background so it never blocks the boot flow; missing/failing opener is a
+# warning, never fatal — the URL was already printed, so the user can always
+# open it by hand.
+open_url() {
+  local url="$1" opener="${OPENER:-xdg-open}" opener_path
+  if ! opener_path="$(command -v "$opener" 2>/dev/null)"; then
+    warn "--open: '$opener' not found on PATH — open this URL yourself: $url"
+    return 0
+  fi
+  "$opener_path" "$url" >/dev/null 2>&1 &
+  info "--open: launching $opener for $url"
 }
 
 # --- system-package layer helpers -------------------------------------------
@@ -861,6 +894,88 @@ cmd_down() {
   fi
 }
 
+# project_running PROJECT_NAME — exit 0 iff `docker compose ls` reports
+# PROJECT_NAME as an existing stack. Shared by --logs/--shell so both agree
+# with --status on what "running" means. Never pulls or attaches anything.
+project_running() {
+  local project_name="$1"
+  docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null \
+    | awk -F'\t' -v p="$project_name" '$1==p{found=1} END{exit !found}'
+}
+
+# cmd_logs REPO_ARG — re-derive the same project boot would, then tail its
+# compose logs (follow). Never requires .env secrets, never pulls an image,
+# never attaches the TUI. Gracefully no-ops (not an error) when nothing is
+# running for this project.
+cmd_logs() {
+  local repo_arg="${1:-}"
+  [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
+  [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
+  [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
+
+  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
+
+  local repo_path
+  repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+
+  if [ ! -f "$ENV_FILE" ]; then
+    info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
+    return 0
+  fi
+
+  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local COMPOSE
+  derive_project_settings "$repo_path"
+
+  if ! project_running "$PROJECT_NAME"; then
+    info "$PROJECT_NAME is not running — nothing to tail. Start it with ./start.sh $repo_arg"
+    return 0
+  fi
+
+  info "tailing logs for $PROJECT_NAME (Ctrl-C detaches; the stack keeps running) ..."
+  "${COMPOSE[@]}" logs -f
+}
+
+# cmd_shell REPO_ARG — re-derive the same project boot would, then drop into
+# an interactive shell inside the running opencode container as the `dev`
+# user rooted at /workspace. Never requires .env secrets, never pulls an
+# image. Gracefully no-ops (not an error) when the container isn't running.
+cmd_shell() {
+  local repo_arg="${1:-}"
+  [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
+  [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
+  [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
+
+  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
+
+  local repo_path
+  repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+
+  if [ ! -f "$ENV_FILE" ]; then
+    info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
+    return 0
+  fi
+
+  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local COMPOSE
+  derive_project_settings "$repo_path"
+
+  if ! project_running "$PROJECT_NAME"; then
+    info "$PROJECT_NAME is not running — nothing to shell into. Start it with ./start.sh $repo_arg"
+    return 0
+  fi
+
+  info "opening a shell in $PROJECT_NAME (exit to detach; the stack keeps running) ..."
+  # Prefer bash; fall back to sh for a minimal image that lacks it. The `sh -c`
+  # probe runs inside the container, so this works regardless of what's
+  # installed on the host.
+  if docker exec "opencode-${SLUG}" sh -c 'command -v bash' >/dev/null 2>&1; then
+    exec docker exec -u dev -w /workspace -it "opencode-${SLUG}" bash
+  else
+    exec docker exec -u dev -w /workspace -it "opencode-${SLUG}" sh
+  fi
+}
+
 # cmd_reconfigure — re-run the setup wizard pre-filled from the current .env.
 cmd_reconfigure() {
   if [ ! -f "$ENV_FILE" ]; then
@@ -905,6 +1020,9 @@ main() {
   local WANT_DOWN=0
   local WANT_RECONFIGURE=0
   local WANT_SHOW_ALLOWLIST=0
+  local WANT_LOGS=0
+  local WANT_SHELL=0
+  local WANT_OPEN=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -913,11 +1031,14 @@ main() {
       --podman) USE_PODMAN=1; shift ;;
       --tui)  ATTACH_TUI=1; shift ;;
       --continue|-c) CONTINUE=1; shift ;;
+      --open) WANT_OPEN=1; shift ;;
       --doctor) WANT_DOCTOR=1; shift ;;
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
       --reconfigure) WANT_RECONFIGURE=1; shift ;;
       --show-allowlist) WANT_SHOW_ALLOWLIST=1; shift ;;
+      --logs) WANT_LOGS=1; shift ;;
+      --shell) WANT_SHELL=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
@@ -965,6 +1086,20 @@ main() {
 
   if [ "$WANT_DOWN" -eq 1 ]; then
     cmd_down "$REPO_ARG"
+    return 0
+  fi
+
+  # --logs/--shell also short-circuit everything else: no image pull, no
+  # secrets prompt, no LLM key required. Both require a <host-repo-path>
+  # (cmd_logs/cmd_shell enforce that themselves so the error message matches
+  # the rest of the script).
+  if [ "$WANT_LOGS" -eq 1 ]; then
+    cmd_logs "$REPO_ARG"
+    return 0
+  fi
+
+  if [ "$WANT_SHELL" -eq 1 ]; then
+    cmd_shell "$REPO_ARG"
     return 0
   fi
 
@@ -1186,11 +1321,13 @@ main() {
   echo
   info "project: $PROJECT_NAME"
   info "repo:    $REPO_PATH  ->  /workspace"
+  local WEB_UI_URL="http://localhost:${PORT}"
   if [ "$PORT_OK" -eq 1 ]; then
-    info "web UI:  http://localhost:${PORT}"
+    info "web UI:  ${WEB_UI_URL}"
   else
-    info "web UI:  http://localhost:${PORT}  (note: opencode web UI is hardwired to 4096 — only one project gets the browser UI at a time)"
+    info "web UI:  ${WEB_UI_URL}  (note: opencode web UI is hardwired to 4096 — only one project gets the browser UI at a time)"
   fi
+  [ "$WANT_OPEN" -eq 1 ] && open_url "$WEB_UI_URL"
   # Web-UI caveat — keep this visible on every boot. Remove once the image ships
   # an `opencode serve --cwd` (upstream anomalyco/opencode#14445, #14460) and
   # the web/desktop UI roots the agent at /workspace again.

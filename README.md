@@ -45,18 +45,24 @@ Flags that change the default attach-and-teardown behavior:
 | `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume your last session with the `opencode -c` command `start.sh` prints. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only). Also leaves the stack running. |
 | `--continue` (`-c`)   | Resume your most recent session instead of a fresh one. Maps 1:1 to opencode's own `--continue`/`-c`. |
+| `--open`              | Once the web UI URL is known, open it in your default browser via `xdg-open`. Works alongside `--web`/`--persist`/`--detach`. Never fails the boot if `xdg-open` is missing (warns and continues). |
 | `--doctor [<repo-path>]` | Run all environment checks (Docker, compose, registry auth, `.env` keys, ports, disk space) and print one pasteable PASS/WARN/FAIL report. No pull, no TUI attach. |
 | `--status [<repo-path>]` | Report on running launcher stacks. With a repo path: that project's up/down state, web UI URL, and resume command. Without one: every running `opencode-*` stack. Read-only — no secrets needed. |
 | `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
+| `--logs <repo-path>`  | Tail (follow) the running stack's logs. Ctrl-C detaches without affecting the stack. No pull, no TUI attach, no LLM key required. Graceful no-op if nothing is running. |
+| `--shell <repo-path>` | Drop into an interactive shell inside the running opencode container, as the `dev` user rooted at `/workspace` (falls back to `sh` if `bash` is unavailable). No pull, no LLM key required. Graceful no-op if the container isn't running. |
 | `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. Changes apply next run. |
 | `--show-allowlist [<repo-path>]` | Print exactly what outbound egress the agent is permitted. Read-only — no pull, no TUI attach, no LLM key required. See [Egress allowlist](#egress-allowlist) below. |
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
 ./start.sh --detach  ~/code/your-repo    # headless, never attach the TUI
+./start.sh --open    ~/code/your-repo    # also open the web UI in your browser
 ./start.sh --status                      # list every running stack
 ./start.sh --status ~/code/your-repo     # status for one project
 ./start.sh --down    ~/code/your-repo    # tear that stack down
+./start.sh --logs    ~/code/your-repo    # tail the running stack's logs
+./start.sh --shell   ~/code/your-repo    # shell into the running container
 ./start.sh --reconfigure                 # edit your secrets interactively
 ./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
@@ -227,6 +233,13 @@ Images are pulled fresh on every `./start.sh`:
 - **Forgot what's running, or what port it's on?** `./start.sh --status` lists
   every running stack; `./start.sh --status ~/code/your-repo` reports one
   project's web UI URL and resume command.
+- **Need to see what the agent/services are logging?** `./start.sh --logs
+  ~/code/your-repo` tails (follows) the stack's compose logs; Ctrl-C detaches
+  without affecting the stack.
+- **Need to poke around inside the container?** `./start.sh --shell
+  ~/code/your-repo` drops you into an interactive shell as the `dev` user
+  rooted at `/workspace` — no need to remember the raw `docker exec`
+  incantation.
 - **Changed your mind about a secret or plugin?** `./start.sh --reconfigure`
   re-runs the setup wizard pre-filled with your current `.env` values — Enter
   keeps each one.

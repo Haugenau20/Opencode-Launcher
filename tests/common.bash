@@ -22,6 +22,8 @@ make_sandbox() {
 
   export FAKE_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
   : > "$FAKE_DOCKER_LOG"
+  export FAKE_XDG_OPEN_LOG="$BATS_TEST_TMPDIR/xdg-open.log"
+  : > "$FAKE_XDG_OPEN_LOG"
   export PATH="$FAKE_BIN:$PATH"
 }
 

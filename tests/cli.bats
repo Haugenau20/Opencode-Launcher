@@ -936,6 +936,219 @@ seed_env_doctor() {
   [[ "$output" != *"sk-super-secret-value"* ]]
 }
 
+# --- --logs -------------------------------------------------------------------
+
+@test "--help mentions --logs and --shell" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--logs"* ]]
+  [[ "$output" == *"--shell"* ]]
+}
+
+@test "--logs invokes compose logs -f with the right -p when the stack is up" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --logs call below
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*-p opencode-my-service .*logs -f' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"tailing logs"* ]]
+  [[ "$output" == *"Ctrl-C detaches"* ]]
+}
+
+@test "--logs is graceful when nothing is running" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+  ! grep -qE 'logs -f' "$FAKE_DOCKER_LOG"
+}
+
+@test "--logs is graceful when no .env has ever been created" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+}
+
+@test "--logs requires a repo path" {
+  seed_env
+  run_launcher --logs
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--logs rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --logs "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--logs never pulls an image or attaches the TUI" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--logs does not require an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'logs -f' "$FAKE_DOCKER_LOG"
+}
+
+# --- --shell ------------------------------------------------------------------
+
+@test "--shell execs into the container as dev rooted at /workspace" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-u dev .*-w /workspace .*-it opencode-my-service bash$' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"opening a shell"* ]]
+}
+
+@test "--shell falls back to sh when bash is unavailable in the container" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    FAKE_DOCKER_EXEC_PROBE_RC=1 \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-u dev .*-w /workspace .*-it opencode-my-service sh$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'opencode-my-service bash$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell is graceful when the container isn't running" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell is graceful when no .env has ever been created" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+}
+
+@test "--shell requires a repo path" {
+  seed_env
+  run_launcher --shell
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--shell rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --shell "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--shell never pulls an image" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell does not require an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-it opencode-myrepo bash$' "$FAKE_DOCKER_LOG"
+}
+
+# --- --open ---------------------------------------------------------------
+
+@test "--help mentions --open" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--open"* ]]
+}
+
+@test "--open launches xdg-open with the printed web UI URL" {
+  seed_env
+  run_launcher --detach --open "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+  [[ "$output" == *"launching xdg-open"* ]]
+}
+
+@test "--open works alongside --persist/--web" {
+  seed_env
+  run_launcher --persist --open "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+}
+
+@test "without --open, xdg-open is never invoked" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_XDG_OPEN_LOG" ]
+}
+
+@test "--open warns but does not fail the boot when xdg-open is missing" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  # Run in a stripped-down PATH that has docker (sandbox copy is found via the
+  # fake-bin dir already on PATH) but no xdg-open at all. Use a temp PATH
+  # containing only FAKE_BIN's docker stub directory and core utils.
+  local stub_dir="$BATS_TEST_TMPDIR/no-xdg-open-bin"
+  mkdir -p "$stub_dir"
+  ln -sf "$FAKE_BIN/docker" "$stub_dir/docker"
+  PATH="$stub_dir:/usr/bin:/bin" run bash "$SANDBOX/start.sh" --detach --open "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found on PATH"* ]]
+  [[ "$output" == *"open this URL yourself"* ]]
+}
+
+@test "--open respects an OPENER override for the browser command" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  OPENER=xdg-open run_launcher --detach --open "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+}
+
 # --- image digest print -----------------------------------------------------
 
 @test "default boot prints the resolved image digest" {

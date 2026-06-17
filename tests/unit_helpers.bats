@@ -104,6 +104,101 @@ setup() {
   [ "$output" = "4100" ]
 }
 
+# --- project_running (docker stubbed) ---------------------------------------
+
+@test "project_running: true when compose ls lists the project name" {
+  docker() {
+    if [ "$1" = compose ] && [ "$2" = ls ]; then
+      printf '%s\n' "opencode-my-service	running(3)"
+      return 0
+    fi
+    return 1
+  }
+  run project_running "opencode-my-service"
+  [ "$status" -eq 0 ]
+}
+
+@test "project_running: false when compose ls does not list the project" {
+  docker() {
+    if [ "$1" = compose ] && [ "$2" = ls ]; then
+      printf '%s\n' "opencode-other	exited(0)"
+      return 0
+    fi
+    return 1
+  }
+  run project_running "opencode-my-service"
+  [ "$status" -ne 0 ]
+}
+
+@test "project_running: false when compose ls reports nothing" {
+  docker() {
+    if [ "$1" = compose ] && [ "$2" = ls ]; then
+      return 0
+    fi
+    return 1
+  }
+  run project_running "opencode-my-service"
+  [ "$status" -ne 0 ]
+}
+
+# --- open_url (opener stubbed via PATH) -------------------------------------
+
+# wait_for_file FILE — poll briefly for FILE to appear/be non-empty. open_url
+# launches the opener in the background by design (never blocks the boot
+# flow), so tests poll for its write instead of relying on shell job-control
+# (`wait`), which doesn't reliably see jobs backgrounded inside a `run`/
+# command-substitution subshell.
+wait_for_file() {
+  local f="$1" tries=50
+  while [ "$tries" -gt 0 ]; do
+    [ -s "$f" ] && return 0
+    tries=$((tries - 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+@test "open_url: launches the resolved opener with the URL" {
+  local bin="$BATS_TEST_TMPDIR/openbin"
+  mkdir -p "$bin"
+  cat > "$bin/xdg-open" <<'SCRIPT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OPEN_URL_LOG"
+SCRIPT
+  chmod +x "$bin/xdg-open"
+  export OPEN_URL_LOG="$BATS_TEST_TMPDIR/open.log"
+  run env PATH="$bin:$PATH" OPEN_URL_LOG="$OPEN_URL_LOG" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; open_url "http://localhost:4096"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"launching xdg-open"* ]]
+  wait_for_file "$OPEN_URL_LOG"
+  grep -q 'http://localhost:4096' "$OPEN_URL_LOG"
+}
+
+@test "open_url: warns (non-fatal) when the opener is missing" {
+  run env PATH="/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; open_url "http://localhost:4096"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found on PATH"* ]]
+  [[ "$output" == *"http://localhost:4096"* ]]
+}
+
+@test "open_url: honors an OPENER override" {
+  local bin="$BATS_TEST_TMPDIR/openbin2"
+  mkdir -p "$bin"
+  cat > "$bin/my-custom-opener" <<'SCRIPT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OPEN_URL_LOG"
+SCRIPT
+  chmod +x "$bin/my-custom-opener"
+  export OPEN_URL_LOG="$BATS_TEST_TMPDIR/open2.log"
+  run env PATH="$bin:$PATH" OPENER=my-custom-opener OPEN_URL_LOG="$OPEN_URL_LOG" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; open_url "http://localhost:4096"'
+  [ "$status" -eq 0 ]
+  wait_for_file "$OPEN_URL_LOG"
+  grep -q 'http://localhost:4096' "$OPEN_URL_LOG"
+}
+
 # --- extra_packages_active / strip_pkg_comments -----------------------------
 
 @test "extra_packages_active: false when the file is absent" {

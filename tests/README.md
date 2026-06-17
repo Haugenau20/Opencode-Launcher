@@ -21,8 +21,8 @@ The suite has two styles:
 
 | File | Style | Covers |
 | --- | --- | --- |
-| `unit_helpers.bats` | sources `start.sh`, calls helpers directly | `derive_slug`, `sed_escape`, `set_env`/`get_env` round-trips, `find_free_port`, `extra_packages_active`/`strip_pkg_comments`, `compute_base_image` (incl. digest-pinned `IMAGE_TAG`), `mask_secret`, `doctor_line`, `doctor_check_env_keys`, `doctor_check_port`, `url_host`, `list_extra_allowlist_files`, `allowlist_summary_line`, `get_image_digest`/`short_digest`, `digest_state_file`/`report_digest_update`, `env_example_keys`/`check_env_drift` |
-| `cli.bats` | runs a sandboxed copy of `start.sh` as a subprocess | arg parsing & errors, Docker preflight messages, Artifactory auth handling, slug → per-project env, IMAGE_TAG selection (incl. digest-pinned), user-layer and system-package overlay wiring, the first-run secrets flow, `--doctor` report (PASS/WARN/FAIL, exit code, secret masking), `--status` (single-project and all-stacks, incl. last-seen image digest), `--down`/`--stop` teardown, `--reconfigure` round-trip, `--show-allowlist` (LLM/Bitbucket hosts, local `extra-allowlist.d/*.conf` extensions, secret masking), boot-time allowlist summary line, image-digest print, update-nudge on digest change, `.env.example` drift warning |
+| `unit_helpers.bats` | sources `start.sh`, calls helpers directly | `derive_slug`, `sed_escape`, `set_env`/`get_env` round-trips, `find_free_port`, `project_running` (docker stubbed), `open_url` (opener stubbed via `PATH`/`OPENER`), `extra_packages_active`/`strip_pkg_comments`, `compute_base_image` (incl. digest-pinned `IMAGE_TAG`), `mask_secret`, `doctor_line`, `doctor_check_env_keys`, `doctor_check_port`, `url_host`, `list_extra_allowlist_files`, `allowlist_summary_line`, `get_image_digest`/`short_digest`, `digest_state_file`/`report_digest_update`, `env_example_keys`/`check_env_drift` |
+| `cli.bats` | runs a sandboxed copy of `start.sh` as a subprocess | arg parsing & errors, Docker preflight messages, Artifactory auth handling, slug → per-project env, IMAGE_TAG selection (incl. digest-pinned), user-layer and system-package overlay wiring, the first-run secrets flow, `--doctor` report (PASS/WARN/FAIL, exit code, secret masking), `--status` (single-project and all-stacks, incl. last-seen image digest), `--down`/`--stop` teardown, `--reconfigure` round-trip, `--show-allowlist` (LLM/Bitbucket hosts, local `extra-allowlist.d/*.conf` extensions, secret masking), boot-time allowlist summary line, image-digest print, update-nudge on digest change, `.env.example` drift warning, `--logs` (follow with the right `-p`, graceful when nothing is running), `--shell` (exec as `dev` rooted at `/workspace`, bash-then-sh fallback, graceful when not running), `--open` (launches the resolved opener with the web UI URL, warns but never fails the boot when the opener is missing) |
 
 This is the part of the system that's testable without infrastructure: the
 script's own logic. Actually pulling images and booting the stack (does the
@@ -35,7 +35,14 @@ Docker daemon — that's a manual / CI-with-registry step, out of scope here.
   `$FAKE_DOCKER_LOG` and returns a controllable exit code per subcommand
   (`info`, `compose`, `manifest`, `exec`, `image inspect`). Tests assert on the
   recorded calls and drive `start.sh` down specific branches (auth failure,
-  daemon down, a changed/unchanged image digest, …).
+  daemon down, a changed/unchanged image digest, …). `FAKE_DOCKER_EXEC_PROBE_RC`
+  controls the `--shell` bash-availability probe (`sh -c 'command -v bash'`)
+  independently of `FAKE_DOCKER_EXEC_RC`, which controls the real interactive
+  exec.
+- **`fake-bin/xdg-open`** — a stub on `PATH` that records the URL it was asked
+  to open to `$FAKE_XDG_OPEN_LOG` (exit code controllable via
+  `FAKE_XDG_OPEN_RC`), so `--open` tests can assert on the URL without
+  launching a real browser.
 - **`common.bash`** — `make_sandbox` copies the launcher into a temp dir so
   `.env`/`.envs` writes stay isolated; `seed_env`, `make_repo_arg`,
   `run_launcher` are convenience helpers.
