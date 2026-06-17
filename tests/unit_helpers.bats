@@ -6,8 +6,10 @@
 
 setup() {
   load common
-  # ENV_FILE is read at source time; point it at a per-test scratch file.
+  # ENV_FILE/ENVS_DIR are read at source time; point them at per-test scratch
+  # paths so digest-state-file writes never touch the real repo's .envs/.
   export ENV_FILE="$BATS_TEST_TMPDIR/.env"
+  export ENVS_DIR="$BATS_TEST_TMPDIR/.envs"
   source "$REPO_ROOT/start.sh"
 }
 
@@ -143,6 +145,16 @@ setup() {
   [ "$output" = "reg.test.local/opencode:0.0.2" ]
 }
 
+@test "compute_base_image: an '@sha256:...' TAG joins with '@', not ':'" {
+  run compute_base_image reg.test.local/opencode "@sha256:abcdef0123456789"
+  [ "$output" = "reg.test.local/opencode@sha256:abcdef0123456789" ]
+}
+
+@test "compute_base_image: a bare 'sha256:...' TAG also joins with '@'" {
+  run compute_base_image reg.test.local/opencode "sha256:abcdef0123456789"
+  [ "$output" = "reg.test.local/opencode@sha256:abcdef0123456789" ]
+}
+
 # --- doctor_line --------------------------------------------------------------
 
 @test "doctor_line: PASS with no detail prints just status and label" {
@@ -222,4 +234,171 @@ setup() {
   run doctor_check_port 4096 "web UI"
   [ "$status" -eq 0 ]
   [[ "$output" == *"[WARN] port 4096 free (web UI)"* ]]
+}
+
+# --- url_host -----------------------------------------------------------------
+
+@test "url_host: strips scheme and path, keeps host" {
+  run url_host "https://llm.internal.example/v1"
+  [ "$output" = "llm.internal.example" ]
+}
+
+@test "url_host: keeps a port if present" {
+  run url_host "https://llm.internal.example:8443/v1/chat"
+  [ "$output" = "llm.internal.example:8443" ]
+}
+
+@test "url_host: passes through a bare host unchanged" {
+  run url_host "llm.internal.example"
+  [ "$output" = "llm.internal.example" ]
+}
+
+# --- list_extra_allowlist_files ------------------------------------------------
+
+@test "list_extra_allowlist_files: empty when the dir is absent" {
+  run list_extra_allowlist_files "$BATS_TEST_TMPDIR/nope-dir"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "list_extra_allowlist_files: empty when the dir has no .conf files" {
+  local d="$BATS_TEST_TMPDIR/allow1"
+  mkdir -p "$d"
+  : > "$d/.gitkeep"
+  run list_extra_allowlist_files "$d"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "list_extra_allowlist_files: lists .conf files, sorted" {
+  local d="$BATS_TEST_TMPDIR/allow2"
+  mkdir -p "$d"
+  : > "$d/zzz.conf"
+  : > "$d/aaa.conf"
+  : > "$d/notconf.txt"
+  run list_extra_allowlist_files "$d"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\n%s' "$d/aaa.conf" "$d/zzz.conf")" ]
+}
+
+# --- allowlist_summary_line -----------------------------------------------------
+
+@test "allowlist_summary_line: reports the LLM host and no local extensions" {
+  printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
+  cd "$BATS_TEST_TMPDIR"
+  run allowlist_summary_line
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM(llm.test)"* ]]
+  [[ "$output" != *"local extension file"* ]]
+  [[ "$output" == *"--show-allowlist"* ]]
+}
+
+@test "allowlist_summary_line: counts local extension files" {
+  printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
+  cd "$BATS_TEST_TMPDIR"
+  mkdir -p extra-allowlist.d
+  : > extra-allowlist.d/one.conf
+  run allowlist_summary_line
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1 local extension file(s)"* ]]
+}
+
+# --- get_image_digest / short_digest --------------------------------------------
+
+@test "get_image_digest: echoes the RepoDigest docker image inspect reports" {
+  docker() {
+    if [ "$1" = image ] && [ "$2" = inspect ]; then
+      printf '%s\n' "reg.test.local/opencode@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      return 0
+    fi
+    return 1
+  }
+  run get_image_digest "reg.test.local/opencode:latest"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sha256:abcdef0123456789"* ]]
+}
+
+@test "get_image_digest: returns non-zero when docker fails" {
+  docker() { return 1; }
+  run get_image_digest "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+}
+
+@test "short_digest: trims to a 12-hex-char short form" {
+  run short_digest "reg.test.local/opencode@sha256:abcdef0123456789abcdef0123456789"
+  [ "$output" = "sha256:abcdef012345" ]
+}
+
+# --- digest_state_file / report_digest_update -----------------------------------
+
+@test "digest_state_file: path is under ENVS_DIR named by slug" {
+  run digest_state_file "my-service"
+  [ "$output" = "${ENVS_DIR}/my-service.digest" ]
+}
+
+@test "report_digest_update: first run (no prior record) is silent but writes the file" {
+  run report_digest_update "myslug" "sha256:aaaa1111"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -f "$(digest_state_file myslug)" ]
+  [ "$(cat "$(digest_state_file myslug)")" = "sha256:aaaa1111" ]
+}
+
+@test "report_digest_update: unchanged digest stays silent" {
+  report_digest_update "myslug" "sha256:aaaa1111"
+  run report_digest_update "myslug" "sha256:aaaa1111"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "report_digest_update: changed digest prints an INFO nudge" {
+  report_digest_update "myslug" "sha256:aaaa1111"
+  run report_digest_update "myslug" "sha256:bbbb2222"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [ "$(cat "$(digest_state_file myslug)")" = "sha256:bbbb2222" ]
+}
+
+@test "report_digest_update: empty digest is a no-op" {
+  run report_digest_update "myslug" ""
+  [ "$status" -eq 0 ]
+  [ ! -f "$(digest_state_file myslug)" ]
+}
+
+# --- env_example_keys / check_env_drift -----------------------------------------
+
+@test "env_example_keys: lists key names, comments and blanks ignored" {
+  local f="$BATS_TEST_TMPDIR/ex.env"
+  printf '%s\n' '# comment' '' 'FOO=bar' 'BAZ=' > "$f"
+  run env_example_keys "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'FOO\nBAZ')" ]
+}
+
+@test "check_env_drift: empty when .env has every .env.example key" {
+  local ex="$BATS_TEST_TMPDIR/ex.env" envf="$BATS_TEST_TMPDIR/real.env"
+  printf '%s\n' 'FOO=' 'BAR=' > "$ex"
+  printf '%s\n' 'FOO=1' 'BAR=2' > "$envf"
+  run check_env_drift "$ex" "$envf"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "check_env_drift: reports a key present in .env.example but missing from .env" {
+  local ex="$BATS_TEST_TMPDIR/ex.env" envf="$BATS_TEST_TMPDIR/real.env"
+  printf '%s\n' 'FOO=' 'NEWKEY=' > "$ex"
+  printf '%s\n' 'FOO=1' > "$envf"
+  run check_env_drift "$ex" "$envf"
+  [ "$status" -eq 0 ]
+  [ "$output" = "NEWKEY" ]
+}
+
+@test "check_env_drift: never prints values, only key names" {
+  local ex="$BATS_TEST_TMPDIR/ex.env" envf="$BATS_TEST_TMPDIR/real.env"
+  printf '%s\n' 'SECRET_KEY=' > "$ex"
+  printf '%s\n' > "$envf"
+  run check_env_drift "$ex" "$envf"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret"* ]]
+  [ "$output" = "SECRET_KEY" ]
 }

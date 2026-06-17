@@ -17,6 +17,10 @@
 #   FAKE_DOCKER_MANIFEST_STDERR   stderr emitted by manifest inspect  (default "")
 #   FAKE_DOCKER_EXEC_RC           rc for `docker exec` (TUI attach)   (default 0)
 #   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
+#   FAKE_DOCKER_IMAGE_INSPECT_RC      rc for `docker image inspect`       (default 0)
+#   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
+#                                      inspect --format '{{index .RepoDigests 0}}'`
+#                                      (default: a stable fake digest)
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
@@ -45,6 +49,14 @@ case "$sub" in
     ;;
   exec)
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
+    ;;
+  image)
+    if [ "${2:-}" = inspect ]; then
+      [ "${FAKE_DOCKER_IMAGE_INSPECT_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_IMAGE_INSPECT_RC}"
+      printf '%s\n' "${FAKE_DOCKER_IMAGE_DIGEST:-reg.test.local/opencode@sha256:fake0000000000000000000000000000000000000000000000000000000000}"
+      exit 0
+    fi
+    exit 0
     ;;
   --version)
     printf '%s\n' "${FAKE_DOCKER_VERSION_OUTPUT:-Docker version 99.0.0-fake}"

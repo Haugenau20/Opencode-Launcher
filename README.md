@@ -49,6 +49,7 @@ Flags that change the default attach-and-teardown behavior:
 | `--status [<repo-path>]` | Report on running launcher stacks. With a repo path: that project's up/down state, web UI URL, and resume command. Without one: every running `opencode-*` stack. Read-only — no secrets needed. |
 | `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
 | `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. Changes apply next run. |
+| `--show-allowlist [<repo-path>]` | Print exactly what outbound egress the agent is permitted. Read-only — no pull, no TUI attach, no LLM key required. See [Egress allowlist](#egress-allowlist) below. |
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
@@ -57,6 +58,7 @@ Flags that change the default attach-and-teardown behavior:
 ./start.sh --status ~/code/your-repo     # status for one project
 ./start.sh --down    ~/code/your-repo    # tear that stack down
 ./start.sh --reconfigure                 # edit your secrets interactively
+./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
 
 > `--continue` with no previous session is harmless: opencode prints a server
@@ -95,6 +97,54 @@ images ship.
 - **Only one browser UI at a time (port 4096).** The web/desktop UI hardcodes
   port **4096**. If it's taken, `start.sh` uses the next free port and warns you
   — that project still works fully via the **TUI**, just not the browser UI.
+
+## Egress allowlist
+
+The agent runs sandboxed behind a Squid proxy. The **authoritative allowlist**
+(LLM endpoint, Bitbucket, JIRA) is enforced **inside the squid image**, not in
+this repo — this launcher only knows about, and can only report on, the bits
+it itself configures:
+
+- the LLM host derived from `LLM_API_BASE` in `.env`,
+- whether Bitbucket credentials are configured (the Bitbucket/JIRA hostnames
+  themselves are baked into the squid image, not visible from here), and
+- any local extensions you've dropped into `extra-allowlist.d/*.conf` (see
+  [Extending the egress allowlist](docs/CUSTOMIZING.md#extending-the-egress-allowlist)).
+
+Run `./start.sh --show-allowlist` any time for the full, honest picture —
+read-only, no image pull, no TUI attach, no LLM key required, and it **never
+prints secret values**. Every normal boot also prints a one-line summary of
+the same information as a standing reminder; the full detail lives in
+`--show-allowlist`.
+
+```bash
+./start.sh --show-allowlist                  # full report
+./start.sh --show-allowlist ~/code/your-repo # repo path accepted for symmetry
+```
+
+## Image digest & reproducibility
+
+Images are pulled by **tag** (`IMAGE_TAG`, default `latest`), and a tag can
+move. After every boot, `start.sh` resolves and prints the actual **sha256
+digest** of the image now running (`docker image inspect ... RepoDigests`) —
+a tamper-check/reproducibility anchor that a tag alone doesn't give you.
+`./start.sh --status <repo-path>` also shows the digest last seen for that
+project. If the digest changes between runs (the moving `latest` tag pointed
+somewhere new, or someone re-pushed a pinned tag), the next boot prints a
+short `image updated: <short-digest>` nudge — silent otherwise.
+
+**To pin by digest for full reproducibility**, set `IMAGE_TAG` in `.env` to
+the digest itself (printed by the boot-time `image:` line above) instead of a
+tag name:
+
+```dotenv
+IMAGE_TAG=@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567
+```
+
+A `IMAGE_TAG` starting with `sha256:` or `@sha256:` is joined with `@` instead
+of `:`, producing Docker's own digest-reference syntax
+(`registry/image@sha256:...`). This guarantees byte-identical pulls — the
+moving-tag concern above no longer applies once pinned this way.
 
 ## Customizing the environment
 

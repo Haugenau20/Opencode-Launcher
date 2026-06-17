@@ -40,6 +40,7 @@ Usage:
   ./start.sh --status [<host-repo-path>]
   ./start.sh --down|--stop <host-repo-path>
   ./start.sh --reconfigure
+  ./start.sh --show-allowlist [<host-repo-path>]
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -77,6 +78,15 @@ Options:
              .env values (press Enter on any prompt to keep it). Existing
              secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
              any unrelated keys untouched. Changes apply on your next run.
+  --show-allowlist
+             Print exactly what outbound egress the sandboxed agent is
+             permitted, then exit — no image pull, no TUI attach, no LLM key
+             required. The authoritative allowlist (LLM endpoint, Bitbucket,
+             JIRA) is enforced inside the squid image, not this repo; this
+             shows the configured LLM/Bitbucket hosts from .env plus any local
+             extra-allowlist.d/*.conf extensions. Optionally takes a
+             <host-repo-path> (accepted for symmetry; doesn't change the
+             report). Never prints secret values.
   --help     Show this help.
 
 Which image tag is used is controlled by IMAGE_TAG in .env (defaults to
@@ -198,9 +208,190 @@ extra_pip_packages() {
 # compute_base_image REGISTRY TAG — echo the registry image start.sh runs for
 # `opencode` (REGISTRY:TAG, where TAG comes from IMAGE_TAG in .env). Used both as
 # the access-check target and as BASE_IMAGE for the package overlay's build.
+# TAG is normally a moving/pinned tag name (joined with ':', e.g. 'latest',
+# '0.0.2'). For full reproducibility TAG may instead be a digest — accepted as
+# either 'sha256:...' or '@sha256:...' — in which case it's joined with '@'
+# instead, producing Docker's own digest-reference syntax
+# (registry/image@sha256:...) rather than the invalid registry:@sha256:...
 compute_base_image() {
   local registry="$1" tag="$2"
-  printf '%s' "${registry}:${tag}"
+  case "$tag" in
+    @sha256:*) printf '%s%s' "$registry" "$tag" ;;
+    sha256:*)  printf '%s@%s' "$registry" "$tag" ;;
+    *)         printf '%s:%s' "$registry" "$tag" ;;
+  esac
+}
+
+# --- allowlist / digest / drift helpers --------------------------------------
+
+# url_host URL — echo just the host[:port] component of a URL
+# (https://llm.internal.example/v1 -> llm.internal.example). Best-effort string
+# surgery (no curl/python dependency); echoes the input unchanged if it doesn't
+# look like a URL at all.
+url_host() {
+  local url="$1" rest
+  rest="${url#*://}"
+  rest="${rest%%/*}"
+  printf '%s' "$rest"
+}
+
+# list_extra_allowlist_files [DIR] — echo each *.conf file in DIR (default
+# extra-allowlist.d), one per line, sorted. Empty/absent dir => no output.
+list_extra_allowlist_files() {
+  local dir="${1:-extra-allowlist.d}"
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | sort || true
+}
+
+# cmd_show_allowlist [REPO_PATH] — read-only report of the egress this launcher
+# knows about. Honest by construction: the AUTHORITATIVE allowlist (LLM
+# endpoint, Bitbucket, JIRA) is baked into the squid image, not this repo, so
+# this can only show the bits start.sh itself knows: the configured LLM/
+# Bitbucket hosts from .env, and any local extra-allowlist.d/*.conf drop-ins.
+# Never requires an LLM key, never pulls or attaches anything.
+cmd_show_allowlist() {
+  local repo_path="${1:-}"
+
+  echo "OpenCode Launcher egress allowlist"
+  echo "==================================="
+  info "the AUTHORITATIVE allowlist (LLM endpoint, Bitbucket, JIRA) is enforced"
+  info "inside the squid image, not in this repo — this report shows only what"
+  info "start.sh itself knows about: configured hosts + local extensions."
+  echo
+
+  if [ -f "$ENV_FILE" ]; then
+    local llm_base llm_host bb_user
+    llm_base="$(get_env LLM_API_BASE)"
+    if [ -n "$llm_base" ]; then
+      llm_host="$(url_host "$llm_base")"
+      info "LLM endpoint host: $llm_host"
+    else
+      info "LLM endpoint host: (not configured — LLM_API_BASE is empty in $ENV_FILE)"
+    fi
+
+    bb_user="$(get_env BITBUCKET_USER)"
+    if [ -n "$bb_user" ]; then
+      info "Bitbucket: credentials configured (host is baked into the squid image, not visible here)"
+    else
+      info "Bitbucket: not configured (no BITBUCKET_USER in $ENV_FILE)"
+    fi
+  else
+    warn "$ENV_FILE not found — run ./start.sh once to create it. Showing local extensions only."
+  fi
+
+  info "JIRA: allowlisted by the squid image when applicable; not configured via this repo's .env"
+  echo
+
+  local allow_dir="extra-allowlist.d"
+  [ -n "$repo_path" ] && info "(note: --show-allowlist reports the launcher's own $allow_dir; the optional repo path is accepted for symmetry with other commands but does not change this report)"
+
+  local files=() f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    files+=("$f")
+  done < <(list_extra_allowlist_files "$allow_dir")
+
+  if [ "${#files[@]}" -eq 0 ]; then
+    info "local extensions ($allow_dir/*.conf): none"
+  else
+    info "local extensions ($allow_dir/*.conf):"
+    for f in "${files[@]}"; do
+      printf '  - %s\n' "$f"
+      # Indent each non-comment, non-blank line of the conf file so the rules it
+      # adds are visible without requiring the reader to open the file. Never
+      # echoes anything from .env, so this can't leak a secret.
+      grep -vE '^[[:space:]]*(#|$)' "$f" 2>/dev/null | sed 's/^/      /' || true
+    done
+  fi
+
+  return 0
+}
+
+# allowlist_summary_line — a SHORT one-line egress summary for normal boot (the
+# full detail lives in --show-allowlist). Never prints secrets.
+allowlist_summary_line() {
+  local llm_base llm_host extra_count
+  llm_base="$(get_env LLM_API_BASE 2>/dev/null || true)"
+  llm_host="(unset)"
+  [ -n "$llm_base" ] && llm_host="$(url_host "$llm_base")"
+  extra_count="$(list_extra_allowlist_files "extra-allowlist.d" | grep -c . || true)"
+  if [ "${extra_count:-0}" -gt 0 ]; then
+    printf 'egress allowlist: LLM(%s) + Bitbucket/JIRA (baked into image) + %s local extension file(s) — see ./start.sh --show-allowlist' \
+      "$llm_host" "$extra_count"
+  else
+    printf 'egress allowlist: LLM(%s) + Bitbucket/JIRA (baked into image) — see ./start.sh --show-allowlist' \
+      "$llm_host"
+  fi
+}
+
+# get_image_digest IMAGE — echo the resolved sha256 RepoDigest of IMAGE (the
+# tag actually pulled, not just the tag name) via `docker image inspect`.
+# Echoes nothing (and returns non-zero) if it can't be determined — e.g. image
+# not present locally, or a registry without digest support — so callers must
+# treat an empty result as "unavailable", never as an error.
+get_image_digest() {
+  local image="$1" out
+  out="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# short_digest DIGEST — echo just the sha256:xxxxxxxx short form (12 hex chars)
+# of a full image reference or digest string, for compact log lines.
+short_digest() {
+  local d="$1" hash
+  hash="${d#*@sha256:}"
+  hash="${hash#sha256:}"
+  printf 'sha256:%s' "${hash:0:12}"
+}
+
+# digest_state_file SLUG — echo the path to the small per-project state file
+# that records the last-seen image digest (gitignored alongside the rest of
+# .envs/). Kept separate from the per-project env file because that file is
+# fully regenerated (cat .env + derived keys) on every boot.
+digest_state_file() {
+  printf '%s/%s.digest' "$ENVS_DIR" "$1"
+}
+
+# report_digest_update SLUG NEW_DIGEST — compare NEW_DIGEST against the
+# last-seen digest recorded for SLUG; if it changed (and a previous digest was
+# recorded), print a short INFO nudge. Always (re)writes the new digest as the
+# last-seen one. Silent when nothing changed or there's no prior record (first
+# run for this project) — non-fatal either way.
+report_digest_update() {
+  local slug="$1" new_digest="$2" state_file prev_digest
+  [ -n "$new_digest" ] || return 0
+  state_file="$(digest_state_file "$slug")"
+  mkdir -p "$ENVS_DIR"
+  prev_digest=""
+  [ -f "$state_file" ] && prev_digest="$(cat "$state_file" 2>/dev/null || true)"
+  if [ -n "$prev_digest" ] && [ "$prev_digest" != "$new_digest" ]; then
+    info "image updated: $(short_digest "$new_digest") (was $(short_digest "$prev_digest"))"
+  fi
+  printf '%s' "$new_digest" > "$state_file"
+}
+
+# env_example_keys [FILE] — echo each KEY= name found in FILE (default
+# $ENV_EXAMPLE), one per line, in file order. Comments/blanks ignored.
+env_example_keys() {
+  local f="${1:-$ENV_EXAMPLE}"
+  [ -f "$f" ] || return 0
+  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$f" | sed -E 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/'
+}
+
+# check_env_drift [EXAMPLE_FILE] [ENV_FILE] — echo any key present in
+# EXAMPLE_FILE but missing entirely from ENV_FILE (one per line). Reuses
+# get_env's exact-line matching semantics. Never prints values — keys only.
+check_env_drift() {
+  local example="${1:-$ENV_EXAMPLE}" env_f="${2:-$ENV_FILE}" key
+  [ -f "$example" ] || return 0
+  [ -f "$env_f" ] || return 0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if ! grep -qE "^${key}=" "$env_f"; then
+      printf '%s\n' "$key"
+    fi
+  done < <(env_example_keys "$example")
 }
 
 # --- doctor: diagnostic checks -----------------------------------------------
@@ -627,6 +818,16 @@ cmd_status() {
     info "status:  down"
     info "resume:  ./start.sh $repo_arg"
   fi
+
+  # Last-recorded image digest for this project (written by a previous boot's
+  # report_digest_update). Read-only — just shows what was last seen, never
+  # pulls or inspects anything live.
+  local digest_file last_digest
+  digest_file="$(digest_state_file "$slug")"
+  if [ -f "$digest_file" ]; then
+    last_digest="$(cat "$digest_file" 2>/dev/null || true)"
+    [ -n "$last_digest" ] && info "image:   $last_digest (as of last boot)"
+  fi
 }
 
 # cmd_down REPO_ARG — re-derive the same project boot would, then `compose
@@ -703,6 +904,7 @@ main() {
   local WANT_STATUS=0
   local WANT_DOWN=0
   local WANT_RECONFIGURE=0
+  local WANT_SHOW_ALLOWLIST=0
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -715,6 +917,7 @@ main() {
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
       --reconfigure) WANT_RECONFIGURE=1; shift ;;
+      --show-allowlist) WANT_SHOW_ALLOWLIST=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
@@ -733,6 +936,14 @@ main() {
   # either way.
   if [ "$WANT_DOCTOR" -eq 1 ]; then
     cmd_doctor "$REPO_ARG"
+    exit $?
+  fi
+
+  # --show-allowlist also short-circuits everything else: no image pull, no
+  # TUI attach, no LLM key required. <host-repo-path> is OPTIONAL (accepted
+  # for symmetry with --doctor/--status; it doesn't change the report).
+  if [ "$WANT_SHOW_ALLOWLIST" -eq 1 ]; then
+    cmd_show_allowlist "$REPO_ARG"
     exit $?
   fi
 
@@ -810,6 +1021,17 @@ main() {
     echo
   fi
 
+  # --- .env.example drift check ----------------------------------------------
+  # Non-fatal: new config can ship in .env.example between runs (a new optional
+  # key, etc). Tell the user what's missing from their own .env rather than
+  # silently ignoring it. Never prints values — keys only.
+  local drift_keys
+  drift_keys="$(check_env_drift "$ENV_EXAMPLE" "$ENV_FILE")"
+  if [ -n "$drift_keys" ]; then
+    warn "$ENV_EXAMPLE has new key(s) not in your $ENV_FILE: $(printf '%s' "$drift_keys" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    warn "  run ./start.sh --reconfigure, or add them to $ENV_FILE by hand."
+  fi
+
   # --- load IMAGE_REGISTRY and IMAGE_TAG from .env --------------------------
   local IMAGE_REGISTRY IMAGE_TAG
   IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY)"
@@ -823,6 +1045,9 @@ main() {
 
   IMAGE_TAG="$(get_env IMAGE_TAG)"
   [ -n "$IMAGE_TAG" ] || IMAGE_TAG="latest"
+
+  # Concise one-line egress reminder on every boot (full detail: --show-allowlist).
+  info "$(allowlist_summary_line)"
 
   # --- optional user layer (host-editable personal agents/skills/commands) --
   # When USER_LAYER_PATH is set, add the user-layer overlay so the dir is
@@ -943,6 +1168,19 @@ main() {
 
   info "starting $PROJECT_NAME ..."
   "${COMPOSE[@]}" up -d
+
+  # --- image digest (reproducibility / tamper-check anchor) ------------------
+  # Print the resolved sha256 digest of the image actually in use — the tag
+  # (e.g. `latest`) can silently move, the digest cannot. Best-effort: a
+  # registry/runtime that doesn't expose RepoDigests just means this is
+  # skipped, never a failure. Also records it so the NEXT run can report
+  # whether the image changed since last time (the update nudge below).
+  local IMAGE_DIGEST=""
+  IMAGE_DIGEST="$(get_image_digest "$CHECK_IMAGE" 2>/dev/null || true)"
+  if [ -n "$IMAGE_DIGEST" ]; then
+    info "image:   $IMAGE_DIGEST"
+    report_digest_update "$SLUG" "$IMAGE_DIGEST"
+  fi
 
   # --- 8. report ------------------------------------------------------------
   echo

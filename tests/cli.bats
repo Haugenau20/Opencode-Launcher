@@ -276,6 +276,15 @@ setup() {
   grep -q 'manifest inspect reg.test.local/opencode:0.0.2' "$FAKE_DOCKER_LOG"
 }
 
+@test "an IMAGE_TAG pinned to a digest produces a valid @sha256 reference" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789|' "$SANDBOX/.env"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'manifest inspect reg.test.local/opencode@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' "$FAKE_DOCKER_LOG"
+  ! grep -q ':@sha256:' "$FAKE_DOCKER_LOG"   # never the invalid registry:@sha256 form
+}
+
 @test "USER_LAYER_PATH adds the user-layer overlay and records the abs path" {
   seed_env
   # .env already carries an empty USER_LAYER_PATH= line; set that one (get_env
@@ -836,4 +845,190 @@ seed_env_doctor() {
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+# --- --show-allowlist -----------------------------------------------------
+
+@test "--help mentions --show-allowlist" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--show-allowlist"* ]]
+}
+
+@test "--show-allowlist reports the configured LLM host and squid-image disclaimer" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM endpoint host: llm.test"* ]]
+  [[ "$output" == *"enforced"* ]]
+  [[ "$output" == *"squid image"* ]]
+  [[ "$output" == *"local extensions"* ]]
+  [[ "$output" == *"none"* ]]
+}
+
+@test "--show-allowlist works with no repo path" {
+  seed_env
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher egress allowlist"* ]]
+}
+
+@test "--show-allowlist accepts an optional repo path" {
+  seed_env
+  run_launcher --show-allowlist "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher egress allowlist"* ]]
+}
+
+@test "--show-allowlist lists files and rules from extra-allowlist.d/*.conf" {
+  seed_env
+  mkdir -p "$SANDBOX/extra-allowlist.d"
+  printf '%s\n' '# allow internal docs' \
+    'acl allowed_sites dstdomain .docs.internal.example' \
+    'http_access allow allowed_sites' \
+    > "$SANDBOX/extra-allowlist.d/extra.conf"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"extra.conf"* ]]
+  [[ "$output" == *"docs.internal.example"* ]]
+  [[ "$output" != *"# allow internal docs"* ]]   # comment line is stripped
+}
+
+@test "--show-allowlist never pulls, attaches, or requires an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+@test "--show-allowlist never prints a configured secret value" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=bb-super-secret-pat|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=bobu|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"Bitbucket: credentials configured"* ]]
+}
+
+@test "--show-allowlist handles a missing .env gracefully" {
+  [ ! -f "$SANDBOX/.env" ]
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [[ "$output" == *"local extensions"* ]]
+}
+
+@test "default boot prints a concise one-line allowlist summary, never a secret" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$SANDBOX/.env"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"egress allowlist: LLM(llm.test)"* ]]
+  [[ "$output" == *"--show-allowlist"* ]]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+}
+
+# --- image digest print -----------------------------------------------------
+
+@test "default boot prints the resolved image digest" {
+  seed_env
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123ab" \
+    run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image:"* ]]
+  [[ "$output" == *"sha256:abc123abc123"* ]]
+}
+
+@test "boot does not fail when the image digest can't be determined" {
+  seed_env
+  FAKE_DOCKER_IMAGE_INSPECT_RC=1 run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+}
+
+@test "--status surfaces the last-recorded image digest after a boot" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:def456def456def456def456def456def456def456def456def456def456de" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image:"* ]]
+  [[ "$output" == *"sha256:def456def456"* ]]
+}
+
+# --- update nudge -----------------------------------------------------------
+
+@test "update nudge stays silent on the first boot for a project" {
+  seed_env
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:1111111111111111111111111111111111111111111111111111111111111a" \
+    run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+}
+
+@test "update nudge stays silent when the digest is unchanged across boots" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:2222222222222222222222222222222222222222222222222222222222222b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:2222222222222222222222222222222222222222222222222222222222222b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+}
+
+@test "update nudge fires when the digest changes between boots" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:3333333333333333333333333333333333333333333333333333333333333c" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:4444444444444444444444444444444444444444444444444444444444444d" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" == *"sha256:444444444444"* ]]
+  [[ "$output" == *"sha256:333333333333"* ]]
+}
+
+# --- .env.example drift check -----------------------------------------------
+
+@test "drift check is silent when .env has every .env.example key" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"new key"* ]]
+}
+
+@test "drift check warns when .env.example has a key missing from .env" {
+  seed_env
+  printf '\nNEW_FEATURE_FLAG=\n' >> "$SANDBOX/.env.example"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEW_FEATURE_FLAG"* ]]
+  [[ "$output" == *"--reconfigure"* ]]
+}
+
+@test "drift check never prints a value, only the missing key name" {
+  seed_env
+  printf '\nNEW_SECRET_FLAG=\n' >> "$SANDBOX/.env.example"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEW_SECRET_FLAG"* ]]
+  [[ "$output" != *"sk-super-secret-value"* ]]
 }
