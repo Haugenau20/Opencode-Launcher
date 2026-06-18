@@ -1165,9 +1165,10 @@ main() {
   # image layered on the pulled opencode base. apt runs at BUILD time on this
   # host (NOT through Squid), and the base drops root->dev via gosu at runtime,
   # so the packages are usable by the agent at runtime with no runtime egress or
-  # root. The overlay points opencode at a distinct local tag and overrides its
-  # build: block to use Dockerfile.user-packages; it is applied last so it wins.
-  # Empty/absent file => nothing here changes.
+  # root. The base stack is pull-only; this overlay points opencode at a distinct
+  # local tag and adds a build: block (docker/Dockerfile.user-packages) so that
+  # one service is built locally. Applied last so it wins. Empty/absent file =>
+  # nothing here changes.
   local PKG_LAYER_ACTIVE=0 OC_BASE_IMAGE=""
   if extra_packages_active "$EXTRA_PACKAGES_FILE"; then
     PKG_LAYER_ACTIVE=1

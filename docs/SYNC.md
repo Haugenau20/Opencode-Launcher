@@ -1,14 +1,23 @@
 # Keeping compose in sync with the maintainer repo
 
-This launcher's `docker-compose*.yml` are **near-duplicates** of the maintainer
+This launcher's `docker-compose*.yml` are **close relatives** of the maintainer
 repo's (OpenCode-Setup). The images, entrypoint, and the upstream fix tracking
 live there; this repo only changes *how the stack is launched and presented*.
 
-The two compose sets must stay **behaviourally in sync**. Rather than fetch a
-published/templated compose at runtime (extra network + versioning complexity
-that fights the "thin glue, `git clone` and run" goal), we keep our own copy and
-track the intentional deltas here. When you touch compose in either repo, walk
-this list and mirror the change.
+The two compose sets must stay **behaviourally in sync** for the runtime blocks
+listed below. Rather than fetch a published/templated compose at runtime (extra
+network + versioning complexity that fights the "thin glue, `git clone` and run"
+goal), we keep our own copy and track the intentional deltas here. When you touch
+compose in either repo, walk this list and mirror the runtime-relevant changes.
+
+> **The launcher stack is pull-only.** It never builds the `opencode` or `squid`
+> images — it only fetches them from the configured Artifactory and consumes
+> them. The maintainer repo's `build:` blocks (`context: .`,
+> `dockerfile: opencode/Dockerfile` / `squid/Dockerfile`, the `OPENCODE_VERSION`
+> arg) point at source trees that **do not exist in this repo**, so they were
+> removed here. **Do not re-add them when mirroring.** The single exception is the
+> launcher-only system-package layer (see below), which builds one local image
+> from a Dockerfile that *does* live here.
 
 ## Blocks that must match the maintainer repo exactly
 

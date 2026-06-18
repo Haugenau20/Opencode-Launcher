@@ -307,10 +307,11 @@ Images are pulled fresh on every `./start.sh`:
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
 - **Don't run `docker compose up`/`down` by hand.** Always go through
-  `start.sh` — it wires up the per-project env file and project name and pulls
-  the images first. (The base `docker/docker-compose.yml` carries `build:` blocks for
-  the maintainer repo, but the images are pulled, not built here; a hand-run
-  `up` that forces a build would fail.) To tear down a stack left running by
+  `start.sh` — it wires up the per-project env file and project name, points at
+  the compose files under `docker/` (with `--project-directory` so their paths
+  resolve), and pulls the images first. (The stack is pull-only: every image
+  comes from your Artifactory; nothing here is built except the opt-in
+  system-package layer.) To tear down a stack left running by
   `--persist`/`--detach`, use `./start.sh --down ~/code/your-repo` instead — it
   re-derives the same project so the right stack comes down.
 - **Forgot what's running, or what port it's on?** `./start.sh --status` lists

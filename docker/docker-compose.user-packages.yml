@@ -1,8 +1,9 @@
 # Overlay: bake the packages listed in extra-packages.txt into a thin LOCAL
 # image layered on top of the pulled opencode base. start.sh applies this only
 # when extra-packages.txt has real package lines, and last in the overlay list
-# so it wins: it overrides opencode's build: to use docker/Dockerfile.user-packages
-# and points image: at a distinct local tag. apt-get/pip run at BUILD time on the
+# so it wins. The base stack is pull-only, so this overlay adds the sole build:
+# block (docker/Dockerfile.user-packages) and points image: at a distinct local
+# tag. apt-get/pip run at BUILD time on the
 # host (not through Squid), so the packages are usable by `dev` at runtime with
 # no runtime egress or root.
 #
