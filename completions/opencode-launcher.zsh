@@ -32,6 +32,7 @@ _opencode_launcher() {
     '--logs:tail the running stack'\''s logs'
     '--shell:open an interactive shell in the running container'
     '--reconfigure:re-run the secrets setup wizard'
+    '--config:print a read-only dashboard of every .env setting'
     '--show-allowlist:print the configured outbound egress allowlist'
     '--help:show usage'
     '-h:show usage'

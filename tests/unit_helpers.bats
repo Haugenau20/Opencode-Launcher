@@ -503,3 +503,128 @@ SCRIPT
   [[ "$output" != *"super-secret"* ]]
   [ "$output" = "SECRET_KEY" ]
 }
+
+# --- editable_schema_keys ----------------------------------------------------
+
+@test "editable_schema_keys: excludes internal-typed keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"HOST_UID"* ]]
+  [[ "$output" != *"HOST_GID"* ]]
+  [[ "$output" != *"IMAGE_TAG"* ]]
+}
+
+@test "editable_schema_keys: includes bool safety switches and non-internal keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ALLOW_REMOTE_GIT"* ]]
+  [[ "$output" == *"ENABLE_SESSION_LOGS"* ]]
+  [[ "$output" == *"USER_LAYER_PATH"* ]]
+  [[ "$output" == *"LLM_API_BASE"* ]]
+  [[ "$output" == *"IMAGE_REGISTRY"* ]]
+}
+
+@test "editable_schema_keys: every line is a real config_schema key, in schema order" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  local expected
+  expected="$(config_schema | awk -F'|' '$3 != "internal" { print $2 }')"
+  [ "$output" = "$expected" ]
+}
+
+# --- cmd_config_show ----------------------------------------------------------
+
+@test "cmd_config_show: never prints a configured secret value" {
+  printf 'LLM_API_KEY=sk-super-secret-value\nBITBUCKET_PAT=bb-super-secret-pat\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"(secret, set)"* ]]
+}
+
+@test "cmd_config_show: shows [set] and the mask for a non-empty secret" {
+  printf 'LLM_API_KEY=sk-super-secret-value\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[set]"*"LLM_API_KEY"*"(secret, set)"* ]]
+}
+
+@test "cmd_config_show: shows plain url/text values in cleartext" {
+  printf 'LLM_API_BASE=https://llm.internal.example/v1\nGIT_USER_NAME=Jane Dev\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"https://llm.internal.example/v1"* ]]
+  [[ "$output" == *"Jane Dev"* ]]
+}
+
+@test "cmd_config_show: marks an unset (empty) key as unset" {
+  printf 'LLM_API_BASE=\nBITBUCKET_PAT=\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[ -- ]"*"LLM_API_BASE"*"(unset)"* ]]
+  [[ "$output" == *"[ -- ]"*"BITBUCKET_PAT"*"(unset)"* ]]
+}
+
+@test "cmd_config_show: missing .env is reported but never created" {
+  [ ! -f "$ENV_FILE" ]
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [ ! -f "$ENV_FILE" ]
+}
+
+@test "cmd_config_show: groups keys under their field_group section header" {
+  printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM"* ]]
+  [[ "$output" == *"Bitbucket"* ]]
+}
+
+# --- prompt_one_key -----------------------------------------------------------
+
+@test "prompt_one_key: required secret (LLM_API_KEY) first-run prompt text is pinned" {
+  printf 'LLM_API_KEY=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "sk-newkey\n" | { prompt_one_key LLM_API_KEY; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM API key (input hidden): "* ]]
+}
+
+@test "prompt_one_key: --reconfigure secret prompt uses the masked hint form" {
+  printf 'LLM_API_KEY=already-set\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "\n" | { prompt_one_key LLM_API_KEY --reconfigure; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"set, press Enter to keep"* ]]
+  [[ "$output" != *"already-set"* ]]
+  [ "$(get_env LLM_API_KEY)" = "already-set" ]
+}
+
+@test "prompt_one_key: bool field toggles via 0/1 and defaults to current value" {
+  printf 'ALLOW_REMOTE_GIT=1\n' > "$ENV_FILE"
+  printf '\n' | prompt_one_key ALLOW_REMOTE_GIT --reconfigure
+  [ "$(get_env ALLOW_REMOTE_GIT)" = "1" ]
+
+  printf 'ALLOW_REMOTE_GIT=1\n' > "$ENV_FILE"
+  printf '0\n' | prompt_one_key ALLOW_REMOTE_GIT --reconfigure
+  [ "$(get_env ALLOW_REMOTE_GIT)" = "0" ]
+}
+
+@test "prompt_one_key: optional Bitbucket PAT prompt text is pinned" {
+  printf 'BITBUCKET_PAT=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "\n" | { prompt_one_key BITBUCKET_PAT; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Bitbucket personal access token (optional, Enter to skip, input hidden): "* ]]
+}

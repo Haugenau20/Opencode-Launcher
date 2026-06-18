@@ -903,6 +903,86 @@ seed_env_doctor() {
   [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
 }
 
+# --- --config ----------------------------------------------------------
+
+@test "--help mentions --config" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--config"* ]]
+}
+
+@test "--config never pulls, attaches, or requires docker/an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+@test "--config works with no docker available on PATH" {
+  seed_env
+  PATH="$(dirname "$(command -v bash)")" run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configuration"* ]]
+}
+
+@test "--config masks secrets: never prints the value, shows the mask and [set]" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=bb-super-secret-pat|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"LLM_API_KEY"*"(secret, set)"* ]]
+  [[ "$output" == *"[set]"* ]]
+}
+
+@test "--config shows plain url/text values in cleartext" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.internal.example/v1|' "$SANDBOX/.env"
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Jane Dev|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"https://llm.internal.example/v1"* ]]
+  [[ "$output" == *"Jane Dev"* ]]
+}
+
+@test "--config marks unset keys as unset" {
+  seed_env
+  sed -i 's|^BITBUCKET_BASE_URL=.*|BITBUCKET_BASE_URL=|' "$SANDBOX/.env"
+  sed -i 's|^JIRA_PAT=.*|JIRA_PAT=|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BITBUCKET_BASE_URL"*"(unset)"* ]]
+  [[ "$output" == *"JIRA_PAT"*"(unset)"* ]]
+  [[ "$output" == *"[ -- ]"* ]]
+}
+
+@test "--config handles a missing .env gracefully without creating one" {
+  [ ! -f "$SANDBOX/.env" ]
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [ ! -f "$SANDBOX/.env" ]
+}
+
+@test "--config groups keys by section" {
+  seed_env
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM"* ]]
+  [[ "$output" == *"Bitbucket"* ]]
+  [[ "$output" == *"Safety"* ]]
+}
+
+@test "--config rejects a repo-path argument" {
+  seed_env
+  run_launcher --config "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--config takes no"* ]]
+}
+
 # --- --show-allowlist -----------------------------------------------------
 
 @test "--help mentions --show-allowlist" {

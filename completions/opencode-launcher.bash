@@ -23,6 +23,7 @@ _opencode_launcher_flags=(
   --logs
   --shell
   --reconfigure
+  --config
   --show-allowlist
   --help -h
 )

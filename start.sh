@@ -42,6 +42,7 @@ Usage:
   ./start.sh --logs <host-repo-path>
   ./start.sh --shell <host-repo-path>
   ./start.sh --reconfigure
+  ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
   ./start.sh --help
 
@@ -93,6 +94,15 @@ Options:
              .env values (press Enter on any prompt to keep it). Existing
              secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
              any unrelated keys untouched. Changes apply on your next run.
+             When run from a real terminal, shows a read-only dashboard plus
+             a menu so you can edit a single setting instead of walking all
+             of them (still available via the menu's "a" option). Piped
+             input (scripts, CI) always gets the full linear walk.
+  --config   Print a read-only dashboard of every .env setting, grouped by
+             section, then exit — no docker, no image pull, no LLM key
+             required. Secret values are never printed (shown as set/unset
+             only). Takes no <host-repo-path> argument. Edit values with
+             ./start.sh --reconfigure.
   --show-allowlist
              Print exactly what outbound egress the sandboxed agent is
              permitted, then exit — no image pull, no TUI attach, no LLM key
@@ -751,95 +761,136 @@ IMAGE_REGISTRY
 EOF
 }
 
+# editable_schema_keys — every config_schema key EXCEPT type "internal", in
+# schema order. This is the authoritative "editable set" for any interactive
+# per-key editor: today's menu-driven --reconfigure (cmd_reconfigure) numbers
+# exactly these keys, and any later UI (e.g. an ncurses menu) should reuse
+# this function rather than re-deriving the set, so the editable scope stays
+# in one place. HOST_UID/HOST_GID/IMAGE_TAG are "internal" and therefore
+# excluded — they stay hand-edited. This is a superset of wizard_keys(): it
+# also includes the bool safety switches, USER_LAYER_PATH and IMAGE_REGISTRY
+# (already in wizard_keys), in config_schema's group order rather than the
+# linear wizard's order.
+editable_schema_keys() {
+  config_schema | awk -F'|' '$3 != "internal" { print $2 }'
+}
+
 # --- setup wizard (first-run and --reconfigure) ------------------------------
-# run_setup_wizard [--reconfigure] — prompts for the secrets/config that
-# first-run handles, writing each answer via set_env. In default (first-run)
-# mode, secrets start blank. In --reconfigure mode every prompt is pre-filled
-# from the CURRENT .env value (Enter keeps it); secret values are shown masked
-# (never echoed) but still round-trip correctly when left untouched. Never
-# touches HOST_UID/HOST_GID (or any other key it doesn't explicitly own) when
-# reconfiguring. Both first-run and --reconfigure call this so behavior stays
-# identical between the two entry points.
+# prompt_one_key KEY [--reconfigure] — prompt for a single schema KEY and
+# write the answer via set_env. This is the per-field body extracted out of
+# run_setup_wizard so both the linear wizard loop AND the menu-driven
+# single-key editor (cmd_reconfigure's interactive menu) share one source of
+# truth for prompt wording/behavior. In default (first-run) mode, secrets
+# start blank. In --reconfigure mode the prompt is pre-filled from the CURRENT
+# .env value (Enter keeps it); secret values are shown masked (never echoed)
+# but still round-trip correctly when left untouched.
 #
-# Driven by wizard_keys()/config_schema(): each key's type selects secret vs.
-# plain-text handling, and its label/hint build the prompt text. LLM_API_BASE
-# and LLM_API_KEY are the only two required fields (no "optional" hint, no
-# Enter-to-skip wording); every other prompted field is optional. ENABLED_PLUGINS
-# gets two extra lines (the known-plugins info + Qwen incompatibility warning)
+# Driven by config_schema(): the key's type selects secret/bool/plain-text
+# handling, and its label/hint build the prompt text. LLM_API_BASE and
+# LLM_API_KEY are the only two required fields (no "optional" hint, no
+# Enter-to-skip wording); every other field is optional. ENABLED_PLUGINS gets
+# two extra lines (the known-plugins info + Qwen incompatibility warning)
 # immediately before its prompt — preserved here as a special case keyed off
-# the field name, same as the original hand-written wizard.
+# the field name, same as the original hand-written wizard. bool fields are
+# prompted as a 0/1 toggle, defaulting to the current value (or 0 if unset).
+#
+# NOTE: the exact prompt strings below are pinned by tests (cli.bats) — do not
+# reword them.
+prompt_one_key() {
+  local key="$1" reconfigure=0
+  [ "${2:-}" = "--reconfigure" ] && reconfigure=1
+
+  local type label hint required always_show_default prompt_label
+  type="$(field_type "$key")"
+  label="$(field_label "$key")"
+  hint="$(field_hint "$key")"
+  # Only the two LLM fields are required; everything else prompted is
+  # optional. required tracks that so the prompt wording matches today's.
+  case "$key" in
+    LLM_API_BASE|LLM_API_KEY) required=1 ;;
+    *) required=0 ;;
+  esac
+  # Plain URLs (and IMAGE_REGISTRY) always pre-show their current value via
+  # prompt_with_default, in both first-run and --reconfigure — they were
+  # never given the first-run "Enter to skip" plain-read treatment the other
+  # optional text/list fields get. is_secret fields have their own masked
+  # handling below regardless of this flag.
+  case "$type" in
+    url) always_show_default=1 ;;
+    *) [ "$key" = "IMAGE_REGISTRY" ] && always_show_default=1 || always_show_default=0 ;;
+  esac
+
+  prompt_label="$label"
+  [ -n "$hint" ] && prompt_label="$label ($hint)"
+
+  if [ "$key" = "ENABLED_PLUGINS" ]; then
+    info "available plugins (all off by default): ${KNOWN_PLUGINS}"
+    warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
+  fi
+
+  local cur new
+  cur="$(get_env "$key")"
+
+  if [ "$type" = "bool" ]; then
+    # 0/1 toggle, default = current value (or 0 if unset/unrecognized).
+    local cur_bool; cur_bool="$cur"
+    [ "$cur_bool" = "1" ] || cur_bool=0
+    new="$(prompt_with_default "$prompt_label (0/1)" "$cur_bool")"
+    [ "$new" = "1" ] || new=0
+  elif is_secret "$key"; then
+    if [ "$reconfigure" -eq 1 ]; then
+      printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
+    else
+      if [ "$required" -eq 1 ]; then
+        printf '%s (input hidden): ' "$prompt_label"
+      else
+        printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
+      fi
+    fi
+    read -rs new || true; echo
+    [ -n "$new" ] || new="$cur"
+  elif [ "$required" -eq 1 ] || [ "$always_show_default" -eq 1 ]; then
+    # Required fields and plain URLs/registry: always pre-shown, Enter accepts.
+    new="$(prompt_with_default "$prompt_label" "$cur")"
+  else
+    # Optional text/list fields: first run uses a plain "Enter to skip" read
+    # (no current value to show yet); --reconfigure pre-fills from .env.
+    if [ "$reconfigure" -eq 1 ]; then
+      new="$(prompt_with_default "$prompt_label" "$cur")"
+    else
+      read -r -p "${prompt_label%)}, Enter to skip): " new || true
+    fi
+  fi
+
+  set_env "$key" "$new"
+}
+
+# run_setup_wizard [--reconfigure] — prompts for the secrets/config that
+# first-run handles, looping wizard_keys() and delegating each key to
+# prompt_one_key. Never touches HOST_UID/HOST_GID (or any other key it
+# doesn't explicitly own) when reconfiguring. Both first-run and
+# --reconfigure call this so behavior stays identical between the two entry
+# points.
 run_setup_wizard() {
   local reconfigure=0
   [ "${1:-}" = "--reconfigure" ] && reconfigure=1
 
   # Read the key list into an array first (rather than piping wizard_keys
   # into a `while read` loop) so the loop body's own stdin stays free — the
-  # per-field prompts below (`read`, `read -rs`, prompt_with_default) need the
-  # real stdin (the user's terminal, or the test's fed answers), not the
-  # wizard_keys() stream.
+  # per-field prompts in prompt_one_key (`read`, `read -rs`,
+  # prompt_with_default) need the real stdin (the user's terminal, or the
+  # test's fed answers), not the wizard_keys() stream.
   local keys=() key
   while IFS= read -r key; do
     [ -n "$key" ] && keys+=("$key")
   done < <(wizard_keys)
 
   for key in "${keys[@]}"; do
-    local type label hint required always_show_default prompt_label
-    type="$(field_type "$key")"
-    label="$(field_label "$key")"
-    hint="$(field_hint "$key")"
-    # Only the two LLM fields are required; everything else prompted is
-    # optional. required tracks that so the prompt wording matches today's.
-    case "$key" in
-      LLM_API_BASE|LLM_API_KEY) required=1 ;;
-      *) required=0 ;;
-    esac
-    # Plain URLs (and IMAGE_REGISTRY) always pre-show their current value via
-    # prompt_with_default, in both first-run and --reconfigure — they were
-    # never given the first-run "Enter to skip" plain-read treatment the other
-    # optional text/list fields get. is_secret fields have their own masked
-    # handling below regardless of this flag.
-    case "$type" in
-      url) always_show_default=1 ;;
-      *) [ "$key" = "IMAGE_REGISTRY" ] && always_show_default=1 || always_show_default=0 ;;
-    esac
-
-    prompt_label="$label"
-    [ -n "$hint" ] && prompt_label="$label ($hint)"
-
-    if [ "$key" = "ENABLED_PLUGINS" ]; then
-      info "available plugins (all off by default): ${KNOWN_PLUGINS}"
-      warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
-    fi
-
-    local cur new
-    cur="$(get_env "$key")"
-
-    if is_secret "$key"; then
-      if [ "$reconfigure" -eq 1 ]; then
-        printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
-      else
-        if [ "$required" -eq 1 ]; then
-          printf '%s (input hidden): ' "$prompt_label"
-        else
-          printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
-        fi
-      fi
-      read -rs new || true; echo
-      [ -n "$new" ] || new="$cur"
-    elif [ "$required" -eq 1 ] || [ "$always_show_default" -eq 1 ]; then
-      # Required fields and plain URLs/registry: always pre-shown, Enter accepts.
-      new="$(prompt_with_default "$prompt_label" "$cur")"
+    if [ "$reconfigure" -eq 1 ]; then
+      prompt_one_key "$key" --reconfigure
     else
-      # Optional text/list fields: first run uses a plain "Enter to skip" read
-      # (no current value to show yet); --reconfigure pre-fills from .env.
-      if [ "$reconfigure" -eq 1 ]; then
-        new="$(prompt_with_default "$prompt_label" "$cur")"
-      else
-        read -r -p "${prompt_label%)}, Enter to skip): " new || true
-      fi
+      prompt_one_key "$key"
     fi
-
-    set_env "$key" "$new"
   done
 
   if [ "$reconfigure" -eq 0 ]; then
@@ -1078,7 +1129,70 @@ cmd_shell() {
   fi
 }
 
-# cmd_reconfigure — re-run the setup wizard pre-filled from the current .env.
+# cmd_config_show — read-only dashboard: every config_schema key, grouped by
+# field_group in schema order, with a [set]/[ -- ] marker and its current
+# value. secret-typed keys (is_secret) NEVER print their value — only a fixed
+# mask plus "(secret, set)"/the unset marker — so this is always safe to
+# paste into a chat or ticket. Pure read: never creates or modifies
+# $ENV_FILE, even when it doesn't exist yet.
+cmd_config_show() {
+  info "Configuration ($ENV_FILE)"
+
+  if [ ! -f "$ENV_FILE" ]; then
+    echo
+    info "$ENV_FILE not found — nothing is configured yet."
+    info "run ./start.sh <host-repo-path> (first run) or ./start.sh --reconfigure to create it."
+  fi
+
+  local keys=() key
+  while IFS= read -r key; do
+    [ -n "$key" ] && keys+=("$key")
+  done < <(config_schema | awk -F'|' '{ print $2 }')
+
+  local last_group="" group value marker shown
+  for key in "${keys[@]}"; do
+    group="$(field_group "$key")"
+    if [ "$group" != "$last_group" ]; then
+      echo
+      printf '  %s\n' "$group"
+      last_group="$group"
+    fi
+
+    value=""
+    [ -f "$ENV_FILE" ] && value="$(get_env "$key")"
+
+    if is_secret "$key"; then
+      if [ -n "$value" ]; then
+        marker="[set]"
+        shown="••••••  (secret, set)"
+      else
+        marker="[ -- ]"
+        shown="(unset)"
+      fi
+    else
+      if [ -n "$value" ]; then
+        marker="[set]"
+        shown="$value"
+      else
+        marker="[ -- ]"
+        shown="(unset)"
+      fi
+    fi
+
+    printf '    %-6s %-24s %s\n' "$marker" "$key" "$shown"
+  done
+  echo
+  return 0
+}
+
+# cmd_reconfigure — re-run the secrets setup. When stdin/stdout are a real
+# terminal, shows a read-only dashboard (cmd_config_show) followed by a small
+# menu so the user can edit ONE key instead of being forced through the full
+# linear wizard; "a" still runs the complete linear walk. When NOT a tty
+# (piped input — tests, CI, scripted use), falls through unchanged to the
+# linear run_setup_wizard --reconfigure walk, exactly as before this menu was
+# added. This is the TTY gate a later ncurses-based editor should hook into:
+# check it first, and only replace the body of the `if` branch below.
 cmd_reconfigure() {
   if [ ! -f "$ENV_FILE" ]; then
     [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
@@ -1086,9 +1200,49 @@ cmd_reconfigure() {
     info "no $ENV_FILE found — created one from $ENV_EXAMPLE to reconfigure."
   fi
 
-  info "reconfigure: press Enter on any prompt to keep the current value."
-  echo
-  run_setup_wizard --reconfigure
+  if [ -t 0 ] && [ -t 1 ]; then
+    # Interactive: dashboard + menu. Editable set = editable_schema_keys()
+    # (every non-"internal" schema key); HOST_UID/HOST_GID/IMAGE_TAG are
+    # "internal" and stay out of the menu (hand-edited only).
+    local keys=() key
+    while IFS= read -r key; do
+      [ -n "$key" ] && keys+=("$key")
+    done < <(editable_schema_keys)
+
+    while true; do
+      cmd_config_show
+      local i=1
+      for key in "${keys[@]}"; do
+        printf '  %2d) %s\n' "$i" "$key"
+        i=$((i + 1))
+      done
+      echo
+      local choice
+      read -r -p 'Edit which setting? [number to edit, "a" = walk all, Enter/"q" = done]: ' choice || true
+      case "$choice" in
+        ''|q|Q) break ;;
+        a|A)
+          echo
+          run_setup_wizard --reconfigure
+          ;;
+        *)
+          if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#keys[@]}" ]; then
+            local sel_key="${keys[$((choice - 1))]}"
+            echo
+            prompt_one_key "$sel_key" --reconfigure
+          else
+            warn "not a valid choice: $choice"
+          fi
+          ;;
+      esac
+    done
+  else
+    # Non-interactive (piped input, CI, tests): unchanged linear walk.
+    info "reconfigure: press Enter on any prompt to keep the current value."
+    echo
+    run_setup_wizard --reconfigure
+  fi
+
   echo
   info "wrote $ENV_FILE — changes apply on your next ./start.sh run."
 }
@@ -1121,6 +1275,7 @@ main() {
   local WANT_STATUS=0
   local WANT_DOWN=0
   local WANT_RECONFIGURE=0
+  local WANT_CONFIG=0
   local WANT_SHOW_ALLOWLIST=0
   local WANT_LOGS=0
   local WANT_SHELL=0
@@ -1138,6 +1293,7 @@ main() {
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
       --reconfigure) WANT_RECONFIGURE=1; shift ;;
+      --config) WANT_CONFIG=1; shift ;;
       --show-allowlist) WANT_SHOW_ALLOWLIST=1; shift ;;
       --logs) WANT_LOGS=1; shift ;;
       --shell) WANT_SHELL=1; shift ;;
@@ -1177,6 +1333,15 @@ main() {
   if [ "$WANT_RECONFIGURE" -eq 1 ]; then
     [ -z "$REPO_ARG" ] || { usage; die "--reconfigure takes no <host-repo-path> argument"; }
     cmd_reconfigure
+    return 0
+  fi
+
+  # --config also short-circuits everything else: no docker, no image pull,
+  # no LLM key required, pure read of $ENV_FILE. Takes no <host-repo-path>
+  # argument, mirroring --reconfigure.
+  if [ "$WANT_CONFIG" -eq 1 ]; then
+    [ -z "$REPO_ARG" ] || { usage; die "--config takes no <host-repo-path> argument"; }
+    cmd_config_show
     return 0
   fi
 
