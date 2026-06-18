@@ -405,15 +405,22 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]   # precondition: no .env yet
   local repo; repo="$(make_repo_arg)"
 
-  # 8 prompts in order: LLM base, LLM key, BB user, BB PAT, git name, git email,
-  # plugins, image registry. Feed a key with sed-special chars to exercise
-  # sed_escape and a space-bearing plugin list. Feed via a redirect (not a pipe):
-  # `printf | run` would run `run` in a subshell, losing $status.
+  # 14 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
+  # Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab PAT, git name,
+  # git email, plugins, image registry. Feed a key with sed-special chars to
+  # exercise sed_escape and a space-bearing plugin list. Feed via a redirect
+  # (not a pipe): `printf | run` would run `run` in a subshell, losing $status.
   printf '%s\n' \
     'https://llm.test/v1' \
     'sk-a&b|c' \
+    'http://bb.test' \
     'bobu' \
     'bbpat' \
+    'https://jira.test' \
+    'jirapat' \
+    'https://gitlab.test' \
+    'glu' \
+    'glpat' \
     'Bob Builder' \
     'bob@test.dev' \
     'superpowers dcp' \
@@ -425,7 +432,13 @@ setup() {
   [ -f "$SANDBOX/.env" ]
   grep -q '^LLM_API_BASE=https://llm.test/v1$' "$SANDBOX/.env"
   grep -q '^LLM_API_KEY=sk-a&b|c$' "$SANDBOX/.env"       # sed_escape round-trip
+  grep -q '^BITBUCKET_BASE_URL=http://bb.test$' "$SANDBOX/.env"
   grep -q '^BITBUCKET_USER=bobu$' "$SANDBOX/.env"
+  grep -q '^JIRA_BASE_URL=https://jira.test$' "$SANDBOX/.env"
+  grep -q '^JIRA_PAT=jirapat$' "$SANDBOX/.env"
+  grep -q '^GITLAB_BASE_URL=https://gitlab.test$' "$SANDBOX/.env"
+  grep -q '^GITLAB_USER=glu$' "$SANDBOX/.env"
+  grep -q '^GITLAB_PAT=glpat$' "$SANDBOX/.env"
   grep -q '^GIT_USER_NAME=Bob Builder$' "$SANDBOX/.env"
   grep -q '^ENABLED_PLUGINS=superpowers dcp$' "$SANDBOX/.env"  # opt-in, space kept
   grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
@@ -435,15 +448,46 @@ setup() {
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
-  # Same 8 prompts, but press Enter past the plugins one (empty line).
+  # Same 14 prompts, but press Enter past the plugins one (empty line).
   printf '%s\n' \
-    'https://llm.test/v1' 'sk-key' 'bobu' 'bbpat' 'Bob Builder' 'bob@test.dev' \
+    'https://llm.test/v1' 'sk-key' \
+    'http://bb.test' 'bobu' 'bbpat' \
+    'https://jira.test' 'jirapat' \
+    'https://gitlab.test' 'glu' 'glpat' \
+    'Bob Builder' 'bob@test.dev' \
     '' \
     'reg.test.local/opencode' \
     > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   grep -q '^ENABLED_PLUGINS=$' "$SANDBOX/.env"
+}
+
+@test "first run: skipping the integration prompts leaves them blank" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  # Provide the required LLM base + registry; press Enter past every optional
+  # integration prompt (Bitbucket/Jira/GitLab base URLs, users, PATs).
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-key' \
+    '' '' '' \
+    '' '' \
+    '' '' '' \
+    '' '' \
+    '' \
+    'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  # Each optional integration key exists in the template (so set_env can target
+  # it) but stays empty when skipped.
+  grep -q '^BITBUCKET_BASE_URL=$' "$SANDBOX/.env"
+  grep -q '^BITBUCKET_USER=$' "$SANDBOX/.env"
+  grep -q '^JIRA_BASE_URL=$' "$SANDBOX/.env"
+  grep -q '^JIRA_PAT=$' "$SANDBOX/.env"
+  grep -q '^GITLAB_BASE_URL=$' "$SANDBOX/.env"
+  grep -q '^GITLAB_USER=$' "$SANDBOX/.env"
+  grep -q '^GITLAB_PAT=$' "$SANDBOX/.env"
 }
 
 @test "placeholder IMAGE_REGISTRY triggers a warning" {
@@ -749,10 +793,17 @@ seed_env_doctor() {
   sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
   sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
 
-  # 8 prompts in order: LLM base (keep), LLM key (keep/empty), BB user (keep),
-  # BB PAT (keep/empty), git name (CHANGE), git email (keep), plugins (keep),
-  # registry (keep).
+  # 14 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
+  # BB user (keep), BB PAT (keep/empty), Jira base (keep), Jira PAT (keep),
+  # GitLab base (keep), GitLab user (keep), GitLab PAT (keep), git name (CHANGE),
+  # git email (keep), plugins (keep), registry (keep).
   printf '%s\n' \
+    '' \
+    '' \
+    '' \
+    '' \
+    '' \
+    '' \
     '' \
     '' \
     '' \
@@ -776,7 +827,7 @@ seed_env_doctor() {
   sed -i 's|^HOST_UID=.*|HOST_UID=42|' "$SANDBOX/.env"
   sed -i 's|^HOST_GID=.*|HOST_GID=43|' "$SANDBOX/.env"
 
-  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
 
   [ "$status" -eq 0 ]
@@ -789,7 +840,7 @@ seed_env_doctor() {
   sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
   sed -i 's|^ENABLE_SESSION_LOGS=.*|ENABLE_SESSION_LOGS=0|' "$SANDBOX/.env"
 
-  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
 
   [ "$status" -eq 0 ]
@@ -801,7 +852,7 @@ seed_env_doctor() {
   seed_env
   sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=super-secret-value|' "$SANDBOX/.env"
 
-  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
 
   [ "$status" -eq 0 ]
@@ -813,7 +864,10 @@ seed_env_doctor() {
 @test "--reconfigure creates .env from the template when none exists yet" {
   [ ! -f "$SANDBOX/.env" ]
   printf '%s\n' \
-    'https://llm.test/v1' 'sk-newkey' 'newuser' 'newpat' \
+    'https://llm.test/v1' 'sk-newkey' \
+    'http://bb.test' 'newuser' 'newpat' \
+    'https://jira.test' 'jirapat' \
+    'https://gitlab.test' 'glu' 'glpat' \
     'New Person' 'new@test.dev' 'superpowers' 'reg.test.local/opencode' \
     > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
@@ -822,6 +876,8 @@ seed_env_doctor() {
   [ -f "$SANDBOX/.env" ]
   grep -q '^LLM_API_KEY=sk-newkey$' "$SANDBOX/.env"
   grep -q '^GIT_USER_NAME=New Person$' "$SANDBOX/.env"
+  grep -q '^JIRA_BASE_URL=https://jira.test$' "$SANDBOX/.env"
+  grep -q '^GITLAB_PAT=glpat$' "$SANDBOX/.env"
 }
 
 @test "--reconfigure rejects a repo-path argument" {
@@ -833,7 +889,7 @@ seed_env_doctor() {
 
 @test "--reconfigure notes that changes apply on the next run" {
   seed_env
-  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [[ "$output" == *"next"* ]]
@@ -841,7 +897,7 @@ seed_env_doctor() {
 
 @test "--reconfigure never pulls images or attaches the TUI" {
   seed_env
-  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
@@ -915,6 +971,29 @@ seed_env_doctor() {
   [[ "$output" != *"sk-super-secret-value"* ]]
   [[ "$output" != *"bb-super-secret-pat"* ]]
   [[ "$output" == *"Bitbucket: credentials configured"* ]]
+}
+
+@test "--show-allowlist reports Jira and GitLab when configured, never their secrets" {
+  seed_env
+  sed -i 's|^JIRA_BASE_URL=.*|JIRA_BASE_URL=https://jira.test|' "$SANDBOX/.env"
+  sed -i 's|^JIRA_PAT=.*|JIRA_PAT=jira-super-secret-pat|' "$SANDBOX/.env"
+  sed -i 's|^GITLAB_BASE_URL=.*|GITLAB_BASE_URL=https://gitlab.test|' "$SANDBOX/.env"
+  sed -i 's|^GITLAB_USER=.*|GITLAB_USER=glu|' "$SANDBOX/.env"
+  sed -i 's|^GITLAB_PAT=.*|GITLAB_PAT=gl-super-secret-pat|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Jira: credentials configured"* ]]
+  [[ "$output" == *"GitLab: credentials configured"* ]]
+  [[ "$output" != *"jira-super-secret-pat"* ]]
+  [[ "$output" != *"gl-super-secret-pat"* ]]
+}
+
+@test "--show-allowlist reports Jira and GitLab as not configured when absent" {
+  seed_env
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Jira: not configured"* ]]
+  [[ "$output" == *"GitLab: not configured"* ]]
 }
 
 @test "--show-allowlist handles a missing .env gracefully" {

@@ -97,8 +97,8 @@ Options:
              Print exactly what outbound egress the sandboxed agent is
              permitted, then exit — no image pull, no TUI attach, no LLM key
              required. The authoritative allowlist (LLM endpoint, Bitbucket,
-             JIRA) is enforced inside the squid image, not this repo; this
-             shows the configured LLM/Bitbucket hosts from .env plus any local
+             Jira, GitLab) is enforced inside the squid image, not this repo;
+             this shows the configured LLM/Bitbucket hosts from .env plus any local
              extra-allowlist.d/*.conf extensions. Optionally takes a
              <host-repo-path> (accepted for symmetry; doesn't change the
              report). Never prints secret values.
@@ -278,22 +278,22 @@ list_extra_allowlist_files() {
 
 # cmd_show_allowlist [REPO_PATH] — read-only report of the egress this launcher
 # knows about. Honest by construction: the AUTHORITATIVE allowlist (LLM
-# endpoint, Bitbucket, JIRA) is baked into the squid image, not this repo, so
+# endpoint, Bitbucket, Jira, GitLab) is baked into the squid image, not this repo, so
 # this can only show the bits start.sh itself knows: the configured LLM/
-# Bitbucket hosts from .env, and any local extra-allowlist.d/*.conf drop-ins.
-# Never requires an LLM key, never pulls or attaches anything.
+# Bitbucket/Jira/GitLab hosts from .env, and any local extra-allowlist.d/*.conf
+# drop-ins. Never requires an LLM key, never pulls or attaches anything.
 cmd_show_allowlist() {
   local repo_path="${1:-}"
 
   echo "OpenCode Launcher egress allowlist"
   echo "==================================="
-  info "the AUTHORITATIVE allowlist (LLM endpoint, Bitbucket, JIRA) is enforced"
+  info "the AUTHORITATIVE allowlist (LLM endpoint, Bitbucket, Jira, GitLab) is enforced"
   info "inside the squid image, not in this repo — this report shows only what"
   info "start.sh itself knows about: configured hosts + local extensions."
   echo
 
   if [ -f "$ENV_FILE" ]; then
-    local llm_base llm_host bb_user
+    local llm_base llm_host bb_user jira_base gl_user
     llm_base="$(get_env LLM_API_BASE)"
     if [ -n "$llm_base" ]; then
       llm_host="$(url_host "$llm_base")"
@@ -308,11 +308,23 @@ cmd_show_allowlist() {
     else
       info "Bitbucket: not configured (no BITBUCKET_USER in $ENV_FILE)"
     fi
+
+    jira_base="$(get_env JIRA_BASE_URL)"
+    if [ -n "$jira_base" ]; then
+      info "Jira: credentials configured (host is baked into the squid image, not visible here)"
+    else
+      info "Jira: not configured (no JIRA_BASE_URL in $ENV_FILE)"
+    fi
+
+    gl_user="$(get_env GITLAB_USER)"
+    if [ -n "$gl_user" ]; then
+      info "GitLab: credentials configured (host is baked into the squid image, not visible here)"
+    else
+      info "GitLab: not configured (no GITLAB_USER in $ENV_FILE)"
+    fi
   else
     warn "$ENV_FILE not found — run ./start.sh once to create it. Showing local extensions only."
   fi
-
-  info "JIRA: allowlisted by the squid image when applicable; not configured via this repo's .env"
   echo
 
   local allow_dir="extra-allowlist.d"
@@ -349,10 +361,10 @@ allowlist_summary_line() {
   [ -n "$llm_base" ] && llm_host="$(url_host "$llm_base")"
   extra_count="$(list_extra_allowlist_files "extra-allowlist.d" | grep -c . || true)"
   if [ "${extra_count:-0}" -gt 0 ]; then
-    printf 'egress allowlist: LLM(%s) + Bitbucket/JIRA (baked into image) + %s local extension file(s) — see ./start.sh --show-allowlist' \
+    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab (baked into image) + %s local extension file(s) — see ./start.sh --show-allowlist' \
       "$llm_host" "$extra_count"
   else
-    printf 'egress allowlist: LLM(%s) + Bitbucket/JIRA (baked into image) — see ./start.sh --show-allowlist' \
+    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab (baked into image) — see ./start.sh --show-allowlist' \
       "$llm_host"
   fi
 }
@@ -528,7 +540,7 @@ doctor_check_env_file() {
 doctor_check_env_keys() {
   local rc=0
   local required=(LLM_API_BASE LLM_API_KEY IMAGE_REGISTRY)
-  local optional=(BITBUCKET_USER BITBUCKET_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
+  local optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
   local key val
 
   if [ ! -f "$ENV_FILE" ]; then
@@ -680,7 +692,14 @@ run_setup_wizard() {
   [ -n "$llm_key" ] || llm_key="$cur_key"
   set_env LLM_API_KEY "$llm_key"
 
-  # Bitbucket (optional — Enter to skip/keep)
+  # Bitbucket (optional — Enter to skip/keep). The base URL is a plain URL (not
+  # a secret), so it uses prompt_with_default like LLM_API_BASE. NOTE: the
+  # internal instance speaks plain HTTP — use http://, not https://.
+  local cur_bb_base bb_base
+  cur_bb_base="$(get_env BITBUCKET_BASE_URL)"
+  bb_base="$(prompt_with_default "Bitbucket base URL (optional; plain http:// on the internal instance)" "$cur_bb_base")"
+  set_env BITBUCKET_BASE_URL "$bb_base"
+
   local cur_bb_user bb_user
   cur_bb_user="$(get_env BITBUCKET_USER)"
   if [ "$reconfigure" -eq 1 ]; then
@@ -700,6 +719,52 @@ run_setup_wizard() {
   read -rs bb_pat || true; echo
   [ -n "$bb_pat" ] || bb_pat="$cur_bb_pat"
   set_env BITBUCKET_PAT "$bb_pat"
+
+  # Jira (optional — Enter to skip/keep). REST API only; the PAT authenticates
+  # as a Bearer token, so there is no username to collect.
+  local cur_jira_base jira_base
+  cur_jira_base="$(get_env JIRA_BASE_URL)"
+  jira_base="$(prompt_with_default "Jira base URL (optional)" "$cur_jira_base")"
+  set_env JIRA_BASE_URL "$jira_base"
+
+  local cur_jira_pat jira_pat
+  cur_jira_pat="$(get_env JIRA_PAT)"
+  if [ "$reconfigure" -eq 1 ]; then
+    printf 'Jira personal access token %s (input hidden): ' "$(mask_secret "$cur_jira_pat")"
+  else
+    printf 'Jira personal access token (optional, Enter to skip, input hidden): '
+  fi
+  read -rs jira_pat || true; echo
+  [ -n "$jira_pat" ] || jira_pat="$cur_jira_pat"
+  set_env JIRA_PAT "$jira_pat"
+
+  # GitLab (optional — Enter to skip/keep). git transport + REST API; the base
+  # URL is REQUIRED for the GitLab MCP to start. One PAT covers both git and the
+  # REST API (sent via the PRIVATE-TOKEN header).
+  local cur_gl_base gl_base
+  cur_gl_base="$(get_env GITLAB_BASE_URL)"
+  gl_base="$(prompt_with_default "GitLab base URL (optional; https://, required if you use GitLab)" "$cur_gl_base")"
+  set_env GITLAB_BASE_URL "$gl_base"
+
+  local cur_gl_user gl_user
+  cur_gl_user="$(get_env GITLAB_USER)"
+  if [ "$reconfigure" -eq 1 ]; then
+    gl_user="$(prompt_with_default "GitLab username (optional)" "$cur_gl_user")"
+  else
+    read -r -p "GitLab username (optional, Enter to skip): " gl_user || true
+  fi
+  set_env GITLAB_USER "$gl_user"
+
+  local cur_gl_pat gl_pat
+  cur_gl_pat="$(get_env GITLAB_PAT)"
+  if [ "$reconfigure" -eq 1 ]; then
+    printf 'GitLab personal access token %s (input hidden): ' "$(mask_secret "$cur_gl_pat")"
+  else
+    printf 'GitLab personal access token (optional, Enter to skip, input hidden): '
+  fi
+  read -rs gl_pat || true; echo
+  [ -n "$gl_pat" ] || gl_pat="$cur_gl_pat"
+  set_env GITLAB_PAT "$gl_pat"
 
   # Git identity (optional — Enter to skip/keep)
   local cur_git_name git_name
