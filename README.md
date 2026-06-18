@@ -94,7 +94,7 @@ Flags that change the default attach-and-teardown behavior:
 | `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
 | `--logs <repo-path>`  | Tail (follow) the running stack's logs. Ctrl-C detaches without affecting the stack. No pull, no TUI attach, no LLM key required. Graceful no-op if nothing is running. |
 | `--shell <repo-path>` | Drop into an interactive shell inside the running opencode container, as the `dev` user rooted at `/workspace` (falls back to `sh` if `bash` is unavailable). No pull, no LLM key required. Graceful no-op if the container isn't running. |
-| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. From a real terminal this shows a dashboard + menu so you can edit a single setting; piped input (scripts/CI) gets the full linear walk. Changes apply next run. |
+| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. From a real terminal with `whiptail` or `dialog` installed, shows a small ncurses menu editor; from a real terminal without either, shows a dashboard + plain-text menu instead; piped input (scripts/CI) gets the full linear walk. Set `OC_CONFIG_TUI=0` to force the plain-text path even when whiptail/dialog is installed. Changes apply next run. |
 | `--config`            | Print a read-only dashboard of every `.env` setting, grouped by section, then exit. No docker, no pull, no LLM key required. Secret values are never printed (set/unset only). Takes no repo path. |
 | `--show-allowlist [<repo-path>]` | Print exactly what outbound egress the agent is permitted. Read-only — no pull, no TUI attach, no LLM key required. See [Egress allowlist](#egress-allowlist) below. |
 
@@ -296,5 +296,7 @@ Images are pulled fresh on every `./start.sh`:
   incantation.
 - **Changed your mind about a secret or plugin?** `./start.sh --reconfigure`
   re-runs the setup wizard pre-filled with your current `.env` values — Enter
-  keeps each one.
+  keeps each one. If `whiptail` or `dialog` is installed and you're at a real
+  terminal, this opens a small ncurses menu instead of the plain-text
+  prompts; set `OC_CONFIG_TUI=0` to opt back into the plain-text flow.
 - **Linux only** — matches the parent system's supported scope.

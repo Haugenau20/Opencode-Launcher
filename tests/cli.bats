@@ -903,6 +903,31 @@ seed_env_doctor() {
   [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
 }
 
+@test "--reconfigure: piped input still runs the linear walk even with whiptail on PATH" {
+  # make_sandbox already puts tests/fake-bin (which includes a fake whiptail)
+  # first on PATH. This proves the ncurses editor (Layer 2) never hijacks a
+  # piped/CI --reconfigure run: have_tui requires a real tty, and bats's
+  # stdin here is a redirected file, not a tty, so the linear wizard (pinned
+  # intro line + per-field round-trip) must still run, exactly as it did
+  # before whiptail existed on PATH.
+  seed_env
+  command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
+  grep -q '^GIT_USER_NAME=New Name$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure: OC_CONFIG_TUI=0 escape hatch still works from a piped run" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  OC_CONFIG_TUI=0 run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
+}
+
 # --- --config ----------------------------------------------------------
 
 @test "--help mentions --config" {

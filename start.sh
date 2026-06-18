@@ -94,10 +94,14 @@ Options:
              .env values (press Enter on any prompt to keep it). Existing
              secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
              any unrelated keys untouched. Changes apply on your next run.
-             When run from a real terminal, shows a read-only dashboard plus
-             a menu so you can edit a single setting instead of walking all
-             of them (still available via the menu's "a" option). Piped
-             input (scripts, CI) always gets the full linear walk.
+             When run from a real terminal AND whiptail or dialog is
+             installed, shows a small ncurses menu editor. From a real
+             terminal without either installed, shows a read-only dashboard
+             plus a plain-text menu so you can edit a single setting instead
+             of walking all of them (still available via the menu's "a"
+             option). Piped input (scripts, CI) always gets the full linear
+             walk. Set OC_CONFIG_TUI=0 to force the plain-text path even when
+             whiptail/dialog is available.
   --config   Print a read-only dashboard of every .env setting, grouped by
              section, then exit — no docker, no image pull, no LLM key
              required. Secret values are never printed (shown as set/unset
@@ -775,6 +779,148 @@ editable_schema_keys() {
   config_schema | awk -F'|' '$3 != "internal" { print $2 }'
 }
 
+# --- optional ncurses (whiptail/dialog) config editor ------------------------
+# Layer 2 of the config UX: when a real terminal AND whiptail/dialog are
+# available, --reconfigure drives a small ncurses menu instead of the
+# plain-text dashboard+menu (Layer 1) or the linear wizard (Layer 0). Both
+# backends are optional; everything degrades gracefully to the pure-bash
+# flows when neither is installed, when there's no tty (piped/CI input), or
+# when the OC_CONFIG_TUI=0 escape hatch is set.
+
+# tui_backend — echo "whiptail" or "dialog", whichever is found first on
+# PATH (whiptail preferred — it's the Debian/Ubuntu default and what most
+# users will have); echo nothing if neither is installed. Pure detection, no
+# tty required, so this is directly unit-testable.
+tui_backend() {
+  if command -v whiptail >/dev/null 2>&1; then
+    printf '%s' "whiptail"
+  elif command -v dialog >/dev/null 2>&1; then
+    printf '%s' "dialog"
+  fi
+}
+
+# have_tui — return 0 iff the ncurses editor should be used: a backend is
+# installed, stdin AND stdout are a real terminal, and the OC_CONFIG_TUI=0
+# escape hatch has not been set. Set OC_CONFIG_TUI=0 to force the pure-bash
+# path even when whiptail/dialog is present (documented in usage()/README).
+# The tty check is also what keeps this from ever hijacking a piped/CI
+# --reconfigure run (bats included): stdin is never a tty there.
+have_tui() {
+  [ "${OC_CONFIG_TUI:-}" = "0" ] && return 1
+  [ -n "$(tui_backend)" ] || return 1
+  [ -t 0 ] && [ -t 1 ]
+}
+
+# tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT;
+# echo whatever the user confirmed. Echoes DEFAULT unchanged on Cancel/Esc
+# (rc captured locally so a non-zero whiptail/dialog exit under
+# set -euo pipefail never kills the script).
+tui_input() {
+  local title="$1" label="$2" default="$3" backend rc=0 result
+  backend="$(tui_backend)"
+  result="$("$backend" --inputbox "$label" 0 0 "$default" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s' "$default"
+  else
+    printf '%s' "$result"
+  fi
+}
+
+# tui_password TITLE LABEL — show a passwordbox (input not echoed to the
+# screen); echo whatever the user typed, or empty on Cancel/Esc. NEVER
+# pre-fills with the current secret (mirrors prompt_one_key's masked
+# handling) — the caller is responsible for treating empty as "keep current".
+tui_password() {
+  local title="$1" label="$2" backend rc=0 result
+  backend="$(tui_backend)"
+  result="$("$backend" --passwordbox "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] || result=""
+  printf '%s' "$result"
+}
+
+# tui_yesno TITLE LABEL — show a yes/no box; return 0 for Yes, 1 for both No
+# and Cancel/Esc (whiptail/dialog already exit non-zero for "No", so this
+# just passes that through rather than treating it as a script error).
+tui_yesno() {
+  local title="$1" label="$2" backend
+  backend="$(tui_backend)"
+  "$backend" --yesno "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3
+}
+
+# tui_menu TITLE PROMPT TAG1 ITEM1 [TAG2 ITEM2 ...] — show a menu of
+# tag/description pairs; echo the chosen TAG, or empty on Cancel/Esc (rc
+# captured locally, never fatal under set -e).
+tui_menu() {
+  local title="$1" prompt="$2"; shift 2
+  local backend rc=0 result
+  backend="$(tui_backend)"
+  result="$("$backend" --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] || result=""
+  printf '%s' "$result"
+}
+
+# run_tui_reconfigure — the ncurses editor loop: a tui_menu of
+# editable_schema_keys() (the same authoritative editable set Layer 1 uses),
+# each item tagged by KEY with a description of its label plus a
+# set/unset hint (secrets show only (set)/(unset), never the value), plus a
+# trailing "Done" entry. Selecting a key dispatches by field_type to the
+# matching wrapper above and writes the result via set_env (so sed_escape
+# still handles special characters); Cancel/Esc on the menu itself also
+# exits the loop. Loops until Done/Cancel, then falls through to the same
+# "wrote $ENV_FILE" line the other two flows print.
+run_tui_reconfigure() {
+  local keys=() key
+  while IFS= read -r key; do
+    [ -n "$key" ] && keys+=("$key")
+  done < <(editable_schema_keys)
+
+  while true; do
+    local menu_args=() k label state desc
+    for k in "${keys[@]}"; do
+      label="$(field_label "$k")"
+      if [ -n "$(get_env "$k")" ]; then state="(set)"; else state="(unset)"; fi
+      desc="$label $state"
+      menu_args+=("$k" "$desc")
+    done
+    menu_args+=(DONE "Done — finish editing")
+
+    local choice
+    choice="$(tui_menu "OpenCode Launcher — configuration" "Choose a setting to edit:" "${menu_args[@]}")"
+
+    case "$choice" in
+      ''|DONE) break ;;
+      *)
+        local type cur new
+        type="$(field_type "$choice")"
+        label="$(field_label "$choice")"
+        case "$type" in
+          secret)
+            cur="$(get_env "$choice")"
+            new="$(tui_password "$label" "$(mask_secret "$cur")")"
+            # Blank input keeps the current value, same rule prompt_one_key
+            # uses for masked secrets.
+            [ -n "$new" ] || new="$cur"
+            set_env "$choice" "$new"
+            ;;
+          bool)
+            cur="$(get_env "$choice")"
+            if tui_yesno "$label" "Enable $label?"; then
+              set_env "$choice" 1
+            else
+              set_env "$choice" 0
+            fi
+            ;;
+          url|text|list)
+            cur="$(get_env "$choice")"
+            new="$(tui_input "$label" "$label:" "$cur")"
+            set_env "$choice" "$new"
+            ;;
+        esac
+        ;;
+    esac
+  done
+}
+
 # --- setup wizard (first-run and --reconfigure) ------------------------------
 # prompt_one_key KEY [--reconfigure] — prompt for a single schema KEY and
 # write the answer via set_env. This is the per-field body extracted out of
@@ -1185,14 +1331,17 @@ cmd_config_show() {
   return 0
 }
 
-# cmd_reconfigure — re-run the secrets setup. When stdin/stdout are a real
-# terminal, shows a read-only dashboard (cmd_config_show) followed by a small
-# menu so the user can edit ONE key instead of being forced through the full
-# linear wizard; "a" still runs the complete linear walk. When NOT a tty
-# (piped input — tests, CI, scripted use), falls through unchanged to the
-# linear run_setup_wizard --reconfigure walk, exactly as before this menu was
-# added. This is the TTY gate a later ncurses-based editor should hook into:
-# check it first, and only replace the body of the `if` branch below.
+# cmd_reconfigure — re-run the secrets setup, picking one of three flows:
+#   1. have_tui (real terminal + whiptail/dialog installed, and
+#      OC_CONFIG_TUI != 0): run_tui_reconfigure, the ncurses menu editor.
+#   2. real terminal but no ncurses backend (or OC_CONFIG_TUI=0): a read-only
+#      dashboard (cmd_config_show) followed by a small plain-text menu so the
+#      user can edit ONE key instead of being forced through the full linear
+#      wizard; "a" still runs the complete linear walk.
+#   3. NOT a tty (piped input — tests, CI, scripted use): falls through
+#      unchanged to the linear run_setup_wizard --reconfigure walk. have_tui
+#      always returns false here (no tty), so this path can never be
+#      hijacked by the ncurses editor.
 cmd_reconfigure() {
   if [ ! -f "$ENV_FILE" ]; then
     [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
@@ -1200,10 +1349,14 @@ cmd_reconfigure() {
     info "no $ENV_FILE found — created one from $ENV_EXAMPLE to reconfigure."
   fi
 
-  if [ -t 0 ] && [ -t 1 ]; then
-    # Interactive: dashboard + menu. Editable set = editable_schema_keys()
-    # (every non-"internal" schema key); HOST_UID/HOST_GID/IMAGE_TAG are
-    # "internal" and stay out of the menu (hand-edited only).
+  if have_tui; then
+    # Interactive + whiptail/dialog available: ncurses menu editor (Layer 2).
+    run_tui_reconfigure
+  elif [ -t 0 ] && [ -t 1 ]; then
+    # Interactive, no ncurses backend (or OC_CONFIG_TUI=0): dashboard + a
+    # plain-text menu (Layer 1). Editable set = editable_schema_keys() (every
+    # non-"internal" schema key); HOST_UID/HOST_GID/IMAGE_TAG are "internal"
+    # and stay out of the menu (hand-edited only).
     local keys=() key
     while IFS= read -r key; do
       [ -n "$key" ] && keys+=("$key")

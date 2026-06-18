@@ -628,3 +628,116 @@ SCRIPT
   [ "$status" -eq 0 ]
   [[ "$output" == *"Bitbucket personal access token (optional, Enter to skip, input hidden): "* ]]
 }
+
+# --- tui_backend / have_tui (ncurses config editor detection) ---------------
+# tests/fake-bin/whiptail and tests/fake-bin/dialog are detection-only stubs
+# (no real ncurses rendering) — see their headers. These tests only exercise
+# the pure detection/gating logic (tui_backend, have_tui), never an actual
+# interactive ncurses screen, since bats has no tty.
+
+@test "tui_backend: echoes whiptail when it is on PATH" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ "$output" = "whiptail" ]
+}
+
+@test "tui_backend: falls back to dialog when whiptail is absent" {
+  local bin="$BATS_TEST_TMPDIR/dialog-only-bin"
+  mkdir -p "$bin"
+  cp "$FAKE_BIN/dialog" "$bin/dialog"
+  chmod +x "$bin/dialog"
+  run env PATH="$bin:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ "$output" = "dialog" ]
+}
+
+@test "tui_backend: empty when neither whiptail nor dialog is on PATH" {
+  run env PATH="/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "have_tui: false when not a tty, even with whiptail present (bats is never a tty)" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+@test "have_tui: false when OC_CONFIG_TUI=0, even with whiptail present" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" OC_CONFIG_TUI=0 \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+@test "have_tui: false when no backend is installed at all" {
+  run env PATH="/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+# --- tui_* wrappers (Cancel/Esc safety) --------------------------------------
+# Stub the backend directly (rather than relying on tui_backend's PATH probe)
+# so these stay lightweight and don't depend on which fake binary won the
+# PATH race. Each wrapper must survive a non-zero "Cancel" exit under
+# set -euo pipefail without killing the caller.
+
+@test "tui_input: a Cancel (non-zero) exit falls back to the default, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_input "Title" "Label" "the-default"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "the-default" ]
+}
+
+@test "tui_password: a Cancel (non-zero) exit yields empty, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_password "Title" "Label"
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tui_menu: a Cancel (non-zero) exit yields empty, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_menu "Title" "Prompt" KEY1 "Item 1" DONE "Done"
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tui_yesno: propagates Yes (0) and No (1) without tripping set -e" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-yes-backend"; }
+    fake-yes-backend() { return 0; }
+    set -euo pipefail
+    if tui_yesno "Title" "Label"; then echo YES; else echo NO; fi
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "YES" ]
+
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-no-backend"; }
+    fake-no-backend() { return 1; }
+    set -euo pipefail
+    if tui_yesno "Title" "Label"; then echo YES; else echo NO; fi
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "NO" ]
+}

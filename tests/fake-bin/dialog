@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#
+# Fake `dialog` for the test suite — see tests/fake-bin/whiptail for why this
+# exists (detection-only stub; never actually driven interactively in bats).
+#
+# Knobs (all optional, read from the environment):
+#   FAKE_DIALOG_RC   exit code to return (default 0)
+
+exit "${FAKE_DIALOG_RC:-0}"
