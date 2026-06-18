@@ -276,6 +276,15 @@ setup() {
   grep -q 'manifest inspect reg.test.local/opencode:0.0.2' "$FAKE_DOCKER_LOG"
 }
 
+@test "an IMAGE_TAG pinned to a digest produces a valid @sha256 reference" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789|' "$SANDBOX/.env"
+  run_launcher "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -q 'manifest inspect reg.test.local/opencode@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' "$FAKE_DOCKER_LOG"
+  ! grep -q ':@sha256:' "$FAKE_DOCKER_LOG"   # never the invalid registry:@sha256 form
+}
+
 @test "USER_LAYER_PATH adds the user-layer overlay and records the abs path" {
   seed_env
   # .env already carries an empty USER_LAYER_PATH= line; set that one (get_env
@@ -445,4 +454,794 @@ setup() {
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   [[ "$output" == *"IMAGE_REGISTRY looks like a placeholder"* ]]
+}
+
+# --- --doctor -----------------------------------------------------------------
+
+# seed_env_doctor — seed_env plus a non-empty LLM_API_KEY, so the "all required
+# keys set" path is reachable (seed_env alone leaves LLM_API_KEY empty).
+seed_env_doctor() {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-test-secret-value|' "$SANDBOX/.env"
+}
+
+@test "--doctor short-circuits: no pull, no up, no exec" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher doctor report"* ]]
+  ! grep -qE 'compose .*pull' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .*up -d' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--doctor all-good: every check passes and exit is 0" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] docker on PATH"* ]]
+  [[ "$output" == *"[PASS] docker daemon reachable"* ]]
+  [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
+  [[ "$output" == *"[PASS] .env present"* ]]
+  [[ "$output" == *"[PASS] env: LLM_API_BASE"* ]]
+  [[ "$output" == *"[PASS] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"[PASS] env: IMAGE_REGISTRY"* ]]
+  [[ "$output" == *"[PASS] registry access"* ]]
+  [[ "$output" == *"[PASS] port 4096 free"* ]]
+  [[ "$output" == *"all critical checks passed"* ]]
+  ! [[ "$output" == *"[FAIL]"* ]]
+}
+
+@test "--doctor: daemon-down FAILs that check and exits non-zero" {
+  seed_env_doctor
+  FAKE_DOCKER_INFO_RC=1 run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
+  [[ "$output" == *"one or more critical checks FAILED"* ]]
+}
+
+@test "--doctor: permission-denied daemon failure surfaces the usermod hint" {
+  seed_env_doctor
+  FAKE_DOCKER_INFO_RC=1 \
+    FAKE_DOCKER_INFO_STDERR="Got permission denied while trying to connect" \
+    run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
+  [[ "$output" == *"usermod -aG docker"* ]]
+}
+
+@test "--doctor: missing required env key FAILs and exits non-zero" {
+  seed_env_doctor
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] env: LLM_API_KEY"* ]]
+  [[ "$output" == *"unset — required"* ]]
+  [[ "$output" == *"one or more critical checks FAILED"* ]]
+}
+
+@test "--doctor: optional unset keys are reported as WARN, not FAIL" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] env: BITBUCKET_USER"* ]]
+  [[ "$output" == *"unset (optional)"* ]]
+}
+
+@test "--doctor: registry auth failure reports it and gives the docker login hint" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST_RC=1 \
+    FAKE_DOCKER_MANIFEST_STDERR="unauthorized: authentication required" \
+    run_launcher --doctor
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"[FAIL] registry access"* ]]
+  [[ "$output" == *"auth problem"* ]]
+  [[ "$output" == *"docker login reg.test.local"* ]]
+}
+
+@test "--doctor: a non-auth registry error WARNs but does not fail the run" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST_RC=1 \
+    FAKE_DOCKER_MANIFEST_STDERR="manifest unknown: not found" \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] registry access"* ]]
+  [[ "$output" == *"could not verify"* ]]
+}
+
+@test "--doctor: podman shim is reported as WARN, not FAIL" {
+  seed_env_doctor
+  FAKE_DOCKER_VERSION_OUTPUT="Docker version 0.0.0, podman" \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] podman shim detected"* ]]
+}
+
+@test "--doctor: no podman shim reports PASS" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] podman shim"* ]]
+}
+
+@test "--doctor: an optional repo path also checks that project's port" {
+  seed_env_doctor
+  run_launcher --doctor "$(make_repo_arg "My Service")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"project: my-service"* ]]
+}
+
+@test "--doctor: never prints the secret LLM_API_KEY value" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-test-secret-value"* ]]
+}
+
+@test "--doctor: never prints a configured BITBUCKET_PAT value" {
+  seed_env_doctor
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=super-secret-token-xyz|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-token-xyz"* ]]
+  [[ "$output" == *"[PASS] env: BITBUCKET_PAT"* ]]
+}
+
+@test "--doctor exits non-zero overall even when only one of several checks FAILs" {
+  seed_env_doctor
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -ne 0 ]
+  # the rest of the report still ran (not an early abort)
+  [[ "$output" == *"[PASS] docker on PATH"* ]]
+  [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
+}
+
+# --- --status -----------------------------------------------------------------
+
+@test "--help mentions --status, --down/--stop and --reconfigure" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--status"* ]]
+  [[ "$output" == *"--down"* ]]
+  [[ "$output" == *"--stop"* ]]
+  [[ "$output" == *"--reconfigure"* ]]
+}
+
+@test "--status with a repo path reports a down stack" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"status:  down"* ]]
+  # never pulls or attaches
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with a repo path reports an up stack with its port and URL" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  # Boot once (--detach: no TUI exec) so the per-project env file (and thus
+  # the same SLUG/PORT) exists, which --status reads OPENCODE_PORT from.
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --status call below
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"status:  up"* ]]
+  [[ "$output" == *"web UI:  http://localhost:"* ]]
+  [[ "$output" == *"resume:"* ]]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with no repo path lists all running opencode-* stacks" {
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="$(printf '%s\n%s' \
+    'opencode-my-service	running(3)' \
+    'opencode-other	exited(0)')" \
+    run_launcher --status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-my-service"* ]]
+  [[ "$output" == *"opencode-other"* ]]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--status with no repo path and nothing running says so" {
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no launcher stacks found"* ]]
+}
+
+@test "--status does not require .env to exist" {
+  [ ! -f "$SANDBOX/.env" ]
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status
+  [ "$status" -eq 0 ]
+  [ ! -f "$SANDBOX/.env" ]   # still never created
+}
+
+@test "--status rejects a nonexistent repo path" {
+  run_launcher --status "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+# --- --down / --stop -----------------------------------------------------------
+
+@test "--down re-derives the project and invokes compose down with the right -p" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  # Boot first so the per-project env file (and thus the same SLUG/PORT) exists.
+  run_launcher "$repo"
+  [ "$status" -eq 0 ]
+
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*-p opencode-my-service .*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"opencode-my-service is down"* ]]
+}
+
+@test "--stop is an alias for --down" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --stop "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--down is graceful when nothing was ever started (no .env)" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+  ! grep -q 'compose' "$FAKE_DOCKER_LOG"
+}
+
+@test "--down surfaces a warning (not a hard failure) when compose down errors" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_RC=1 run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"may not have been running"* ]]
+}
+
+@test "--down requires a repo path" {
+  seed_env
+  run_launcher --down
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--down rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --down "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--down does not pull images or attach the TUI" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --down call below
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -q 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+# --- --reconfigure ---------------------------------------------------------
+
+@test "--reconfigure round-trips an edited value and keeps untouched ones" {
+  seed_env
+  # Pre-seed a few values so we can verify both "change" and "keep" behavior.
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
+  sed -i 's|^GIT_USER_EMAIL=.*|GIT_USER_EMAIL=old@test.dev|' "$SANDBOX/.env"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
+
+  # 8 prompts in order: LLM base (keep), LLM key (keep/empty), BB user (keep),
+  # BB PAT (keep/empty), git name (CHANGE), git email (keep), plugins (keep),
+  # registry (keep).
+  printf '%s\n' \
+    '' \
+    '' \
+    '' \
+    '' \
+    'New Name' \
+    '' \
+    '' \
+    '' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^GIT_USER_NAME=New Name$' "$SANDBOX/.env"        # changed
+  grep -q '^GIT_USER_EMAIL=old@test.dev$' "$SANDBOX/.env"   # kept
+  grep -q '^LLM_API_BASE=https://old.example/v1$' "$SANDBOX/.env"  # kept
+  grep -q '^BITBUCKET_USER=olduser$' "$SANDBOX/.env"        # kept
+}
+
+@test "--reconfigure does not clobber HOST_UID/HOST_GID" {
+  seed_env
+  sed -i 's|^HOST_UID=.*|HOST_UID=42|' "$SANDBOX/.env"
+  sed -i 's|^HOST_GID=.*|HOST_GID=43|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^HOST_UID=42$' "$SANDBOX/.env"
+  grep -q '^HOST_GID=43$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure preserves unrelated keys it doesn't own" {
+  seed_env
+  sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
+  sed -i 's|^ENABLE_SESSION_LOGS=.*|ENABLE_SESSION_LOGS=0|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  grep -q '^ALLOW_REMOTE_GIT=1$' "$SANDBOX/.env"
+  grep -q '^ENABLE_SESSION_LOGS=0$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure masks existing secrets instead of echoing them" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=super-secret-value|' "$SANDBOX/.env"
+
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-value"* ]]
+  [[ "$output" == *"set, press Enter to keep"* ]]
+  grep -q '^LLM_API_KEY=super-secret-value$' "$SANDBOX/.env"   # kept (Enter)
+}
+
+@test "--reconfigure creates .env from the template when none exists yet" {
+  [ ! -f "$SANDBOX/.env" ]
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-newkey' 'newuser' 'newpat' \
+    'New Person' 'new@test.dev' 'superpowers' 'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+
+  [ "$status" -eq 0 ]
+  [ -f "$SANDBOX/.env" ]
+  grep -q '^LLM_API_KEY=sk-newkey$' "$SANDBOX/.env"
+  grep -q '^GIT_USER_NAME=New Person$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure rejects a repo-path argument" {
+  seed_env
+  run_launcher --reconfigure "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--reconfigure takes no"* ]]
+}
+
+@test "--reconfigure notes that changes apply on the next run" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"next"* ]]
+}
+
+@test "--reconfigure never pulls images or attaches the TUI" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+# --- --show-allowlist -----------------------------------------------------
+
+@test "--help mentions --show-allowlist" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--show-allowlist"* ]]
+}
+
+@test "--show-allowlist reports the configured LLM host and squid-image disclaimer" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM endpoint host: llm.test"* ]]
+  [[ "$output" == *"enforced"* ]]
+  [[ "$output" == *"squid image"* ]]
+  [[ "$output" == *"local extensions"* ]]
+  [[ "$output" == *"none"* ]]
+}
+
+@test "--show-allowlist works with no repo path" {
+  seed_env
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher egress allowlist"* ]]
+}
+
+@test "--show-allowlist accepts an optional repo path" {
+  seed_env
+  run_launcher --show-allowlist "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OpenCode Launcher egress allowlist"* ]]
+}
+
+@test "--show-allowlist lists files and rules from extra-allowlist.d/*.conf" {
+  seed_env
+  mkdir -p "$SANDBOX/extra-allowlist.d"
+  printf '%s\n' '# allow internal docs' \
+    'acl allowed_sites dstdomain .docs.internal.example' \
+    'http_access allow allowed_sites' \
+    > "$SANDBOX/extra-allowlist.d/extra.conf"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"extra.conf"* ]]
+  [[ "$output" == *"docs.internal.example"* ]]
+  [[ "$output" != *"# allow internal docs"* ]]   # comment line is stripped
+}
+
+@test "--show-allowlist never pulls, attaches, or requires an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+@test "--show-allowlist never prints a configured secret value" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=bb-super-secret-pat|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=bobu|' "$SANDBOX/.env"
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"Bitbucket: credentials configured"* ]]
+}
+
+@test "--show-allowlist handles a missing .env gracefully" {
+  [ ! -f "$SANDBOX/.env" ]
+  run_launcher --show-allowlist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [[ "$output" == *"local extensions"* ]]
+}
+
+@test "default boot prints a concise one-line allowlist summary, never a secret" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$SANDBOX/.env"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"egress allowlist: LLM(llm.test)"* ]]
+  [[ "$output" == *"--show-allowlist"* ]]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+}
+
+# --- --logs -------------------------------------------------------------------
+
+@test "--help mentions --logs and --shell" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--logs"* ]]
+  [[ "$output" == *"--shell"* ]]
+}
+
+@test "--logs invokes compose logs -f with the right -p when the stack is up" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"   # isolate the log to the --logs call below
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*-p opencode-my-service .*logs -f' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"tailing logs"* ]]
+  [[ "$output" == *"Ctrl-C detaches"* ]]
+}
+
+@test "--logs is graceful when nothing is running" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+  ! grep -qE 'logs -f' "$FAKE_DOCKER_LOG"
+}
+
+@test "--logs is graceful when no .env has ever been created" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+}
+
+@test "--logs requires a repo path" {
+  seed_env
+  run_launcher --logs
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--logs rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --logs "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--logs never pulls an image or attaches the TUI" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--logs does not require an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'logs -f' "$FAKE_DOCKER_LOG"
+}
+
+# --- --shell ------------------------------------------------------------------
+
+@test "--shell execs into the container as dev rooted at /workspace" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-u dev .*-w /workspace .*-it opencode-my-service bash$' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"opening a shell"* ]]
+}
+
+@test "--shell falls back to sh when bash is unavailable in the container" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    FAKE_DOCKER_EXEC_PROBE_RC=1 \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-u dev .*-w /workspace .*-it opencode-my-service sh$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'opencode-my-service bash$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell is graceful when the container isn't running" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell is graceful when no .env has ever been created" {
+  [ ! -f "$SANDBOX/.env" ]
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing has ever been started"* ]]
+}
+
+@test "--shell requires a repo path" {
+  seed_env
+  run_launcher --shell
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--shell rejects a nonexistent repo path" {
+  seed_env
+  run_launcher --shell "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"repo path does not exist"* ]]
+}
+
+@test "--shell never pulls an image" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach "$repo"
+  : > "$FAKE_DOCKER_LOG"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
+}
+
+@test "--shell does not require an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-it opencode-myrepo bash$' "$FAKE_DOCKER_LOG"
+}
+
+# --- --open ---------------------------------------------------------------
+
+@test "--help mentions --open" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--open"* ]]
+}
+
+@test "--open launches xdg-open with the printed web UI URL" {
+  seed_env
+  run_launcher --detach --open "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+  [[ "$output" == *"launching xdg-open"* ]]
+}
+
+@test "--open works alongside --persist/--web" {
+  seed_env
+  run_launcher --persist --open "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+}
+
+@test "without --open, xdg-open is never invoked" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_XDG_OPEN_LOG" ]
+}
+
+@test "--open warns but does not fail the boot when xdg-open is missing" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  # Run in a stripped-down PATH that has docker (sandbox copy is found via the
+  # fake-bin dir already on PATH) but no xdg-open at all. Use a temp PATH
+  # containing only FAKE_BIN's docker stub directory and core utils.
+  local stub_dir="$BATS_TEST_TMPDIR/no-xdg-open-bin"
+  mkdir -p "$stub_dir"
+  ln -sf "$FAKE_BIN/docker" "$stub_dir/docker"
+  PATH="$stub_dir:/usr/bin:/bin" run bash "$SANDBOX/start.sh" --detach --open "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found on PATH"* ]]
+  [[ "$output" == *"open this URL yourself"* ]]
+}
+
+@test "--open respects an OPENER override for the browser command" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  OPENER=xdg-open run_launcher --detach --open "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:[0-9]+' "$FAKE_XDG_OPEN_LOG"
+}
+
+# --- image digest print -----------------------------------------------------
+
+@test "default boot prints the resolved image digest" {
+  seed_env
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123ab" \
+    run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image:"* ]]
+  [[ "$output" == *"sha256:abc123abc123"* ]]
+}
+
+@test "boot does not fail when the image digest can't be determined" {
+  seed_env
+  FAKE_DOCKER_IMAGE_INSPECT_RC=1 run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+}
+
+@test "--status surfaces the last-recorded image digest after a boot" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:def456def456def456def456def456def456def456def456def456def456de" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image:"* ]]
+  [[ "$output" == *"sha256:def456def456"* ]]
+}
+
+# --- update nudge -----------------------------------------------------------
+
+@test "update nudge stays silent on the first boot for a project" {
+  seed_env
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:1111111111111111111111111111111111111111111111111111111111111a" \
+    run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+}
+
+@test "update nudge stays silent when the digest is unchanged across boots" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:2222222222222222222222222222222222222222222222222222222222222b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:2222222222222222222222222222222222222222222222222222222222222b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+}
+
+@test "update nudge fires when the digest changes between boots" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:3333333333333333333333333333333333333333333333333333333333333c" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:4444444444444444444444444444444444444444444444444444444444444d" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" == *"sha256:444444444444"* ]]
+  [[ "$output" == *"sha256:333333333333"* ]]
+}
+
+# --- .env.example drift check -----------------------------------------------
+
+@test "drift check is silent when .env has every .env.example key" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"new key"* ]]
+}
+
+@test "drift check warns when .env.example has a key missing from .env" {
+  seed_env
+  printf '\nNEW_FEATURE_FLAG=\n' >> "$SANDBOX/.env.example"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEW_FEATURE_FLAG"* ]]
+  [[ "$output" == *"--reconfigure"* ]]
+}
+
+@test "drift check never prints a value, only the missing key name" {
+  seed_env
+  printf '\nNEW_SECRET_FLAG=\n' >> "$SANDBOX/.env.example"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEW_SECRET_FLAG"* ]]
+  [[ "$output" != *"sk-super-secret-value"* ]]
 }

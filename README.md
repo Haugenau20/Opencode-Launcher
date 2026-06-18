@@ -18,6 +18,45 @@ this repo is just the glue.
   auto-detects it and applies a `keep-id` userns overlay so bind-mount ownership
   stays correct. Force it with `--podman` if detection misses.
 
+## Install
+
+### Quick install (one-liner)
+
+```bash
+curl -fsSL https://CHANGEME.internal.example/opencode-launcher/install.sh | bash
+```
+
+> **Replace `https://CHANGEME.internal.example/opencode-launcher/install.sh`**
+> with the real raw-file URL for `install.sh` on your internal git host (e.g.
+> a Bitbucket/GitHub raw-content URL). The placeholder above is intentionally
+> not a real, reachable address.
+
+This fetches and runs [`install.sh`](install.sh), which clones this launcher
+repo (if it isn't already checked out next to the script), checks for Docker
+and the `docker compose` v2 plugin, and prints the exact `cd ... && ./start.sh
+<your-repo>` command to run next. It is safe to run more than once — it never
+overwrites an existing clone or an existing `.env`.
+
+### Manual equivalent
+
+```bash
+git clone <this-launcher-repo>
+cd opencode-launcher
+./start.sh ~/code/your-repo
+```
+
+Either way, only the very first run does anything different (see Quickstart
+below) — `install.sh` is just a convenience wrapper around the same clone +
+`./start.sh` flow, handy for colleagues who'd rather not hand-type the
+prerequisite checks.
+
+### Tab completion
+
+Optional, but handy: [`completions/`](completions/) has bash and zsh
+completion scripts for every `start.sh` flag (plus directory completion for
+`<host-repo-path>`). See [`completions/README.md`](completions/README.md) for
+install instructions.
+
 ## Quickstart
 
 ```bash
@@ -45,10 +84,26 @@ Flags that change the default attach-and-teardown behavior:
 | `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume your last session with the `opencode -c` command `start.sh` prints. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only). Also leaves the stack running. |
 | `--continue` (`-c`)   | Resume your most recent session instead of a fresh one. Maps 1:1 to opencode's own `--continue`/`-c`. |
+| `--open`              | Once the web UI URL is known, open it in your default browser via `xdg-open`. Works alongside `--web`/`--persist`/`--detach`. Never fails the boot if `xdg-open` is missing (warns and continues). |
+| `--doctor [<repo-path>]` | Run all environment checks (Docker, compose, registry auth, `.env` keys, ports, disk space) and print one pasteable PASS/WARN/FAIL report. No pull, no TUI attach. |
+| `--status [<repo-path>]` | Report on running launcher stacks. With a repo path: that project's up/down state, web UI URL, and resume command. Without one: every running `opencode-*` stack. Read-only — no secrets needed. |
+| `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
+| `--logs <repo-path>`  | Tail (follow) the running stack's logs. Ctrl-C detaches without affecting the stack. No pull, no TUI attach, no LLM key required. Graceful no-op if nothing is running. |
+| `--shell <repo-path>` | Drop into an interactive shell inside the running opencode container, as the `dev` user rooted at `/workspace` (falls back to `sh` if `bash` is unavailable). No pull, no LLM key required. Graceful no-op if the container isn't running. |
+| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. Changes apply next run. |
+| `--show-allowlist [<repo-path>]` | Print exactly what outbound egress the agent is permitted. Read-only — no pull, no TUI attach, no LLM key required. See [Egress allowlist](#egress-allowlist) below. |
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
 ./start.sh --detach  ~/code/your-repo    # headless, never attach the TUI
+./start.sh --open    ~/code/your-repo    # also open the web UI in your browser
+./start.sh --status                      # list every running stack
+./start.sh --status ~/code/your-repo     # status for one project
+./start.sh --down    ~/code/your-repo    # tear that stack down
+./start.sh --logs    ~/code/your-repo    # tail the running stack's logs
+./start.sh --shell   ~/code/your-repo    # shell into the running container
+./start.sh --reconfigure                 # edit your secrets interactively
+./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
 
 > `--continue` with no previous session is harmless: opencode prints a server
@@ -87,6 +142,54 @@ images ship.
 - **Only one browser UI at a time (port 4096).** The web/desktop UI hardcodes
   port **4096**. If it's taken, `start.sh` uses the next free port and warns you
   — that project still works fully via the **TUI**, just not the browser UI.
+
+## Egress allowlist
+
+The agent runs sandboxed behind a Squid proxy. The **authoritative allowlist**
+(LLM endpoint, Bitbucket, JIRA) is enforced **inside the squid image**, not in
+this repo — this launcher only knows about, and can only report on, the bits
+it itself configures:
+
+- the LLM host derived from `LLM_API_BASE` in `.env`,
+- whether Bitbucket credentials are configured (the Bitbucket/JIRA hostnames
+  themselves are baked into the squid image, not visible from here), and
+- any local extensions you've dropped into `extra-allowlist.d/*.conf` (see
+  [Extending the egress allowlist](docs/CUSTOMIZING.md#extending-the-egress-allowlist)).
+
+Run `./start.sh --show-allowlist` any time for the full, honest picture —
+read-only, no image pull, no TUI attach, no LLM key required, and it **never
+prints secret values**. Every normal boot also prints a one-line summary of
+the same information as a standing reminder; the full detail lives in
+`--show-allowlist`.
+
+```bash
+./start.sh --show-allowlist                  # full report
+./start.sh --show-allowlist ~/code/your-repo # repo path accepted for symmetry
+```
+
+## Image digest & reproducibility
+
+Images are pulled by **tag** (`IMAGE_TAG`, default `latest`), and a tag can
+move. After every boot, `start.sh` resolves and prints the actual **sha256
+digest** of the image now running (`docker image inspect ... RepoDigests`) —
+a tamper-check/reproducibility anchor that a tag alone doesn't give you.
+`./start.sh --status <repo-path>` also shows the digest last seen for that
+project. If the digest changes between runs (the moving `latest` tag pointed
+somewhere new, or someone re-pushed a pinned tag), the next boot prints a
+short `image updated: <short-digest>` nudge — silent otherwise.
+
+**To pin by digest for full reproducibility**, set `IMAGE_TAG` in `.env` to
+the digest itself (printed by the boot-time `image:` line above) instead of a
+tag name:
+
+```dotenv
+IMAGE_TAG=@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567
+```
+
+A `IMAGE_TAG` starting with `sha256:` or `@sha256:` is joined with `@` instead
+of `:`, producing Docker's own digest-reference syntax
+(`registry/image@sha256:...`). This guarantees byte-identical pulls — the
+moving-tag concern above no longer applies once pinned this way.
 
 ## Customizing the environment
 
@@ -146,14 +249,37 @@ Images are pulled fresh on every `./start.sh`:
 
 ## Troubleshooting
 
+- **Run `./start.sh --doctor` first.** It checks Docker (on PATH, daemon
+  reachable, compose v2 plugin), the registry (auth/login state), your `.env`
+  (required keys set, optional keys listed as set/unset), and ports — then
+  prints one pasteable PASS/WARN/FAIL report. Optionally pass a repo path to
+  also check that project's derived port: `./start.sh --doctor ~/code/your-repo`.
+  It never prints secret values, exits non-zero only on a FAIL, and never pulls
+  an image or attaches the TUI — paste its output when asking for help instead
+  of describing the error by hand.
 - **`docker login` needed** — the most common first-time failure. If a pull
   fails with `unauthorized`/`denied`, run `docker login <registry-host>` and
-  retry.
+  retry. `--doctor` surfaces this with the exact command to run.
 - **Not in the docker group** — if Docker says *permission denied*, run
   `sudo usermod -aG docker $USER && newgrp docker`.
-- **Don't run `docker compose up` by hand.** Always go through `start.sh` — it
-  wires up the per-project env file and project name and pulls the images first.
-  (The base `docker-compose.yml` carries `build:` blocks for the maintainer repo,
-  but the images are pulled, not built here; a hand-run `up` that forces a build
-  would fail.)
+- **Don't run `docker compose up`/`down` by hand.** Always go through
+  `start.sh` — it wires up the per-project env file and project name and pulls
+  the images first. (The base `docker-compose.yml` carries `build:` blocks for
+  the maintainer repo, but the images are pulled, not built here; a hand-run
+  `up` that forces a build would fail.) To tear down a stack left running by
+  `--persist`/`--detach`, use `./start.sh --down ~/code/your-repo` instead — it
+  re-derives the same project so the right stack comes down.
+- **Forgot what's running, or what port it's on?** `./start.sh --status` lists
+  every running stack; `./start.sh --status ~/code/your-repo` reports one
+  project's web UI URL and resume command.
+- **Need to see what the agent/services are logging?** `./start.sh --logs
+  ~/code/your-repo` tails (follows) the stack's compose logs; Ctrl-C detaches
+  without affecting the stack.
+- **Need to poke around inside the container?** `./start.sh --shell
+  ~/code/your-repo` drops you into an interactive shell as the `dev` user
+  rooted at `/workspace` — no need to remember the raw `docker exec`
+  incantation.
+- **Changed your mind about a secret or plugin?** `./start.sh --reconfigure`
+  re-runs the setup wizard pre-filled with your current `.env` values — Enter
+  keeps each one.
 - **Linux only** — matches the parent system's supported scope.

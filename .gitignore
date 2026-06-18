@@ -16,3 +16,6 @@ extra-packages.txt
 
 # Vendored bats-core fetched by tests/run.sh.
 tests/.bats/
+
+# Harness-managed transient agent worktrees.
+.claude/worktrees/
