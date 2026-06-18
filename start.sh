@@ -662,6 +662,95 @@ cmd_doctor() {
   return "$overall_rc"
 }
 
+# --- config schema -----------------------------------------------------------
+# config_schema — the single source of truth for every key in .env.example:
+# its group (mirrors the .env.example section headers), type, human label and
+# an optional hint. Pipe-delimited, one row per key, columns:
+#
+#   group|key|type|label|hint
+#
+# Types:
+#   url       plain URL, shown in cleartext
+#   text      plain string, shown in cleartext
+#   secret    masked everywhere (mask_secret), never echoed
+#   bool      0/1 toggle
+#   list      space-separated free-form list
+#   internal  shown in dashboards but not user-editable (later layers)
+#
+# This function is the schema; wizard_keys() below is a VIEW over it (the
+# subset + order the interactive wizard prompts for today). Later layers
+# (dashboards, validation, etc.) should read config_schema/the accessors
+# rather than re-deriving this list by hand.
+config_schema() {
+  cat <<'EOF'
+LLM|LLM_API_BASE|url|LLM API base URL|
+LLM|LLM_API_KEY|secret|LLM API key|
+Bitbucket|BITBUCKET_BASE_URL|url|Bitbucket base URL|optional; plain http:// on the internal instance
+Bitbucket|BITBUCKET_USER|text|Bitbucket username|optional
+Bitbucket|BITBUCKET_PAT|secret|Bitbucket personal access token|optional
+Jira|JIRA_BASE_URL|url|Jira base URL|optional
+Jira|JIRA_PAT|secret|Jira personal access token|optional
+GitLab|GITLAB_BASE_URL|url|GitLab base URL|optional; https://, required if you use GitLab
+GitLab|GITLAB_USER|text|GitLab username|optional
+GitLab|GITLAB_PAT|secret|GitLab personal access token|optional
+Git identity|GIT_USER_NAME|text|Git user name for container commits|optional
+Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
+User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
+User layer|HOST_GID|internal|Host GID|auto-filled from `id -g` on first run
+Safety|ALLOW_REMOTE_GIT|bool|Allow remote git (push/fetch/pull/clone)|1 enables, 0 disables
+Safety|ENABLE_SESSION_LOGS|bool|Enable session logs|0 swaps session state for tmpfs
+Safety|DISABLE_BITBUCKET_MCP|bool|Force-disable the Bitbucket MCP|
+Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
+Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
+User layer|USER_LAYER_PATH|text|Personal agents/skills/commands layer path|optional; empty uses a per-project named volume instead
+Plugins|ENABLED_PLUGINS|list|Enable plugins|space-separated
+Image|IMAGE_REGISTRY|text|Image registry (Artifactory path)|
+Image|IMAGE_TAG|internal|Image tag|defaults to latest
+EOF
+}
+
+# --- config schema accessors --------------------------------------------------
+# _schema_field KEY COLUMN — internal helper: look up the Nth pipe-delimited
+# column (1=group, 2=key, 3=type, 4=label, 5=hint) of KEY's row.
+_schema_field() {
+  local key="$1" col="$2"
+  config_schema | awk -F'|' -v k="$key" -v c="$col" '$2 == k { print $c; exit }'
+}
+
+field_group() { _schema_field "$1" 1; }
+field_type()  { _schema_field "$1" 3; }
+field_label() { _schema_field "$1" 4; }
+field_hint()  { _schema_field "$1" 5; }
+
+# is_secret KEY — true (0) if KEY's schema type is "secret".
+is_secret() { [ "$(field_type "$1")" = "secret" ]; }
+
+# wizard_keys — the ordered list of keys the interactive setup wizard prompts
+# for, one per line. This is a VIEW over config_schema: it is the exact
+# first-run/--reconfigure sequence the wizard has always used, preserved here
+# so the refactor in run_setup_wizard stays behavior-identical. Bools,
+# USER_LAYER_PATH and IMAGE_TAG exist in config_schema (for later dashboards)
+# but are deliberately NOT prompted here — don't add them without a deliberate
+# product decision, since that would change first-run/--reconfigure behavior.
+wizard_keys() {
+  cat <<'EOF'
+LLM_API_BASE
+LLM_API_KEY
+BITBUCKET_BASE_URL
+BITBUCKET_USER
+BITBUCKET_PAT
+JIRA_BASE_URL
+JIRA_PAT
+GITLAB_BASE_URL
+GITLAB_USER
+GITLAB_PAT
+GIT_USER_NAME
+GIT_USER_EMAIL
+ENABLED_PLUGINS
+IMAGE_REGISTRY
+EOF
+}
+
 # --- setup wizard (first-run and --reconfigure) ------------------------------
 # run_setup_wizard [--reconfigure] — prompts for the secrets/config that
 # first-run handles, writing each answer via set_env. In default (first-run)
@@ -671,139 +760,87 @@ cmd_doctor() {
 # touches HOST_UID/HOST_GID (or any other key it doesn't explicitly own) when
 # reconfiguring. Both first-run and --reconfigure call this so behavior stays
 # identical between the two entry points.
+#
+# Driven by wizard_keys()/config_schema(): each key's type selects secret vs.
+# plain-text handling, and its label/hint build the prompt text. LLM_API_BASE
+# and LLM_API_KEY are the only two required fields (no "optional" hint, no
+# Enter-to-skip wording); every other prompted field is optional. ENABLED_PLUGINS
+# gets two extra lines (the known-plugins info + Qwen incompatibility warning)
+# immediately before its prompt — preserved here as a special case keyed off
+# the field name, same as the original hand-written wizard.
 run_setup_wizard() {
   local reconfigure=0
   [ "${1:-}" = "--reconfigure" ] && reconfigure=1
 
-  # LLM
-  local cur_base new_base
-  cur_base="$(get_env LLM_API_BASE)"
-  new_base="$(prompt_with_default "LLM API base URL" "$cur_base")"
-  set_env LLM_API_BASE "$new_base"
+  # Read the key list into an array first (rather than piping wizard_keys
+  # into a `while read` loop) so the loop body's own stdin stays free — the
+  # per-field prompts below (`read`, `read -rs`, prompt_with_default) need the
+  # real stdin (the user's terminal, or the test's fed answers), not the
+  # wizard_keys() stream.
+  local keys=() key
+  while IFS= read -r key; do
+    [ -n "$key" ] && keys+=("$key")
+  done < <(wizard_keys)
 
-  local cur_key llm_key
-  cur_key="$(get_env LLM_API_KEY)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'LLM API key %s (input hidden): ' "$(mask_secret "$cur_key")"
-  else
-    printf 'LLM API key (input hidden): '
-  fi
-  read -rs llm_key || true; echo
-  [ -n "$llm_key" ] || llm_key="$cur_key"
-  set_env LLM_API_KEY "$llm_key"
+  for key in "${keys[@]}"; do
+    local type label hint required always_show_default prompt_label
+    type="$(field_type "$key")"
+    label="$(field_label "$key")"
+    hint="$(field_hint "$key")"
+    # Only the two LLM fields are required; everything else prompted is
+    # optional. required tracks that so the prompt wording matches today's.
+    case "$key" in
+      LLM_API_BASE|LLM_API_KEY) required=1 ;;
+      *) required=0 ;;
+    esac
+    # Plain URLs (and IMAGE_REGISTRY) always pre-show their current value via
+    # prompt_with_default, in both first-run and --reconfigure — they were
+    # never given the first-run "Enter to skip" plain-read treatment the other
+    # optional text/list fields get. is_secret fields have their own masked
+    # handling below regardless of this flag.
+    case "$type" in
+      url) always_show_default=1 ;;
+      *) [ "$key" = "IMAGE_REGISTRY" ] && always_show_default=1 || always_show_default=0 ;;
+    esac
 
-  # Bitbucket (optional — Enter to skip/keep). The base URL is a plain URL (not
-  # a secret), so it uses prompt_with_default like LLM_API_BASE. NOTE: the
-  # internal instance speaks plain HTTP — use http://, not https://.
-  local cur_bb_base bb_base
-  cur_bb_base="$(get_env BITBUCKET_BASE_URL)"
-  bb_base="$(prompt_with_default "Bitbucket base URL (optional; plain http:// on the internal instance)" "$cur_bb_base")"
-  set_env BITBUCKET_BASE_URL "$bb_base"
+    prompt_label="$label"
+    [ -n "$hint" ] && prompt_label="$label ($hint)"
 
-  local cur_bb_user bb_user
-  cur_bb_user="$(get_env BITBUCKET_USER)"
-  if [ "$reconfigure" -eq 1 ]; then
-    bb_user="$(prompt_with_default "Bitbucket username (optional)" "$cur_bb_user")"
-  else
-    read -r -p "Bitbucket username (optional, Enter to skip): " bb_user || true
-  fi
-  set_env BITBUCKET_USER "$bb_user"
+    if [ "$key" = "ENABLED_PLUGINS" ]; then
+      info "available plugins (all off by default): ${KNOWN_PLUGINS}"
+      warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
+    fi
 
-  local cur_bb_pat bb_pat
-  cur_bb_pat="$(get_env BITBUCKET_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'Bitbucket personal access token %s (input hidden): ' "$(mask_secret "$cur_bb_pat")"
-  else
-    printf 'Bitbucket personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs bb_pat || true; echo
-  [ -n "$bb_pat" ] || bb_pat="$cur_bb_pat"
-  set_env BITBUCKET_PAT "$bb_pat"
+    local cur new
+    cur="$(get_env "$key")"
 
-  # Jira (optional — Enter to skip/keep). REST API only; the PAT authenticates
-  # as a Bearer token, so there is no username to collect.
-  local cur_jira_base jira_base
-  cur_jira_base="$(get_env JIRA_BASE_URL)"
-  jira_base="$(prompt_with_default "Jira base URL (optional)" "$cur_jira_base")"
-  set_env JIRA_BASE_URL "$jira_base"
+    if is_secret "$key"; then
+      if [ "$reconfigure" -eq 1 ]; then
+        printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
+      else
+        if [ "$required" -eq 1 ]; then
+          printf '%s (input hidden): ' "$prompt_label"
+        else
+          printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
+        fi
+      fi
+      read -rs new || true; echo
+      [ -n "$new" ] || new="$cur"
+    elif [ "$required" -eq 1 ] || [ "$always_show_default" -eq 1 ]; then
+      # Required fields and plain URLs/registry: always pre-shown, Enter accepts.
+      new="$(prompt_with_default "$prompt_label" "$cur")"
+    else
+      # Optional text/list fields: first run uses a plain "Enter to skip" read
+      # (no current value to show yet); --reconfigure pre-fills from .env.
+      if [ "$reconfigure" -eq 1 ]; then
+        new="$(prompt_with_default "$prompt_label" "$cur")"
+      else
+        read -r -p "${prompt_label%)}, Enter to skip): " new || true
+      fi
+    fi
 
-  local cur_jira_pat jira_pat
-  cur_jira_pat="$(get_env JIRA_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'Jira personal access token %s (input hidden): ' "$(mask_secret "$cur_jira_pat")"
-  else
-    printf 'Jira personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs jira_pat || true; echo
-  [ -n "$jira_pat" ] || jira_pat="$cur_jira_pat"
-  set_env JIRA_PAT "$jira_pat"
-
-  # GitLab (optional — Enter to skip/keep). git transport + REST API; the base
-  # URL is REQUIRED for the GitLab MCP to start. One PAT covers both git and the
-  # REST API (sent via the PRIVATE-TOKEN header).
-  local cur_gl_base gl_base
-  cur_gl_base="$(get_env GITLAB_BASE_URL)"
-  gl_base="$(prompt_with_default "GitLab base URL (optional; https://, required if you use GitLab)" "$cur_gl_base")"
-  set_env GITLAB_BASE_URL "$gl_base"
-
-  local cur_gl_user gl_user
-  cur_gl_user="$(get_env GITLAB_USER)"
-  if [ "$reconfigure" -eq 1 ]; then
-    gl_user="$(prompt_with_default "GitLab username (optional)" "$cur_gl_user")"
-  else
-    read -r -p "GitLab username (optional, Enter to skip): " gl_user || true
-  fi
-  set_env GITLAB_USER "$gl_user"
-
-  local cur_gl_pat gl_pat
-  cur_gl_pat="$(get_env GITLAB_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'GitLab personal access token %s (input hidden): ' "$(mask_secret "$cur_gl_pat")"
-  else
-    printf 'GitLab personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs gl_pat || true; echo
-  [ -n "$gl_pat" ] || gl_pat="$cur_gl_pat"
-  set_env GITLAB_PAT "$gl_pat"
-
-  # Git identity (optional — Enter to skip/keep)
-  local cur_git_name git_name
-  cur_git_name="$(get_env GIT_USER_NAME)"
-  if [ "$reconfigure" -eq 1 ]; then
-    git_name="$(prompt_with_default "Git user name for container commits (optional)" "$cur_git_name")"
-  else
-    read -r -p "Git user name for container commits (optional, Enter to skip): " git_name || true
-  fi
-  set_env GIT_USER_NAME "$git_name"
-
-  local cur_git_email git_email
-  cur_git_email="$(get_env GIT_USER_EMAIL)"
-  if [ "$reconfigure" -eq 1 ]; then
-    git_email="$(prompt_with_default "Git user email for container commits (optional)" "$cur_git_email")"
-  else
-    read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
-  fi
-  set_env GIT_USER_EMAIL "$git_email"
-
-  # Plugins (optional — all OFF by default). The image bakes these in; list the
-  # ones to enable, space-separated. Free-form so a newer image's plugins still
-  # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
-  local cur_plugins plugins
-  cur_plugins="$(get_env ENABLED_PLUGINS)"
-  info "available plugins (all off by default): ${KNOWN_PLUGINS}"
-  warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
-  if [ "$reconfigure" -eq 1 ]; then
-    plugins="$(prompt_with_default "Enable plugins (space-separated)" "$cur_plugins")"
-  else
-    read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
-  fi
-  set_env ENABLED_PLUGINS "$plugins"
-
-  # Image registry — pre-show default, allow Enter to accept.
-  local cur_reg new_reg
-  cur_reg="$(get_env IMAGE_REGISTRY)"
-  new_reg="$(prompt_with_default "Image registry (Artifactory path)" "$cur_reg")"
-  set_env IMAGE_REGISTRY "$new_reg"
+    set_env "$key" "$new"
+  done
 
   if [ "$reconfigure" -eq 0 ]; then
     # Auto-fill UID/GID for bind-mount permissions (first run only —
