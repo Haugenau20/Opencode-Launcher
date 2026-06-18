@@ -445,6 +445,35 @@ setup() {
   grep -q "^HOST_GID=$(id -g)$" "$SANDBOX/.env"
 }
 
+@test "first run: no tty still runs the linear wizard even with whiptail on PATH" {
+  # make_sandbox already puts tests/fake-bin (a fake whiptail included) first
+  # on PATH. This is the critical regression: have_tui requires a real tty,
+  # and bats's stdin here is a redirected file, not a tty, so a piped/CI
+  # first-run must still hit the linear run_setup_wizard (pinned 14-prompt
+  # walk + UID/GID autofill) — the ncurses --first-run path must never
+  # hijack it just because a backend happens to be installed.
+  [ ! -f "$SANDBOX/.env" ]
+  command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
+  local repo; repo="$(make_repo_arg)"
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-key' \
+    '' '' '' \
+    '' '' \
+    '' '' '' \
+    '' '' \
+    '' \
+    'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [ -f "$SANDBOX/.env" ]
+  grep -q '^LLM_API_BASE=https://llm.test/v1$' "$SANDBOX/.env"
+  grep -q '^LLM_API_KEY=sk-key$' "$SANDBOX/.env"
+  grep -q '^IMAGE_REGISTRY=reg.test.local/opencode$' "$SANDBOX/.env"
+  grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
+  grep -q "^HOST_GID=$(id -g)$" "$SANDBOX/.env"
+}
+
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"

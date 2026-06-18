@@ -66,13 +66,20 @@ cd opencode-launcher
 ```
 
 On the **first run**, the script copies `.env.example` → `.env` and prompts for
-your LLM endpoint/key and Artifactory path. The service integrations are all
-optional (press Enter to skip): Bitbucket (base URL + user/PAT), Jira (base URL
-+ PAT), and GitLab (base URL + user/PAT), plus git identity. Each integration
-needs its own base URL — Bitbucket's is plain HTTP on the internal instance,
-while Jira's and GitLab's are HTTPS, and GitLab's base URL is required for its
-MCP to start. It auto-fills `HOST_UID`/`HOST_GID`, then pulls the images and
-boots the stack. Later runs reuse `.env`; to change a secret, edit `.env`
+your LLM endpoint/key and Artifactory path. From a real terminal with
+`whiptail` or `dialog` installed, this is a small ncurses editor whose "Done"
+refuses to finish until the required fields (LLM base URL, LLM key, image
+registry) are filled in — unmet ones are marked `(REQUIRED)` in the menu;
+press Ctrl+C any time to abort. Without a real terminal or either backend
+(piped input, CI, or `OC_CONFIG_TUI=0`), it falls back to the plain-text
+wizard. The service integrations are all optional (press Enter to skip, or
+just leave them blank in the ncurses editor): Bitbucket (base URL + user/PAT),
+Jira (base URL + PAT), and GitLab (base URL + user/PAT), plus git identity.
+Each integration needs its own base URL — Bitbucket's is plain HTTP on the
+internal instance, while Jira's and GitLab's are HTTPS, and GitLab's base URL
+is required for its MCP to start. It auto-fills `HOST_UID`/`HOST_GID`, then
+pulls the images and boots the stack. Later runs reuse `.env`; to change a
+secret, edit `.env`
 (gitignored) and it applies next run.
 
 The stack comes up with the **OpenCode TUI attached**, rooted at `/workspace`

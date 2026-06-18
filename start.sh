@@ -555,11 +555,18 @@ doctor_check_env_file() {
 # doctor_check_env_keys — required keys are non-empty; optional keys are
 # reported as set/unset. NEVER prints a secret's value, only whether it is
 # set, so this output is safe to paste into a chat or ticket.
+#
+# The required set is required_keys() (lib/config.sh) — the single source of
+# truth shared with the ncurses first-run "Done" gate (run_tui_reconfigure
+# --first-run) — read into an array here rather than hardcoded, so the two
+# can't silently drift apart.
 doctor_check_env_keys() {
   local rc=0
-  local required=(LLM_API_BASE LLM_API_KEY IMAGE_REGISTRY)
-  local optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
+  local required=() optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
   local key val
+  while IFS= read -r key; do
+    [ -n "$key" ] && required+=("$key")
+  done < <(required_keys)
 
   if [ ! -f "$ENV_FILE" ]; then
     for key in "${required[@]}"; do
@@ -1077,7 +1084,18 @@ main() {
     info "first run: created $ENV_FILE from $ENV_EXAMPLE. Let's fill in your secrets."
     echo
 
-    run_setup_wizard
+    if have_tui; then
+      # Real terminal + whiptail/dialog available: the ncurses editor, with
+      # its first-run Done gate (required_keys() must be field_satisfied
+      # before Done is allowed to finish). set_host_ids does what
+      # run_setup_wizard's own first-run branch does for the linear path —
+      # the ncurses path must not skip it, bind-mount permissions depend on
+      # HOST_UID/HOST_GID being filled in.
+      run_tui_reconfigure --first-run
+      set_host_ids
+    else
+      run_setup_wizard            # linear path — unchanged, still does its own first-run UID/GID autofill
+    fi
 
     echo
     info "wrote $ENV_FILE — you can edit it later in your editor."

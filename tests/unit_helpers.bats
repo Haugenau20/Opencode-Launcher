@@ -741,3 +741,92 @@ SCRIPT
   [ "$status" -eq 0 ]
   [ "$output" = "NO" ]
 }
+
+@test "tui_msgbox: a non-zero (dismiss) exit is not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_msgbox "Title" "some text"
+    echo SURVIVED
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SURVIVED"* ]]
+}
+
+# --- required_keys / field_satisfied / unmet_required (first-run gate) ------
+
+@test "required_keys: lists exactly the three required keys" {
+  run required_keys
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'LLM_API_BASE\nLLM_API_KEY\nIMAGE_REGISTRY')" ]
+}
+
+@test "field_satisfied: false for an empty value" {
+  printf 'LLM_API_KEY=\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_KEY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the CHANGEME placeholder" {
+  printf 'IMAGE_REGISTRY=CHANGEME.artifactory.example/opencode-workplace\n' > "$ENV_FILE"
+  run field_satisfied IMAGE_REGISTRY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the internal.example placeholder" {
+  printf 'LLM_API_BASE=https://llm.internal.example/v1\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_BASE
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the artifactory.example placeholder" {
+  printf 'IMAGE_REGISTRY=foo.artifactory.example/bar\n' > "$ENV_FILE"
+  run field_satisfied IMAGE_REGISTRY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: true for a real, non-placeholder value" {
+  printf 'LLM_API_KEY=sk-real-key\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_KEY
+  [ "$status" -eq 0 ]
+}
+
+@test "unmet_required: a fresh .env.example copy reports all three required keys" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM_API_BASE"* ]]    # internal.example placeholder
+  [[ "$output" == *"LLM_API_KEY"* ]]     # empty
+  [[ "$output" == *"IMAGE_REGISTRY"* ]]  # CHANGEME/artifactory.example placeholder
+}
+
+@test "unmet_required: empty once every required key has a real value" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$ENV_FILE"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-real-key|' "$ENV_FILE"
+  sed -i 's|^IMAGE_REGISTRY=.*|IMAGE_REGISTRY=reg.test.local/opencode|' "$ENV_FILE"
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "unmet_required: reports only the still-unsatisfied subset" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$ENV_FILE"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-real-key|' "$ENV_FILE"
+  # IMAGE_REGISTRY left at its CHANGEME placeholder.
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [ "$output" = "IMAGE_REGISTRY" ]
+}
+
+# --- set_host_ids -------------------------------------------------------------
+
+@test "set_host_ids: writes the current user's uid/gid into HOST_UID/HOST_GID" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_host_ids
+  grep -q "^HOST_UID=$(id -u)$" "$ENV_FILE"
+  grep -q "^HOST_GID=$(id -g)$" "$ENV_FILE"
+}
