@@ -582,6 +582,42 @@ SCRIPT
   [[ "$output" == *"Bitbucket"* ]]
 }
 
+# --- field_help_text (ncurses editor per-field description) -----------------
+
+@test "field_help_text: non-empty for every editable_schema_keys() key" {
+  local key
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    run field_help_text "$key"
+    [ "$status" -eq 0 ]
+    [ -n "$output" ] || {
+      echo "field_help_text returned empty for $key" >&2
+      return 1
+    }
+  done < <(editable_schema_keys)
+}
+
+@test "field_help_text: ENABLED_PLUGINS lists every KNOWN_PLUGINS name and warns about Qwen" {
+  run field_help_text ENABLED_PLUGINS
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"superpowers"* ]]
+  [[ "$output" == *"dcp"* ]]
+  [[ "$output" == *"opencode-workspace"* ]]
+  [[ "$output" == *"Qwen"* ]]
+}
+
+@test "field_help_text: GITLAB_BASE_URL notes it is required" {
+  run field_help_text GITLAB_BASE_URL
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"REQUIRED"* ]]
+}
+
+@test "field_help_text: BITBUCKET_BASE_URL notes plain http://" {
+  run field_help_text BITBUCKET_BASE_URL
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://"* ]]
+}
+
 # --- prompt_one_key -----------------------------------------------------------
 
 @test "prompt_one_key: required secret (LLM_API_KEY) first-run prompt text is pinned" {

@@ -79,6 +79,90 @@ field_hint()  { _schema_field "$1" 5; }
 # is_secret KEY — true (0) if KEY's schema type is "secret".
 is_secret() { [ "$(field_type "$1")" = "secret" ]; }
 
+# field_help_text KEY — a short, human-readable description (1-3 lines) of
+# what KEY is for, condensed from the comment block above that key in
+# .env.example. Used ONLY by the ncurses (whiptail/dialog) editor
+# (run_tui_reconfigure below) to show context inside the edit dialog itself —
+# the linear wizard (prompt_one_key) gets this same information from its own
+# hand-written info/warn lines and hint text, and is NOT touched by this
+# function. Every editable_schema_keys() key MUST be cased explicitly here;
+# anything not cased (e.g. a future schema key added before this function is
+# updated) falls back to field_hint so the dialog never shows a blank body.
+#
+# ENABLED_PLUGINS is a special case: its help text must always reflect the
+# live $KNOWN_PLUGINS list (a start.sh global, present whenever config.sh is
+# sourced — same dependency contract as get_env/set_env) plus the Qwen/
+# opencode-workspace incompatibility warning, mirroring prompt_one_key's two
+# info/warn lines so the same caution is visible in both UIs.
+field_help_text() {
+  local key="$1"
+  case "$key" in
+    LLM_API_BASE)
+      printf 'Base URL of your LLM API (OpenAI-compatible), e.g. https://llm.internal.example/v1.'
+      ;;
+    LLM_API_KEY)
+      printf 'Bearer token for the LLM API, per developer.'
+      ;;
+    BITBUCKET_BASE_URL)
+      printf 'Bitbucket REST API base URL, no trailing slash.\nOnly needed if the agent should authenticate to Bitbucket.\nNote: the internal instance speaks plain http:// (https:// fails with a TLS error).'
+      ;;
+    BITBUCKET_USER)
+      printf 'Your Bitbucket username (also used for git auth). Optional.'
+      ;;
+    BITBUCKET_PAT)
+      printf 'Bitbucket personal access token (serves both git and the REST API). Optional.'
+      ;;
+    JIRA_BASE_URL)
+      printf 'Jira REST API base URL, no trailing slash.\nOnly needed if the agent should reach Jira. Optional.'
+      ;;
+    JIRA_PAT)
+      printf 'Jira personal access token, sent as a Bearer token (no username needed). Optional.'
+      ;;
+    GITLAB_BASE_URL)
+      printf 'GitLab base URL over HTTPS, no trailing slash.\nREQUIRED if you use GitLab — the GitLab MCP will not start without it.'
+      ;;
+    GITLAB_USER)
+      printf 'Your GitLab username, used for git Basic auth. Optional.'
+      ;;
+    GITLAB_PAT)
+      printf 'GitLab personal access token (covers git + REST API via the PRIVATE-TOKEN header). Optional.'
+      ;;
+    GIT_USER_NAME)
+      printf 'Git user name used for commits made inside the container. Optional.'
+      ;;
+    GIT_USER_EMAIL)
+      printf 'Git user email used for commits made inside the container. Optional.'
+      ;;
+    ALLOW_REMOTE_GIT)
+      printf 'Allow git push/fetch/pull/clone to remote hosts. 1 enables, 0 disables.'
+      ;;
+    ENABLE_SESSION_LOGS)
+      printf 'Keep session state on disk. 0 swaps session state for tmpfs instead.'
+      ;;
+    DISABLE_BITBUCKET_MCP)
+      printf 'Force-disable the Bitbucket MCP even if Bitbucket credentials are present in .env.'
+      ;;
+    DISABLE_JIRA_MCP)
+      printf 'Force-disable the Jira MCP even if Jira credentials are present in .env.'
+      ;;
+    DISABLE_GITLAB_MCP)
+      printf 'Force-disable the GitLab MCP even if GitLab credentials are present in .env.'
+      ;;
+    USER_LAYER_PATH)
+      printf 'Host path to bind-mount as your personal agents/skills/commands layer (e.g. ./user-layer).\nLeave empty to use a per-project named volume instead.'
+      ;;
+    ENABLED_PLUGINS)
+      printf 'Space- or comma-separated list of baked-in plugins to enable (symlinked in on boot, load offline). Empty = none enabled.\nAvailable plugins (all off by default): %s\nWARNING: do NOT enable '"'"'opencode-workspace'"'"' if you intend to use Qwen — they are incompatible.' "$KNOWN_PLUGINS"
+      ;;
+    IMAGE_REGISTRY)
+      printf 'Artifactory path images are pulled from, e.g. registry.example/opencode-workplace. REQUIRED before first run.'
+      ;;
+    *)
+      field_hint "$key"
+      ;;
+  esac
+}
+
 # wizard_keys — the ordered list of keys the interactive setup wizard prompts
 # for, one per line. This is a VIEW over config_schema: it is the exact
 # first-run/--reconfigure sequence the wizard has always used, preserved here
@@ -345,21 +429,24 @@ run_tui_reconfigure() {
         break
         ;;
       *)
-        local type cur new
+        local type cur new help body
         type="$(field_type "$choice")"
         label="$(field_label "$choice")"
+        help="$(field_help_text "$choice")"
         case "$type" in
           secret)
             cur="$(get_env "$choice")"
-            new="$(tui_password "$label" "$(mask_secret "$cur")")"
+            body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
+            new="$(tui_password "$label" "$body")"
             # Blank input keeps the current value, same rule prompt_one_key
             # uses for masked secrets.
             [ -n "$new" ] || new="$cur"
             set_env "$choice" "$new"
             ;;
           bool)
+            body="$help"$'\n\n'"Enable $label?"
             cur="$(get_env "$choice")"
-            if tui_yesno "$label" "Enable $label?"; then
+            if tui_yesno "$label" "$body"; then
               set_env "$choice" 1
             else
               set_env "$choice" 0
@@ -367,7 +454,8 @@ run_tui_reconfigure() {
             ;;
           url|text|list)
             cur="$(get_env "$choice")"
-            new="$(tui_input "$label" "$label:" "$cur")"
+            body="$help"$'\n\n'"$label:"
+            new="$(tui_input "$label" "$body" "$cur")"
             set_env "$choice" "$new"
             ;;
         esac
