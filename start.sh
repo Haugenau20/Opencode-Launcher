@@ -8,12 +8,12 @@
 # One launcher clone handles many repos: per-project settings (slug, port,
 # repo path) are derived from the path argument, never stored in .env.
 #
-# Structure: the pure helpers live in lib/*.sh (sourced below) so they can be
-# unit-tested in isolation (see tests/); this file keeps only the CLI surface —
-# usage(), argument parsing/dispatch in main(), and the boot flow in cmd_run().
-# main() runs only when the script is executed directly (the source-guard at the
-# bottom). Strict mode (set -euo pipefail) is enabled inside main() so sourcing
-# the file for tests has no side effects.
+# Structure: the helpers and the --help text live in lib/*.sh (sourced below) so
+# they can be unit-tested in isolation (see tests/); this file keeps only the
+# orchestration — argument parsing/dispatch in main() and the boot flow in
+# cmd_run(). main() runs only when the script is executed directly (the
+# source-guard at the bottom). Strict mode (set -euo pipefail) is enabled inside
+# main() so sourcing the file for tests has no side effects.
 
 # Paths are overridable so tests can point them at a sandbox before sourcing.
 ENV_FILE="${ENV_FILE:-.env}"
@@ -35,110 +35,11 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config project packages allowlist digest doctor commands; do
+for __lib in core config usage project packages allowlist digest doctor commands; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
 unset __lib
-
-usage() {
-  cat <<'EOF'
-Usage:
-  ./start.sh [--continue] [--persist] [--detach] [--podman] [--open] <host-repo-path>
-  ./start.sh --doctor [<host-repo-path>]
-  ./start.sh --status [<host-repo-path>]
-  ./start.sh --down|--stop <host-repo-path>
-  ./start.sh --logs <host-repo-path>
-  ./start.sh --shell <host-repo-path>
-  ./start.sh --reconfigure
-  ./start.sh --config
-  ./start.sh --show-allowlist [<host-repo-path>]
-  ./start.sh --help
-
-Boots a locked-down OpenCode environment with your repo mounted at /workspace.
-By default the OpenCode TUI is attached in the foreground once the stack is up,
-and exiting the TUI tears the stack down again (a clean one-in/one-out flow).
-
-Options:
-  --continue Resume your most recent opencode session instead of starting a
-             fresh one (passes opencode's own -c). No-op with --detach. If no
-             previous session exists, opencode starts a new one. Alias: -c.
-  --persist  Keep the stack (and its web UI) running after you exit the TUI, so
-             you can resume your session later. Without it, exiting the TUI
-             tears the stack down. Alias: --web.
-  --detach   Boot the stack but do NOT attach the TUI (headless; the stack keeps
-             running). Use this for scripted/CI runs or web-only. Alias: --no-tui.
-  --podman   Add the Podman overlay (keep-id userns) for rootless Podman. This is
-             auto-detected when `docker` is Podman; use the flag to force it.
-  --tui      Attach the TUI (this is the default; accepted for back-compat).
-  --open     Once the web UI URL is known, open it in your default browser via
-             `xdg-open`. Works alongside --web/--persist/--detach. Non-fatal if
-             `xdg-open` isn't available (warns and continues; the URL is always
-             printed regardless).
-  --doctor   Run all environment checks (Docker, compose, registry auth, .env
-             keys, ports, disk space) and print one pasteable PASS/WARN/FAIL
-             report, then exit — no image pull, no TUI attach. Optionally pass
-             a <host-repo-path> to also check that project's derived port.
-             Never prints secret values. Exits non-zero if any check FAILs.
-  --status   Report on running launcher stacks, then exit — no image pull, no
-             TUI attach, no .env secrets required. With a <host-repo-path>,
-             re-derives that project's slug/port and reports whether it's up,
-             its web UI URL, and the resume command. Without one, lists every
-             running opencode-* stack (project, status, port).
-  --down     Tear down the stack for <host-repo-path> via `docker compose
-  --stop     down`, re-deriving the same slug / per-project env file / compose
-             invocation boot uses. Aliases: --down, --stop. Safe to run even
-             if nothing is up; does not require .env secrets.
-  --logs     Tail (follow) the running stack's logs for <host-repo-path>, then
-             exit — no image pull, no TUI attach, no LLM key required. Ctrl-C
-             detaches without affecting the stack. Gracefully no-ops if
-             nothing is running for that project.
-  --shell    Drop into an interactive shell inside the running opencode
-             container for <host-repo-path>, as the `dev` user rooted at
-             /workspace (falls back to `sh` if `bash` is unavailable) — no
-             image pull, no LLM key required. Gracefully no-ops if the
-             container isn't running.
-  --reconfigure
-             Re-run the secrets setup wizard, pre-filled with your current
-             .env values (press Enter on any prompt to keep it). Existing
-             secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
-             any unrelated keys untouched. Changes apply on your next run.
-             When run from a real terminal AND whiptail or dialog is
-             installed, shows a small ncurses menu editor. From a real
-             terminal without either installed, shows a read-only dashboard
-             plus a plain-text menu so you can edit a single setting instead
-             of walking all of them (still available via the menu's "a"
-             option). Piped input (scripts, CI) always gets the full linear
-             walk. Set OC_CONFIG_TUI=0 to force the plain-text path even when
-             whiptail/dialog is available.
-  --config   Print a read-only dashboard of every .env setting, grouped by
-             section, then exit — no docker, no image pull, no LLM key
-             required. Secret values are never printed (shown as set/unset
-             only). Takes no <host-repo-path> argument. Edit values with
-             ./start.sh --reconfigure.
-  --show-allowlist
-             Print exactly what outbound egress the sandboxed agent is
-             permitted, then exit — no image pull, no TUI attach, no LLM key
-             required. The authoritative allowlist (LLM endpoint, Bitbucket,
-             Jira, GitLab) is enforced inside the squid image, not this repo;
-             this shows the configured LLM/Bitbucket hosts from .env plus any local
-             extra-allowlist.d/*.conf extensions. Optionally takes a
-             <host-repo-path> (accepted for symmetry; doesn't change the
-             report). Never prints secret values.
-  --help     Show this help.
-
-Which image tag is used is controlled by IMAGE_TAG in .env (defaults to
-'latest'; set it to a specific version like 0.0.2 to pin).
-
-Why TUI-default: on the OpenCode version baked into the current image the
-web/desktop UI roots the agent at / instead of /workspace (upstream bug
-anomalyco/opencode#14445, #14460). The TUI is pinned to /workspace and is
-correct. Re-flip to "all frontends equal" once the image ships a serve --cwd.
-
-First run copies .env.example -> .env and prompts for your secrets. Later runs
-reuse .env (edit it by hand any time).
-EOF
-}
 
 # --- main flow --------------------------------------------------------------
 main() {
