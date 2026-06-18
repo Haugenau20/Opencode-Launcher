@@ -445,6 +445,35 @@ setup() {
   grep -q "^HOST_GID=$(id -g)$" "$SANDBOX/.env"
 }
 
+@test "first run: no tty still runs the linear wizard even with whiptail on PATH" {
+  # make_sandbox already puts tests/fake-bin (a fake whiptail included) first
+  # on PATH. This is the critical regression: have_tui requires a real tty,
+  # and bats's stdin here is a redirected file, not a tty, so a piped/CI
+  # first-run must still hit the linear run_setup_wizard (pinned 14-prompt
+  # walk + UID/GID autofill) — the ncurses --first-run path must never
+  # hijack it just because a backend happens to be installed.
+  [ ! -f "$SANDBOX/.env" ]
+  command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
+  local repo; repo="$(make_repo_arg)"
+  printf '%s\n' \
+    'https://llm.test/v1' 'sk-key' \
+    '' '' '' \
+    '' '' \
+    '' '' '' \
+    '' '' \
+    '' \
+    'reg.test.local/opencode' \
+    > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" "$repo" < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [ -f "$SANDBOX/.env" ]
+  grep -q '^LLM_API_BASE=https://llm.test/v1$' "$SANDBOX/.env"
+  grep -q '^LLM_API_KEY=sk-key$' "$SANDBOX/.env"
+  grep -q '^IMAGE_REGISTRY=reg.test.local/opencode$' "$SANDBOX/.env"
+  grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
+  grep -q "^HOST_GID=$(id -g)$" "$SANDBOX/.env"
+}
+
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
@@ -901,6 +930,111 @@ seed_env_doctor() {
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+@test "--reconfigure: piped input still runs the linear walk even with whiptail on PATH" {
+  # make_sandbox already puts tests/fake-bin (which includes a fake whiptail)
+  # first on PATH. This proves the ncurses editor (Layer 2) never hijacks a
+  # piped/CI --reconfigure run: have_tui requires a real tty, and bats's
+  # stdin here is a redirected file, not a tty, so the linear wizard (pinned
+  # intro line + per-field round-trip) must still run, exactly as it did
+  # before whiptail existed on PATH.
+  seed_env
+  command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
+  grep -q '^GIT_USER_NAME=New Name$' "$SANDBOX/.env"
+}
+
+@test "--reconfigure: OC_CONFIG_TUI=0 escape hatch still works from a piped run" {
+  seed_env
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  OC_CONFIG_TUI=0 run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
+}
+
+# --- --config ----------------------------------------------------------
+
+@test "--help mentions --config" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--config"* ]]
+}
+
+@test "--config never pulls, attaches, or requires docker/an LLM key" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [ ! -s "$FAKE_DOCKER_LOG" ]   # docker is never even invoked
+}
+
+@test "--config works with no docker available on PATH" {
+  seed_env
+  PATH="$(dirname "$(command -v bash)")" run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configuration"* ]]
+}
+
+@test "--config masks secrets: never prints the value, shows the mask and [set]" {
+  seed_env
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-super-secret-value|' "$SANDBOX/.env"
+  sed -i 's|^BITBUCKET_PAT=.*|BITBUCKET_PAT=bb-super-secret-pat|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"LLM_API_KEY"*"(secret, set)"* ]]
+  [[ "$output" == *"[set]"* ]]
+}
+
+@test "--config shows plain url/text values in cleartext" {
+  seed_env
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.internal.example/v1|' "$SANDBOX/.env"
+  sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Jane Dev|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"https://llm.internal.example/v1"* ]]
+  [[ "$output" == *"Jane Dev"* ]]
+}
+
+@test "--config marks unset keys as unset" {
+  seed_env
+  sed -i 's|^BITBUCKET_BASE_URL=.*|BITBUCKET_BASE_URL=|' "$SANDBOX/.env"
+  sed -i 's|^JIRA_PAT=.*|JIRA_PAT=|' "$SANDBOX/.env"
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BITBUCKET_BASE_URL"*"(unset)"* ]]
+  [[ "$output" == *"JIRA_PAT"*"(unset)"* ]]
+  [[ "$output" == *"[ -- ]"* ]]
+}
+
+@test "--config handles a missing .env gracefully without creating one" {
+  [ ! -f "$SANDBOX/.env" ]
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [ ! -f "$SANDBOX/.env" ]
+}
+
+@test "--config groups keys by section" {
+  seed_env
+  run_launcher --config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM"* ]]
+  [[ "$output" == *"Bitbucket"* ]]
+  [[ "$output" == *"Safety"* ]]
+}
+
+@test "--config rejects a repo-path argument" {
+  seed_env
+  run_launcher --config "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--config takes no"* ]]
 }
 
 # --- --show-allowlist -----------------------------------------------------

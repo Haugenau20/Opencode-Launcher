@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#
+# Fake `whiptail` for the test suite. Real whiptail/dialog need a tty and
+# can't be driven headlessly in bats, so this stub exists purely so
+# `tui_backend`/`have_tui` detection tests can assert "whiptail found on
+# PATH" without requiring the real ncurses binary to be installed in CI.
+# It is never actually exercised as an interactive backend by the suite
+# (have_tui() also requires a real tty, which bats does not have).
+#
+# Knobs (all optional, read from the environment):
+#   FAKE_WHIPTAIL_RC   exit code to return (default 0)
+
+exit "${FAKE_WHIPTAIL_RC:-0}"

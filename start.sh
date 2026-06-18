@@ -42,6 +42,7 @@ Usage:
   ./start.sh --logs <host-repo-path>
   ./start.sh --shell <host-repo-path>
   ./start.sh --reconfigure
+  ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
   ./start.sh --help
 
@@ -93,6 +94,19 @@ Options:
              .env values (press Enter on any prompt to keep it). Existing
              secrets are masked, never echoed. Leaves HOST_UID/HOST_GID and
              any unrelated keys untouched. Changes apply on your next run.
+             When run from a real terminal AND whiptail or dialog is
+             installed, shows a small ncurses menu editor. From a real
+             terminal without either installed, shows a read-only dashboard
+             plus a plain-text menu so you can edit a single setting instead
+             of walking all of them (still available via the menu's "a"
+             option). Piped input (scripts, CI) always gets the full linear
+             walk. Set OC_CONFIG_TUI=0 to force the plain-text path even when
+             whiptail/dialog is available.
+  --config   Print a read-only dashboard of every .env setting, grouped by
+             section, then exit — no docker, no image pull, no LLM key
+             required. Secret values are never printed (shown as set/unset
+             only). Takes no <host-repo-path> argument. Edit values with
+             ./start.sh --reconfigure.
   --show-allowlist
              Print exactly what outbound egress the sandboxed agent is
              permitted, then exit — no image pull, no TUI attach, no LLM key
@@ -134,13 +148,6 @@ get_env() {
   sed -n "s|^${key}=\(.*\)$|\1|p" "$ENV_FILE" | head -n1
 }
 
-# prompt_default VAR "Label" current-default  -> echoes chosen value
-prompt_with_default() {
-  local label="$1" current="$2" reply
-  read -r -p "$label [$current]: " reply || true
-  printf '%s' "${reply:-$current}"
-}
-
 # mask_secret VALUE -> a short, non-reversible hint for use as a prompt
 # default when displaying a secret ("(empty)" or "(set, press Enter to
 # keep)"). Never echoes the actual value.
@@ -152,6 +159,17 @@ mask_secret() {
     printf '%s' "(set, press Enter to keep)"
   fi
 }
+
+# --- sourced libs -------------------------------------------------------------
+# Resolved relative to this script's OWN location (not main()'s SCRIPT_DIR,
+# which is computed too late for a top-level source and isn't set at all when
+# tests merely `source` this file). Placed after the shared helpers above
+# (info/warn/die, get_env/set_env, sed_escape, mask_secret) so the ordering
+# contract holds: lib/config.sh depends on them and must be sourced after
+# they're defined, but before main() is invoked.
+__OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+# shellcheck source=lib/config.sh
+source "$__OCL_DIR/lib/config.sh"
 
 # --- per-project derivations ------------------------------------------------
 # derive_slug PATH — lowercase basename, non [a-z0-9_-] -> '-', collapse and
@@ -537,11 +555,18 @@ doctor_check_env_file() {
 # doctor_check_env_keys — required keys are non-empty; optional keys are
 # reported as set/unset. NEVER prints a secret's value, only whether it is
 # set, so this output is safe to paste into a chat or ticket.
+#
+# The required set is required_keys() (lib/config.sh) — the single source of
+# truth shared with the ncurses first-run "Done" gate (run_tui_reconfigure
+# --first-run) — read into an array here rather than hardcoded, so the two
+# can't silently drift apart.
 doctor_check_env_keys() {
   local rc=0
-  local required=(LLM_API_BASE LLM_API_KEY IMAGE_REGISTRY)
-  local optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
+  local required=() optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
   local key val
+  while IFS= read -r key; do
+    [ -n "$key" ] && required+=("$key")
+  done < <(required_keys)
 
   if [ ! -f "$ENV_FILE" ]; then
     for key in "${required[@]}"; do
@@ -660,157 +685,6 @@ cmd_doctor() {
     err "doctor: one or more critical checks FAILED — see [FAIL] lines above."
   fi
   return "$overall_rc"
-}
-
-# --- setup wizard (first-run and --reconfigure) ------------------------------
-# run_setup_wizard [--reconfigure] — prompts for the secrets/config that
-# first-run handles, writing each answer via set_env. In default (first-run)
-# mode, secrets start blank. In --reconfigure mode every prompt is pre-filled
-# from the CURRENT .env value (Enter keeps it); secret values are shown masked
-# (never echoed) but still round-trip correctly when left untouched. Never
-# touches HOST_UID/HOST_GID (or any other key it doesn't explicitly own) when
-# reconfiguring. Both first-run and --reconfigure call this so behavior stays
-# identical between the two entry points.
-run_setup_wizard() {
-  local reconfigure=0
-  [ "${1:-}" = "--reconfigure" ] && reconfigure=1
-
-  # LLM
-  local cur_base new_base
-  cur_base="$(get_env LLM_API_BASE)"
-  new_base="$(prompt_with_default "LLM API base URL" "$cur_base")"
-  set_env LLM_API_BASE "$new_base"
-
-  local cur_key llm_key
-  cur_key="$(get_env LLM_API_KEY)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'LLM API key %s (input hidden): ' "$(mask_secret "$cur_key")"
-  else
-    printf 'LLM API key (input hidden): '
-  fi
-  read -rs llm_key || true; echo
-  [ -n "$llm_key" ] || llm_key="$cur_key"
-  set_env LLM_API_KEY "$llm_key"
-
-  # Bitbucket (optional — Enter to skip/keep). The base URL is a plain URL (not
-  # a secret), so it uses prompt_with_default like LLM_API_BASE. NOTE: the
-  # internal instance speaks plain HTTP — use http://, not https://.
-  local cur_bb_base bb_base
-  cur_bb_base="$(get_env BITBUCKET_BASE_URL)"
-  bb_base="$(prompt_with_default "Bitbucket base URL (optional; plain http:// on the internal instance)" "$cur_bb_base")"
-  set_env BITBUCKET_BASE_URL "$bb_base"
-
-  local cur_bb_user bb_user
-  cur_bb_user="$(get_env BITBUCKET_USER)"
-  if [ "$reconfigure" -eq 1 ]; then
-    bb_user="$(prompt_with_default "Bitbucket username (optional)" "$cur_bb_user")"
-  else
-    read -r -p "Bitbucket username (optional, Enter to skip): " bb_user || true
-  fi
-  set_env BITBUCKET_USER "$bb_user"
-
-  local cur_bb_pat bb_pat
-  cur_bb_pat="$(get_env BITBUCKET_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'Bitbucket personal access token %s (input hidden): ' "$(mask_secret "$cur_bb_pat")"
-  else
-    printf 'Bitbucket personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs bb_pat || true; echo
-  [ -n "$bb_pat" ] || bb_pat="$cur_bb_pat"
-  set_env BITBUCKET_PAT "$bb_pat"
-
-  # Jira (optional — Enter to skip/keep). REST API only; the PAT authenticates
-  # as a Bearer token, so there is no username to collect.
-  local cur_jira_base jira_base
-  cur_jira_base="$(get_env JIRA_BASE_URL)"
-  jira_base="$(prompt_with_default "Jira base URL (optional)" "$cur_jira_base")"
-  set_env JIRA_BASE_URL "$jira_base"
-
-  local cur_jira_pat jira_pat
-  cur_jira_pat="$(get_env JIRA_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'Jira personal access token %s (input hidden): ' "$(mask_secret "$cur_jira_pat")"
-  else
-    printf 'Jira personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs jira_pat || true; echo
-  [ -n "$jira_pat" ] || jira_pat="$cur_jira_pat"
-  set_env JIRA_PAT "$jira_pat"
-
-  # GitLab (optional — Enter to skip/keep). git transport + REST API; the base
-  # URL is REQUIRED for the GitLab MCP to start. One PAT covers both git and the
-  # REST API (sent via the PRIVATE-TOKEN header).
-  local cur_gl_base gl_base
-  cur_gl_base="$(get_env GITLAB_BASE_URL)"
-  gl_base="$(prompt_with_default "GitLab base URL (optional; https://, required if you use GitLab)" "$cur_gl_base")"
-  set_env GITLAB_BASE_URL "$gl_base"
-
-  local cur_gl_user gl_user
-  cur_gl_user="$(get_env GITLAB_USER)"
-  if [ "$reconfigure" -eq 1 ]; then
-    gl_user="$(prompt_with_default "GitLab username (optional)" "$cur_gl_user")"
-  else
-    read -r -p "GitLab username (optional, Enter to skip): " gl_user || true
-  fi
-  set_env GITLAB_USER "$gl_user"
-
-  local cur_gl_pat gl_pat
-  cur_gl_pat="$(get_env GITLAB_PAT)"
-  if [ "$reconfigure" -eq 1 ]; then
-    printf 'GitLab personal access token %s (input hidden): ' "$(mask_secret "$cur_gl_pat")"
-  else
-    printf 'GitLab personal access token (optional, Enter to skip, input hidden): '
-  fi
-  read -rs gl_pat || true; echo
-  [ -n "$gl_pat" ] || gl_pat="$cur_gl_pat"
-  set_env GITLAB_PAT "$gl_pat"
-
-  # Git identity (optional — Enter to skip/keep)
-  local cur_git_name git_name
-  cur_git_name="$(get_env GIT_USER_NAME)"
-  if [ "$reconfigure" -eq 1 ]; then
-    git_name="$(prompt_with_default "Git user name for container commits (optional)" "$cur_git_name")"
-  else
-    read -r -p "Git user name for container commits (optional, Enter to skip): " git_name || true
-  fi
-  set_env GIT_USER_NAME "$git_name"
-
-  local cur_git_email git_email
-  cur_git_email="$(get_env GIT_USER_EMAIL)"
-  if [ "$reconfigure" -eq 1 ]; then
-    git_email="$(prompt_with_default "Git user email for container commits (optional)" "$cur_git_email")"
-  else
-    read -r -p "Git user email for container commits (optional, Enter to skip): " git_email || true
-  fi
-  set_env GIT_USER_EMAIL "$git_email"
-
-  # Plugins (optional — all OFF by default). The image bakes these in; list the
-  # ones to enable, space-separated. Free-form so a newer image's plugins still
-  # work even if the hint is stale; /plugins (in the TUI) is the source of truth.
-  local cur_plugins plugins
-  cur_plugins="$(get_env ENABLED_PLUGINS)"
-  info "available plugins (all off by default): ${KNOWN_PLUGINS}"
-  warn "do NOT enable 'opencode-workspace' if you intend to use Qwen — they are incompatible."
-  if [ "$reconfigure" -eq 1 ]; then
-    plugins="$(prompt_with_default "Enable plugins (space-separated)" "$cur_plugins")"
-  else
-    read -r -p "Enable plugins (space-separated, Enter to skip): " plugins || true
-  fi
-  set_env ENABLED_PLUGINS "$plugins"
-
-  # Image registry — pre-show default, allow Enter to accept.
-  local cur_reg new_reg
-  cur_reg="$(get_env IMAGE_REGISTRY)"
-  new_reg="$(prompt_with_default "Image registry (Artifactory path)" "$cur_reg")"
-  set_env IMAGE_REGISTRY "$new_reg"
-
-  if [ "$reconfigure" -eq 0 ]; then
-    # Auto-fill UID/GID for bind-mount permissions (first run only —
-    # reconfigure must never clobber these).
-    set_env HOST_UID "$(id -u)"
-    set_env HOST_GID "$(id -g)"
-  fi
 }
 
 # --- per-project derivation (shared by boot, --status, --down) --------------
@@ -1041,21 +915,6 @@ cmd_shell() {
   fi
 }
 
-# cmd_reconfigure — re-run the setup wizard pre-filled from the current .env.
-cmd_reconfigure() {
-  if [ ! -f "$ENV_FILE" ]; then
-    [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
-    cp "$ENV_EXAMPLE" "$ENV_FILE"
-    info "no $ENV_FILE found — created one from $ENV_EXAMPLE to reconfigure."
-  fi
-
-  info "reconfigure: press Enter on any prompt to keep the current value."
-  echo
-  run_setup_wizard --reconfigure
-  echo
-  info "wrote $ENV_FILE — changes apply on your next ./start.sh run."
-}
-
 # --- main flow --------------------------------------------------------------
 main() {
   set -euo pipefail
@@ -1084,6 +943,7 @@ main() {
   local WANT_STATUS=0
   local WANT_DOWN=0
   local WANT_RECONFIGURE=0
+  local WANT_CONFIG=0
   local WANT_SHOW_ALLOWLIST=0
   local WANT_LOGS=0
   local WANT_SHELL=0
@@ -1101,6 +961,7 @@ main() {
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
       --reconfigure) WANT_RECONFIGURE=1; shift ;;
+      --config) WANT_CONFIG=1; shift ;;
       --show-allowlist) WANT_SHOW_ALLOWLIST=1; shift ;;
       --logs) WANT_LOGS=1; shift ;;
       --shell) WANT_SHELL=1; shift ;;
@@ -1140,6 +1001,15 @@ main() {
   if [ "$WANT_RECONFIGURE" -eq 1 ]; then
     [ -z "$REPO_ARG" ] || { usage; die "--reconfigure takes no <host-repo-path> argument"; }
     cmd_reconfigure
+    return 0
+  fi
+
+  # --config also short-circuits everything else: no docker, no image pull,
+  # no LLM key required, pure read of $ENV_FILE. Takes no <host-repo-path>
+  # argument, mirroring --reconfigure.
+  if [ "$WANT_CONFIG" -eq 1 ]; then
+    [ -z "$REPO_ARG" ] || { usage; die "--config takes no <host-repo-path> argument"; }
+    cmd_config_show
     return 0
   fi
 
@@ -1214,7 +1084,18 @@ main() {
     info "first run: created $ENV_FILE from $ENV_EXAMPLE. Let's fill in your secrets."
     echo
 
-    run_setup_wizard
+    if have_tui; then
+      # Real terminal + whiptail/dialog available: the ncurses editor, with
+      # its first-run Done gate (required_keys() must be field_satisfied
+      # before Done is allowed to finish). set_host_ids does what
+      # run_setup_wizard's own first-run branch does for the linear path —
+      # the ncurses path must not skip it, bind-mount permissions depend on
+      # HOST_UID/HOST_GID being filled in.
+      run_tui_reconfigure --first-run
+      set_host_ids
+    else
+      run_setup_wizard            # linear path — unchanged, still does its own first-run UID/GID autofill
+    fi
 
     echo
     info "wrote $ENV_FILE — you can edit it later in your editor."

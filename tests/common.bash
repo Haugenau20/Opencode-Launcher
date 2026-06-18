@@ -16,6 +16,7 @@ make_sandbox() {
   SANDBOX="$BATS_TEST_TMPDIR/launcher"
   mkdir -p "$SANDBOX"
   cp "$REPO_ROOT/start.sh" "$SANDBOX/"
+  cp -r "$REPO_ROOT/lib" "$SANDBOX/"
   cp "$REPO_ROOT/.env.example" "$SANDBOX/"
   cp "$REPO_ROOT"/docker-compose*.yml "$SANDBOX/" 2>/dev/null || true
   cp -r "$REPO_ROOT/extra-allowlist.d" "$SANDBOX/" 2>/dev/null || true

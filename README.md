@@ -66,13 +66,20 @@ cd opencode-launcher
 ```
 
 On the **first run**, the script copies `.env.example` → `.env` and prompts for
-your LLM endpoint/key and Artifactory path. The service integrations are all
-optional (press Enter to skip): Bitbucket (base URL + user/PAT), Jira (base URL
-+ PAT), and GitLab (base URL + user/PAT), plus git identity. Each integration
-needs its own base URL — Bitbucket's is plain HTTP on the internal instance,
-while Jira's and GitLab's are HTTPS, and GitLab's base URL is required for its
-MCP to start. It auto-fills `HOST_UID`/`HOST_GID`, then pulls the images and
-boots the stack. Later runs reuse `.env`; to change a secret, edit `.env`
+your LLM endpoint/key and Artifactory path. From a real terminal with
+`whiptail` or `dialog` installed, this is a small ncurses editor whose "Done"
+refuses to finish until the required fields (LLM base URL, LLM key, image
+registry) are filled in — unmet ones are marked `(REQUIRED)` in the menu;
+press Ctrl+C any time to abort. Without a real terminal or either backend
+(piped input, CI, or `OC_CONFIG_TUI=0`), it falls back to the plain-text
+wizard. The service integrations are all optional (press Enter to skip, or
+just leave them blank in the ncurses editor): Bitbucket (base URL + user/PAT),
+Jira (base URL + PAT), and GitLab (base URL + user/PAT), plus git identity.
+Each integration needs its own base URL — Bitbucket's is plain HTTP on the
+internal instance, while Jira's and GitLab's are HTTPS, and GitLab's base URL
+is required for its MCP to start. It auto-fills `HOST_UID`/`HOST_GID`, then
+pulls the images and boots the stack. Later runs reuse `.env`; to change a
+secret, edit `.env`
 (gitignored) and it applies next run.
 
 The stack comes up with the **OpenCode TUI attached**, rooted at `/workspace`
@@ -94,7 +101,8 @@ Flags that change the default attach-and-teardown behavior:
 | `--down` (`--stop`) `<repo-path>` | Tear down a stack left running by `--persist`/`--detach`, the clean way (re-derives the same project `docker compose down` would use). Safe to run even if nothing is up. |
 | `--logs <repo-path>`  | Tail (follow) the running stack's logs. Ctrl-C detaches without affecting the stack. No pull, no TUI attach, no LLM key required. Graceful no-op if nothing is running. |
 | `--shell <repo-path>` | Drop into an interactive shell inside the running opencode container, as the `dev` user rooted at `/workspace` (falls back to `sh` if `bash` is unavailable). No pull, no LLM key required. Graceful no-op if the container isn't running. |
-| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. Changes apply next run. |
+| `--reconfigure`       | Re-run the secrets setup wizard, pre-filled with your current `.env` values (Enter keeps each one). Existing secrets are masked, never echoed. From a real terminal with `whiptail` or `dialog` installed, shows a small ncurses menu editor; from a real terminal without either, shows a dashboard + plain-text menu instead; piped input (scripts/CI) gets the full linear walk. Set `OC_CONFIG_TUI=0` to force the plain-text path even when whiptail/dialog is installed. Changes apply next run. |
+| `--config`            | Print a read-only dashboard of every `.env` setting, grouped by section, then exit. No docker, no pull, no LLM key required. Secret values are never printed (set/unset only). Takes no repo path. |
 | `--show-allowlist [<repo-path>]` | Print exactly what outbound egress the agent is permitted. Read-only — no pull, no TUI attach, no LLM key required. See [Egress allowlist](#egress-allowlist) below. |
 
 ```bash
@@ -107,6 +115,7 @@ Flags that change the default attach-and-teardown behavior:
 ./start.sh --logs    ~/code/your-repo    # tail the running stack's logs
 ./start.sh --shell   ~/code/your-repo    # shell into the running container
 ./start.sh --reconfigure                 # edit your secrets interactively
+./start.sh --config                      # see your current .env settings at a glance
 ./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
 
@@ -294,5 +303,7 @@ Images are pulled fresh on every `./start.sh`:
   incantation.
 - **Changed your mind about a secret or plugin?** `./start.sh --reconfigure`
   re-runs the setup wizard pre-filled with your current `.env` values — Enter
-  keeps each one.
+  keeps each one. If `whiptail` or `dialog` is installed and you're at a real
+  terminal, this opens a small ncurses menu instead of the plain-text
+  prompts; set `OC_CONFIG_TUI=0` to opt back into the plain-text flow.
 - **Linux only** — matches the parent system's supported scope.

@@ -503,3 +503,366 @@ SCRIPT
   [[ "$output" != *"super-secret"* ]]
   [ "$output" = "SECRET_KEY" ]
 }
+
+# --- editable_schema_keys ----------------------------------------------------
+
+@test "editable_schema_keys: excludes internal-typed keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"HOST_UID"* ]]
+  [[ "$output" != *"HOST_GID"* ]]
+  [[ "$output" != *"IMAGE_TAG"* ]]
+}
+
+@test "editable_schema_keys: includes bool safety switches and non-internal keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ALLOW_REMOTE_GIT"* ]]
+  [[ "$output" == *"ENABLE_SESSION_LOGS"* ]]
+  [[ "$output" == *"USER_LAYER_PATH"* ]]
+  [[ "$output" == *"LLM_API_BASE"* ]]
+  [[ "$output" == *"IMAGE_REGISTRY"* ]]
+}
+
+@test "editable_schema_keys: every line is a real config_schema key, in schema order" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  local expected
+  expected="$(config_schema | awk -F'|' '$3 != "internal" { print $2 }')"
+  [ "$output" = "$expected" ]
+}
+
+# --- cmd_config_show ----------------------------------------------------------
+
+@test "cmd_config_show: never prints a configured secret value" {
+  printf 'LLM_API_KEY=sk-super-secret-value\nBITBUCKET_PAT=bb-super-secret-pat\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"sk-super-secret-value"* ]]
+  [[ "$output" != *"bb-super-secret-pat"* ]]
+  [[ "$output" == *"(secret, set)"* ]]
+}
+
+@test "cmd_config_show: shows [set] and the mask for a non-empty secret" {
+  printf 'LLM_API_KEY=sk-super-secret-value\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[set]"*"LLM_API_KEY"*"(secret, set)"* ]]
+}
+
+@test "cmd_config_show: shows plain url/text values in cleartext" {
+  printf 'LLM_API_BASE=https://llm.internal.example/v1\nGIT_USER_NAME=Jane Dev\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"https://llm.internal.example/v1"* ]]
+  [[ "$output" == *"Jane Dev"* ]]
+}
+
+@test "cmd_config_show: marks an unset (empty) key as unset" {
+  printf 'LLM_API_BASE=\nBITBUCKET_PAT=\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[ -- ]"*"LLM_API_BASE"*"(unset)"* ]]
+  [[ "$output" == *"[ -- ]"*"BITBUCKET_PAT"*"(unset)"* ]]
+}
+
+@test "cmd_config_show: missing .env is reported but never created" {
+  [ ! -f "$ENV_FILE" ]
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]]
+  [ ! -f "$ENV_FILE" ]
+}
+
+@test "cmd_config_show: groups keys under their field_group section header" {
+  printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM"* ]]
+  [[ "$output" == *"Bitbucket"* ]]
+}
+
+# --- field_help_text (ncurses editor per-field description) -----------------
+
+@test "field_help_text: non-empty for every editable_schema_keys() key" {
+  local key
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    run field_help_text "$key"
+    [ "$status" -eq 0 ]
+    [ -n "$output" ] || {
+      echo "field_help_text returned empty for $key" >&2
+      return 1
+    }
+  done < <(editable_schema_keys)
+}
+
+@test "field_help_text: ENABLED_PLUGINS lists every KNOWN_PLUGINS name and warns about Qwen" {
+  run field_help_text ENABLED_PLUGINS
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"superpowers"* ]]
+  [[ "$output" == *"dcp"* ]]
+  [[ "$output" == *"opencode-workspace"* ]]
+  [[ "$output" == *"Qwen"* ]]
+}
+
+@test "field_help_text: GITLAB_BASE_URL notes it is required" {
+  run field_help_text GITLAB_BASE_URL
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"REQUIRED"* ]]
+}
+
+@test "field_help_text: BITBUCKET_BASE_URL notes plain http://" {
+  run field_help_text BITBUCKET_BASE_URL
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://"* ]]
+}
+
+# --- prompt_one_key -----------------------------------------------------------
+
+@test "prompt_one_key: required secret (LLM_API_KEY) first-run prompt text is pinned" {
+  printf 'LLM_API_KEY=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "sk-newkey\n" | { prompt_one_key LLM_API_KEY; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM API key (input hidden): "* ]]
+}
+
+@test "prompt_one_key: --reconfigure secret prompt uses the masked hint form" {
+  printf 'LLM_API_KEY=already-set\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "\n" | { prompt_one_key LLM_API_KEY --reconfigure; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"set, press Enter to keep"* ]]
+  [[ "$output" != *"already-set"* ]]
+  [ "$(get_env LLM_API_KEY)" = "already-set" ]
+}
+
+@test "prompt_one_key: bool field toggles via 0/1 and defaults to current value" {
+  printf 'ALLOW_REMOTE_GIT=1\n' > "$ENV_FILE"
+  printf '\n' | prompt_one_key ALLOW_REMOTE_GIT --reconfigure
+  [ "$(get_env ALLOW_REMOTE_GIT)" = "1" ]
+
+  printf 'ALLOW_REMOTE_GIT=1\n' > "$ENV_FILE"
+  printf '0\n' | prompt_one_key ALLOW_REMOTE_GIT --reconfigure
+  [ "$(get_env ALLOW_REMOTE_GIT)" = "0" ]
+}
+
+@test "prompt_one_key: optional Bitbucket PAT prompt text is pinned" {
+  printf 'BITBUCKET_PAT=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    printf "\n" | { prompt_one_key BITBUCKET_PAT; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Bitbucket personal access token (optional, Enter to skip, input hidden): "* ]]
+}
+
+# --- tui_backend / have_tui (ncurses config editor detection) ---------------
+# tests/fake-bin/whiptail and tests/fake-bin/dialog are detection-only stubs
+# (no real ncurses rendering) — see their headers. These tests only exercise
+# the pure detection/gating logic (tui_backend, have_tui), never an actual
+# interactive ncurses screen, since bats has no tty.
+
+@test "tui_backend: echoes whiptail when it is on PATH" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ "$output" = "whiptail" ]
+}
+
+@test "tui_backend: falls back to dialog when whiptail is absent" {
+  local bin="$BATS_TEST_TMPDIR/dialog-only-bin"
+  mkdir -p "$bin"
+  cp "$FAKE_BIN/dialog" "$bin/dialog"
+  chmod +x "$bin/dialog"
+  run env PATH="$bin:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ "$output" = "dialog" ]
+}
+
+@test "tui_backend: empty when neither whiptail nor dialog is on PATH" {
+  run env PATH="/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "have_tui: false when not a tty, even with whiptail present (bats is never a tty)" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+@test "have_tui: false when OC_CONFIG_TUI=0, even with whiptail present" {
+  run env PATH="$FAKE_BIN:/usr/bin:/bin" OC_CONFIG_TUI=0 \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+@test "have_tui: false when no backend is installed at all" {
+  run env PATH="/usr/bin:/bin" \
+    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  [ "$status" -ne 0 ]
+}
+
+# --- tui_* wrappers (Cancel/Esc safety) --------------------------------------
+# Stub the backend directly (rather than relying on tui_backend's PATH probe)
+# so these stay lightweight and don't depend on which fake binary won the
+# PATH race. Each wrapper must survive a non-zero "Cancel" exit under
+# set -euo pipefail without killing the caller.
+
+@test "tui_input: a Cancel (non-zero) exit falls back to the default, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_input "Title" "Label" "the-default"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "the-default" ]
+}
+
+@test "tui_password: a Cancel (non-zero) exit yields empty, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_password "Title" "Label"
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tui_menu: a Cancel (non-zero) exit yields empty, not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_menu "Title" "Prompt" KEY1 "Item 1" DONE "Done"
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tui_yesno: propagates Yes (0) and No (1) without tripping set -e" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-yes-backend"; }
+    fake-yes-backend() { return 0; }
+    set -euo pipefail
+    if tui_yesno "Title" "Label"; then echo YES; else echo NO; fi
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "YES" ]
+
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-no-backend"; }
+    fake-no-backend() { return 1; }
+    set -euo pipefail
+    if tui_yesno "Title" "Label"; then echo YES; else echo NO; fi
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "NO" ]
+}
+
+@test "tui_msgbox: a non-zero (dismiss) exit is not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_msgbox "Title" "some text"
+    echo SURVIVED
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SURVIVED"* ]]
+}
+
+# --- required_keys / field_satisfied / unmet_required (first-run gate) ------
+
+@test "required_keys: lists exactly the three required keys" {
+  run required_keys
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'LLM_API_BASE\nLLM_API_KEY\nIMAGE_REGISTRY')" ]
+}
+
+@test "field_satisfied: false for an empty value" {
+  printf 'LLM_API_KEY=\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_KEY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the CHANGEME placeholder" {
+  printf 'IMAGE_REGISTRY=CHANGEME.artifactory.example/opencode-workplace\n' > "$ENV_FILE"
+  run field_satisfied IMAGE_REGISTRY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the internal.example placeholder" {
+  printf 'LLM_API_BASE=https://llm.internal.example/v1\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_BASE
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: false for the artifactory.example placeholder" {
+  printf 'IMAGE_REGISTRY=foo.artifactory.example/bar\n' > "$ENV_FILE"
+  run field_satisfied IMAGE_REGISTRY
+  [ "$status" -ne 0 ]
+}
+
+@test "field_satisfied: true for a real, non-placeholder value" {
+  printf 'LLM_API_KEY=sk-real-key\n' > "$ENV_FILE"
+  run field_satisfied LLM_API_KEY
+  [ "$status" -eq 0 ]
+}
+
+@test "unmet_required: a fresh .env.example copy reports all three required keys" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM_API_BASE"* ]]    # internal.example placeholder
+  [[ "$output" == *"LLM_API_KEY"* ]]     # empty
+  [[ "$output" == *"IMAGE_REGISTRY"* ]]  # CHANGEME/artifactory.example placeholder
+}
+
+@test "unmet_required: empty once every required key has a real value" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$ENV_FILE"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-real-key|' "$ENV_FILE"
+  sed -i 's|^IMAGE_REGISTRY=.*|IMAGE_REGISTRY=reg.test.local/opencode|' "$ENV_FILE"
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "unmet_required: reports only the still-unsatisfied subset" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://llm.test/v1|' "$ENV_FILE"
+  sed -i 's|^LLM_API_KEY=.*|LLM_API_KEY=sk-real-key|' "$ENV_FILE"
+  # IMAGE_REGISTRY left at its CHANGEME placeholder.
+  run unmet_required
+  [ "$status" -eq 0 ]
+  [ "$output" = "IMAGE_REGISTRY" ]
+}
+
+# --- set_host_ids -------------------------------------------------------------
+
+@test "set_host_ids: writes the current user's uid/gid into HOST_UID/HOST_GID" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_host_ids
+  grep -q "^HOST_UID=$(id -u)$" "$ENV_FILE"
+  grep -q "^HOST_GID=$(id -g)$" "$ENV_FILE"
+}
