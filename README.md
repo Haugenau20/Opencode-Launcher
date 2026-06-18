@@ -19,7 +19,7 @@ grouped into folders so a fresh clone isn't overwhelming.
 ├── .env.example          # template copied to .env on first run (your secrets)
 ├── extra-packages.txt.example  # template for the optional system-package layer
 ├── docker/               # the docker compose stack (overlays + the package Dockerfile)
-├── lib/                  # shell helpers sourced by start.sh (config logic)
+├── lib/                  # start.sh's logic, split into sourced modules (core, config, doctor, …)
 ├── completions/          # bash/zsh tab-completion scripts
 ├── docs/                 # extra docs: customizing, models, compose-sync notes
 ├── tests/                # bats test suite
