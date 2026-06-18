@@ -3,7 +3,7 @@
 A thin **launcher** for a pre-built, locked-down OpenCode environment that runs
 against your own repo. It pulls two images from Artifactory and wires them
 together with `docker compose`: the agent runs sandboxed behind a Squid proxy
-whose egress allowlist limits it to the LLM endpoint, Bitbucket, and JIRA.
+whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, and GitLab.
 Everything locked down (agent bundle, policy, allowlist, CA) lives in the images;
 this repo is just the glue.
 
@@ -66,10 +66,14 @@ cd opencode-launcher
 ```
 
 On the **first run**, the script copies `.env.example` → `.env` and prompts for
-your LLM endpoint/key and Artifactory path (Bitbucket user/PAT and git identity
-are optional — press Enter to skip). It auto-fills `HOST_UID`/`HOST_GID`, then
-pulls the images and boots the stack. Later runs reuse `.env`; to change a
-secret, edit `.env` (gitignored) and it applies next run.
+your LLM endpoint/key and Artifactory path. The service integrations are all
+optional (press Enter to skip): Bitbucket (base URL + user/PAT), Jira (base URL
++ PAT), and GitLab (base URL + user/PAT), plus git identity. Each integration
+needs its own base URL — Bitbucket's is plain HTTP on the internal instance,
+while Jira's and GitLab's are HTTPS, and GitLab's base URL is required for its
+MCP to start. It auto-fills `HOST_UID`/`HOST_GID`, then pulls the images and
+boots the stack. Later runs reuse `.env`; to change a secret, edit `.env`
+(gitignored) and it applies next run.
 
 The stack comes up with the **OpenCode TUI attached**, rooted at `/workspace`
 (your repo). **Exiting the TUI (or Ctrl-C) tears the stack down** — one command
@@ -146,15 +150,24 @@ images ship.
 ## Egress allowlist
 
 The agent runs sandboxed behind a Squid proxy. The **authoritative allowlist**
-(LLM endpoint, Bitbucket, JIRA) is enforced **inside the squid image**, not in
-this repo — this launcher only knows about, and can only report on, the bits
-it itself configures:
+(LLM endpoint, Bitbucket, Jira, GitLab) is enforced **inside the squid image**,
+not in this repo — this launcher only knows about, and can only report on, the
+bits it itself configures:
 
 - the LLM host derived from `LLM_API_BASE` in `.env`,
-- whether Bitbucket credentials are configured (the Bitbucket/JIRA hostnames
-  themselves are baked into the squid image, not visible from here), and
+- whether Bitbucket, Jira, and GitLab credentials are configured (the service
+  hostnames themselves are baked into the squid image, not visible from here),
+  and
 - any local extensions you've dropped into `extra-allowlist.d/*.conf` (see
   [Extending the egress allowlist](docs/CUSTOMIZING.md#extending-the-egress-allowlist)).
+
+Each integration is an MCP server the image auto-enables purely from the
+credentials you put in `.env` (and its `DISABLE_*_MCP` switch). **Bitbucket** and
+**GitLab** provide both a read-only MCP and a git remote (Bitbucket over plain
+HTTP on the internal instance; GitLab over HTTPS, with REST auth via the
+`PRIVATE-TOKEN` header and git Basic auth from `GITLAB_USER:GITLAB_PAT`).
+**Jira** is REST-only, authenticated with its PAT as a Bearer token. Every
+service needs its own `*_BASE_URL`; GitLab's is required for its MCP to start.
 
 Run `./start.sh --show-allowlist` any time for the full, honest picture —
 read-only, no image pull, no TUI attach, no LLM key required, and it **never

@@ -292,8 +292,14 @@ SCRIPT
     'IMAGE_REGISTRY=reg.test.local/opencode' > "$ENV_FILE"
   run doctor_check_env_keys
   [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] env: BITBUCKET_BASE_URL"* ]]
   [[ "$output" == *"[WARN] env: BITBUCKET_USER"* ]]
   [[ "$output" == *"[WARN] env: BITBUCKET_PAT"* ]]
+  [[ "$output" == *"[WARN] env: JIRA_BASE_URL"* ]]
+  [[ "$output" == *"[WARN] env: JIRA_PAT"* ]]
+  [[ "$output" == *"[WARN] env: GITLAB_BASE_URL"* ]]
+  [[ "$output" == *"[WARN] env: GITLAB_USER"* ]]
+  [[ "$output" == *"[WARN] env: GITLAB_PAT"* ]]
 }
 
 @test "doctor_check_env_keys: never prints the secret value, only set/unset" {
