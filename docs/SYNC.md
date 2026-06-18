@@ -16,10 +16,10 @@ this list and mirror the change.
    need a relabel or the container is denied access. Use `:z` (shared), never
    `:Z` (private) — the same host dir (e.g. `extra-allowlist.d`) is mounted
    across every project's stack.
-   - `docker-compose.yml`: `${REPO_PATH}:/workspace:z`
-   - `docker-compose.yml`: `./extra-allowlist.d:/etc/squid/extra-allowlist.d:ro,z`
+   - `docker/docker-compose.yml`: `${REPO_PATH}:/workspace:z`
+   - `docker/docker-compose.yml`: `./extra-allowlist.d:/etc/squid/extra-allowlist.d:ro,z`
      (short syntax, so the flag is expressible)
-   - `docker-compose.user-layer.yml`: `${USER_LAYER_PATH:?…}:/home/dev/.config/opencode:z`
+   - `docker/docker-compose.user-layer.yml`: `${USER_LAYER_PATH:?…}:/home/dev/.config/opencode:z`
    - Named volumes (`oc_state`, `oc_cfg`) are left alone — Docker auto-labels them.
 
 2. **`oc-publish` image tag.** The socat publisher sidecar must resolve to the
@@ -28,20 +28,36 @@ this list and mirror the change.
    Keep them sharing the one variable so the publisher can never drift to a
    different/absent tag and silently break `localhost:4096`.
 
+## File location (a presentation-only delta)
+
+The launcher keeps its compose stack under **`docker/`** (`docker/docker-compose.yml`,
+`docker/docker-compose.podman.yml`, `docker/docker-compose.user-layer.yml`,
+`docker/docker-compose.user-packages.yml`, `docker/Dockerfile.user-packages`) to keep
+the repo root uncluttered. The maintainer repo may keep them at its root — that's
+fine. **Only the folder differs; the contents of the synced files must still match
+block-for-block.** `start.sh` invokes them with `--project-directory <repo-root>`,
+so every relative path inside (build `context: .`, the `:z` bind mounts, `env_file`)
+still resolves from the root exactly as before. When you mirror a change, compare
+the file *bodies*, not their paths.
+
+(The one exception is `docker/docker-compose.user-packages.yml`: because it's a
+launcher-only delta, its `dockerfile:` was updated to `docker/Dockerfile.user-packages`
+to match the new location. Nothing to mirror.)
+
 ## Intentional launcher-only deltas (not mirrored to the maintainer repo)
 
-- **System-package layer** (`docker-compose.user-packages.yml`,
-  `Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
+- **System-package layer** (`docker/docker-compose.user-packages.yml`,
+  `docker/Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
   launcher bakes on top of the pulled base when a developer lists packages. This
   is launcher-only by design: the maintainer image repo builds its base
   differently and doesn't need it. Do **not** port it back.
 
-- **Podman overlay** (`docker-compose.podman.yml`). Adds `userns_mode: keep-id`
+- **Podman overlay** (`docker/docker-compose.podman.yml`). Adds `userns_mode: keep-id`
   (and the `x-podman` no-op extension) so rootless Podman maps the host user into
   the container and bind-mount ownership stays correct. `start.sh` applies it only
   under Podman (auto-detected, or `--podman`). It is a separate overlay on purpose:
   `keep-id` is a Podman-only value Docker rejects, so it must never land in the
-  base `docker-compose.yml`. Launcher-only; do **not** port it back.
+  base `docker/docker-compose.yml`. Launcher-only; do **not** port it back.
 
 ## Verified: needs no mirroring
 

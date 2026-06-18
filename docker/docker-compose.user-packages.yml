@@ -1,8 +1,8 @@
 # Overlay: bake the packages listed in extra-packages.txt into a thin LOCAL
 # image layered on top of the pulled opencode base. start.sh applies this only
 # when extra-packages.txt has real package lines, and last in the overlay list
-# so it wins: it overrides opencode's build: to use Dockerfile.user-packages and
-# points image: at a distinct local tag. apt-get/pip run at BUILD time on the
+# so it wins: it overrides opencode's build: to use docker/Dockerfile.user-packages
+# and points image: at a distinct local tag. apt-get/pip run at BUILD time on the
 # host (not through Squid), so the packages are usable by `dev` at runtime with
 # no runtime egress or root.
 #
@@ -14,7 +14,10 @@ services:
   opencode:
     image: opencode-workplace-local-${PROJECT_SLUG:-default}:user-packages
     build:
+      # context stays the repo root (start.sh pins it via --project-directory) so
+      # the COPY of extra-packages.txt resolves there; the Dockerfile moved under
+      # docker/ alongside the compose files.
       context: .
-      dockerfile: Dockerfile.user-packages
+      dockerfile: docker/Dockerfile.user-packages
       args:
         BASE_IMAGE: ${OC_BASE_IMAGE:?OC_BASE_IMAGE must be set when using docker-compose.user-packages.yml}

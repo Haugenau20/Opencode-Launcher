@@ -710,12 +710,12 @@ derive_project_settings() {
   local user_layer_path
   user_layer_path="$(get_env USER_LAYER_PATH)"
   local compose_files
-  compose_files=(-f docker-compose.yml)
+  compose_files=(-f "$__OCL_DIR/docker/docker-compose.yml")
   if [ -n "$user_layer_path" ]; then
     mkdir -p "$user_layer_path"
     user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
       || die "could not resolve USER_LAYER_PATH"
-    compose_files+=(-f docker-compose.user-layer.yml)
+    compose_files+=(-f "$__OCL_DIR/docker/docker-compose.user-layer.yml")
   fi
 
   mkdir -p "$ENVS_DIR"
@@ -731,7 +731,11 @@ derive_project_settings() {
   } > "$PROJECT_ENV"
 
   PROJECT_NAME="opencode-${SLUG}"
+  # The compose files live under docker/, but their relative paths (build
+  # contexts, the :z bind mounts, env_file) must resolve from the repo root.
+  # --project-directory pins that base so moving the files stays transparent.
   COMPOSE=(docker compose
+    --project-directory "$__OCL_DIR"
     --env-file "$PROJECT_ENV"
     -p "$PROJECT_NAME"
     "${compose_files[@]}")
@@ -1135,11 +1139,11 @@ main() {
   # bind-mounted at /home/dev/.config/opencode. The overlay uses
   # ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
   local COMPOSE_FILES
-  COMPOSE_FILES=(-f docker-compose.yml)
+  COMPOSE_FILES=(-f "$__OCL_DIR/docker/docker-compose.yml")
   # Podman overlay (keep-id userns + no shared pod). Kept out of the base file so
   # docker-compose.yml stays Docker-valid; applied only under Podman.
   if [ "$USE_PODMAN" -eq 1 ]; then
-    COMPOSE_FILES+=(-f docker-compose.podman.yml)
+    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.podman.yml")
     info "podman: adding overlay (keep-id userns so bind-mount ownership matches)."
   fi
   local USER_LAYER_PATH
@@ -1148,7 +1152,7 @@ main() {
     mkdir -p "$USER_LAYER_PATH"
     USER_LAYER_PATH="$(cd -- "$USER_LAYER_PATH" >/dev/null 2>&1 && pwd)" \
       || die "could not resolve USER_LAYER_PATH"
-    COMPOSE_FILES+=(-f docker-compose.user-layer.yml)
+    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.user-layer.yml")
     info "user layer: $USER_LAYER_PATH -> /home/dev/.config/opencode"
   fi
 
@@ -1168,7 +1172,7 @@ main() {
   if extra_packages_active "$EXTRA_PACKAGES_FILE"; then
     PKG_LAYER_ACTIVE=1
     OC_BASE_IMAGE="$CHECK_IMAGE"
-    COMPOSE_FILES+=(-f docker-compose.user-packages.yml)
+    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.user-packages.yml")
     local apt_list pip_list
     apt_list="$(extra_apt_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     pip_list="$(extra_pip_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -1227,7 +1231,10 @@ main() {
 
   local PROJECT_NAME COMPOSE
   PROJECT_NAME="opencode-${SLUG}"
+  # See the note in the management-command builder above: the compose files sit
+  # under docker/, so --project-directory pins their relative paths to the root.
   COMPOSE=(docker compose
+    --project-directory "$__OCL_DIR"
     --env-file "$PROJECT_ENV"
     -p "$PROJECT_NAME"
     "${COMPOSE_FILES[@]}")

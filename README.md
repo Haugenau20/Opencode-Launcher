@@ -7,6 +7,28 @@ whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, and GitLa
 Everything locked down (agent bundle, policy, allowlist, CA) lives in the images;
 this repo is just the glue.
 
+## Repository layout
+
+Almost everything you need is reachable from two scripts in the root; the rest is
+grouped into folders so a fresh clone isn't overwhelming.
+
+```
+.
+├── start.sh              # main entry point — run the launcher (see flags below)
+├── install.sh            # one-time bootstrap / prerequisite check
+├── .env.example          # template copied to .env on first run (your secrets)
+├── extra-packages.txt.example  # template for the optional system-package layer
+├── docker/               # the docker compose stack (overlays + the package Dockerfile)
+├── lib/                  # shell helpers sourced by start.sh (config logic)
+├── completions/          # bash/zsh tab-completion scripts
+├── docs/                 # extra docs: customizing, models, compose-sync notes
+├── tests/                # bats test suite
+└── extra-allowlist.d/    # drop *.conf here to extend the Squid egress allowlist
+```
+
+You only ever invoke `./start.sh` and `./install.sh` directly — they reach into
+`docker/` and `lib/` for you.
+
 ## Prerequisites
 
 - **Linux** with **Docker** (Engine + the `docker compose` v2 plugin).
@@ -286,7 +308,7 @@ Images are pulled fresh on every `./start.sh`:
   `sudo usermod -aG docker $USER && newgrp docker`.
 - **Don't run `docker compose up`/`down` by hand.** Always go through
   `start.sh` — it wires up the per-project env file and project name and pulls
-  the images first. (The base `docker-compose.yml` carries `build:` blocks for
+  the images first. (The base `docker/docker-compose.yml` carries `build:` blocks for
   the maintainer repo, but the images are pulled, not built here; a hand-run
   `up` that forces a build would fail.) To tear down a stack left running by
   `--persist`/`--detach`, use `./start.sh --down ~/code/your-repo` instead — it
