@@ -76,7 +76,7 @@ cmd_status() {
   if [ -n "$running" ]; then
     info "status:  up ($running)"
     info "web UI:  http://localhost:${port}"
-    info "resume:  docker exec -u dev -w /workspace -it ${project_name} opencode -c"
+    info "resume:  ./start.sh --continue $repo_arg"
   else
     info "status:  down"
     info "resume:  ./start.sh $repo_arg"

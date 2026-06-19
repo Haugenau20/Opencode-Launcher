@@ -107,7 +107,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 
 | Flag (aliases) | What it does |
 | --- | --- |
-| `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume with the `opencode -c` command `start.sh` prints. |
+| `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume later with `./start.sh --continue --persist <repo>`. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only); leaves the stack running. |
 | `--continue` (`-c`) | Resume your most recent session instead of a fresh one (opencode's own `-c`). |
 | `--open` | Open the web UI URL in your browser via `xdg-open`. Non-fatal if `xdg-open` is missing. |

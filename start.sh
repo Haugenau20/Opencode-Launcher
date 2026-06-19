@@ -440,7 +440,7 @@ cmd_run() {
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
       # straight to docker exec (the stack outlives this script either way).
       info "attaching TUI (exit/Ctrl-C detaches; the stack keeps running) ..."
-      info "  resume later with: docker exec -u dev -w /workspace -it opencode-${SLUG} opencode -c"
+      info "  resume later with: ./start.sh --continue --persist $REPO_ARG"
       exec docker exec -u dev \
         -e HOME=/home/dev \
         -e XDG_CONFIG_HOME=/home/dev/.config \
@@ -464,7 +464,7 @@ cmd_run() {
     fi
   else
     info "detached: stack is running. Attach the TUI any time with:"
-    info "  docker exec -u dev -w /workspace -it opencode-${SLUG} opencode -c"
+    info "  ./start.sh --continue --persist $REPO_ARG"
   fi
 }
 

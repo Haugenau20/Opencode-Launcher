@@ -708,7 +708,9 @@ seed_env_doctor() {
   [[ "$output" == *"opencode-my-service"* ]]
   [[ "$output" == *"status:  up"* ]]
   [[ "$output" == *"web UI:  http://localhost:"* ]]
-  [[ "$output" == *"resume:"* ]]
+  # resume points at the launcher's own --continue flag, not a raw docker exec
+  [[ "$output" == *"resume:  ./start.sh --continue $repo"* ]]
+  [[ "$output" != *"resume:  docker exec"* ]]
   ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
   ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
 }
