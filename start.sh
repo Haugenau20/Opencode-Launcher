@@ -50,8 +50,9 @@ main() {
   cd "$SCRIPT_DIR"
 
   # --- 1. parse args --------------------------------------------------------
-  # ATTACH_TUI defaults to 1: the TUI is the default frontend (see usage() for
-  # why — the current image's web UI roots the agent at / not /workspace).
+  # ATTACH_TUI defaults to 1: the TUI is the default frontend (zero setup, always
+  # rooted at /workspace; see usage()). The web/desktop UI also works — a new
+  # session just defaults its working directory to / until you set /workspace.
   # PERSIST defaults to 0: exiting the TUI tears the stack down again (a clean
   #   one-command-in/one-command-out flow). --persist/--web keeps it running
   #   (web UI stays up; resume later). --detach/--no-tui skips the TUI for
@@ -334,16 +335,15 @@ cmd_run() {
   fi
 
   # --- 5. compute per-project settings --------------------------------------
-  local SLUG PORT PORT_OK
+  local SLUG PORT
   SLUG="$(derive_slug "$REPO_PATH")"
 
-  # Port: default to 4096, find next free port if taken (and warn loudly).
+  # Port: default to 4096, find next free port if taken. The browser web UI
+  # derives its backend from the page's own origin, so any host port works.
   PORT=4096
-  PORT_OK=1
   if port_in_use 4096; then
-    PORT_OK=0
     PORT="$(find_free_port 4097 4196)"
-    warn "port 4096 in use; booting $SLUG on $PORT — web UI won't work on this port. The default TUI (no flag) works regardless."
+    info "port 4096 in use; booting $SLUG on port $PORT instead (the web UI works on any port)."
   fi
 
   # --- 6. generate per-project env file (superset of .env) ------------------
@@ -411,26 +411,23 @@ cmd_run() {
   info "project: $PROJECT_NAME"
   info "repo:    $REPO_PATH  ->  /workspace"
   local WEB_UI_URL="http://localhost:${PORT}"
-  if [ "$PORT_OK" -eq 1 ]; then
-    info "web UI:  ${WEB_UI_URL}"
-  else
-    info "web UI:  ${WEB_UI_URL}  (note: opencode web UI is hardwired to 4096 — only one project gets the browser UI at a time)"
-  fi
+  info "web UI:  ${WEB_UI_URL}"
   [ "$WANT_OPEN" -eq 1 ] && open_url "$WEB_UI_URL"
-  # Web-UI caveat — keep this visible on every boot. Remove once the image ships
-  # an `opencode serve --cwd` (upstream anomalyco/opencode#14445, #14460) and
-  # the web/desktop UI roots the agent at /workspace again.
-  warn "web/desktop UI caveat: the browser UI roots the agent"
-  warn "  at / instead of /workspace. WORKAROUND: make your first prompt"
-  warn "  'cd /workspace' so the agent works in your repo. The default TUI is"
-  warn "  unaffected. Tracking: anomalyco/opencode#14445, #14460."
+  # Web-UI note — keep this visible on every boot. Remove once a newer image
+  # defaults a new web-UI session to /workspace (upstream anomalyco/opencode#14445).
+  warn "web/desktop UI note: a NEW session defaults its working directory to /"
+  warn "  instead of /workspace. WORKAROUND: in the web UI click 'New session' and,"
+  warn "  when prompted for the working directory, type /workspace — that session"
+  warn "  then runs inside your repo. The default TUI is unaffected (always"
+  warn "  /workspace). Tracking: anomalyco/opencode#14445."
   echo
 
   # --- 9. attach the TUI (default) ------------------------------------------
   # TUI is the default frontend: docker exec pins -w /workspace, so the agent is
-  # correctly rooted at the repo (unlike the current web UI — see the caveat
-  # above). By default, exiting the TUI tears the stack down (clean one-in/one-
-  # out, no orphaned stacks). --persist/--web keeps it running so the web UI
+  # rooted at the repo with zero setup (the web UI needs the one-step New-session
+  # working-directory action — see the note above). By default, exiting the TUI
+  # tears the stack down (clean one-in/one-out, no orphaned stacks).
+  # --persist/--web keeps it running so the web UI
   # stays up and you can resume; --detach/--no-tui skips the TUI entirely
   # (headless — opencode serve is PID 1 and keeps running).
   local OC_ARGS=()

@@ -82,34 +82,39 @@ to match the new location. Nothing to mirror.)
   Dockerfile in OpenCode-Setup); nothing here mirrors it. Do **not** add an
   `environment:` entry or any docker-exec/YAML-editing flow for it.
 
-## Reversibility marker — the web-UI / TUI-default flip
+## Reversibility marker — the web-UI working-directory default
 
 The OpenCode build baked into the current image (pinned via `OPENCODE_VERSION`
-in the maintainer repo) has a web/desktop UI that roots the agent at `/` instead
-of `/workspace` (upstream
-[anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
-[#14460](https://github.com/anomalyco/opencode/issues/14460)). User-facing prose
+in the maintainer repo) defaults a NEW web/desktop-UI session's working directory
+to `/` instead of `/workspace` (upstream
+[anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445)).
+This is only the default: typing `/workspace` into the working-directory prompt
+when starting a New session roots that session at the repo. User-facing prose
 deliberately does **not** name the exact version (it moves with image bumps); the
-upstream issue numbers are the stable anchor. Because of this the launcher
+upstream issue number is the stable anchor. Because of this the launcher
 currently:
 
-- makes the **TUI the default frontend** (`start.sh`, `ATTACH_TUI=1`), and
-- prints a **web-UI caveat** on every boot and in the README.
+- keeps the **TUI as the default frontend** (`start.sh`, `ATTACH_TUI=1`) — it's
+  the zero-setup path (always `/workspace`), and
+- prints a **web-UI note** on every boot and in the README pointing at the
+  one-step New-session working-directory action.
 
-**When to unwind:** once a newer image ships and `opencode serve --help` lists a
-`--cwd` flag, the maintainer repo will pass `--cwd /workspace` to `serve`. At
-that point the web/desktop UI is rooted correctly again, and this launcher
-should:
+**When to unwind:** once a newer image ships and a New session in the web UI
+defaults to `/workspace` without touching the working directory, the manual step
+is no longer needed. At that point this launcher should:
 
-- revert to "all frontends equal" (drop the TUI-default bias / make `--detach`
-  the unremarkable headless option), and
-- remove the web-UI caveat from `start.sh` and the README.
+- keep the **TUI as the default frontend** (persisting current behavior — the TUI
+  stays the simplest, zero-setup path), and
+- remove the web-UI note from `start.sh` and the README.
 
-Search the tree for `14445` / `14460` to find every spot to flip.
+Search the tree for `14445` to find every spot to flip.
 
 > **Status — still present as of the 1.17.3 image.** The image's OpenCode build
-> was bumped to 1.17.3, but that does **not** fix #14445/#14460: the web/desktop
-> UI still roots the agent at `/`, and `opencode serve` still has no `--cwd`. So
-> the caveat and TUI-default stay. Re-check on each future bump: once
-> `opencode serve --help` lists `--cwd`, this whole marker fires — do the flip
-> above instead of carrying the caveat forward.
+> was bumped to 1.17.3, but that does **not** change the #14445 default: a new
+> web/desktop-UI session still starts in `/`. Verified against OpenCode source at
+> the pinned tags v1.16.2 and v1.17.3, and confirmed by manual testing. Note that
+> `opencode serve` resolves the working directory per-request (via an
+> `x-opencode-directory` header) and will **not** gain a `--cwd` flag — do not
+> wait for one. Re-check on each future bump: once a New session in the web UI
+> defaults to `/workspace`, this marker fires — do the flip above instead of
+> carrying the note forward.
