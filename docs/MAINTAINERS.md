@@ -16,8 +16,15 @@ announcements. For keeping the compose stack in sync with the image repo, see
 ## Cutting a release
 
 When cutting a launcher release, add a Launcher-releases entry. When a new image
-is announced, add an Image-releases entry with its Action-required line and
-update the Compatibility table.
+is announced, add an Image-releases entry with its Action-required line — and if
+that image needs a newer launcher, say so on that line as `update launcher
+(≥ x.y.z)`.
+
+There is **no** version-compatibility matrix to maintain: the supported pairing
+is simply the latest launcher with the latest image. Only call out a minimum
+launcher version when an image genuinely needs one (e.g. it adds `.env` fields
+the older launcher's setup/doctor/`.env.example` don't know about). An image
+that just adds a plain env var the entrypoint reads needs no such note.
 
 Concretely:
 

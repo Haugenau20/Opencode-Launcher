@@ -26,24 +26,19 @@ Every image release carries one line telling you what to do to pick it up:
 
 ## Compatibility
 
-Which launcher version goes with which image.
+The launcher and the image drift on purpose — most changes land in the
+launcher; the image moves less often. There is **no version matrix**:
 
-> **Pair the launcher and image on the same row.** They are versioned
-> independently but are **not** freely interchangeable. Each image release can
-> add or rename `.env` variables, so running a **newer image with an older
-> launcher** (and its older `.env.example`) means the new variables are
-> missing — at best the image's new features stay off, and in some cases the
-> stack won't come up correctly. Likewise a newer launcher may expect `.env`
-> fields an older image ignores. Keep your launcher — and your `.env`,
-> re-checked against `.env.example` — at the row for the image you run.
-
-| Launcher | Image  | Notes |
-|----------|--------|-------|
-| 0.5.0    | 0.0.5  | Adds Bitbucket/Jira/GitLab — needs new PATs in `.env` (launcher 0.5.0 added those fields to setup/doctor/allowlist) |
-| 0.3.0    | 0.0.4  | `ENABLED_PLUGINS` becomes the single source of truth; launcher surface unchanged since 0.3.0 |
-| 0.3.0    | 0.0.3  | Opt-in plugins via `ENABLED_PLUGINS`, surfaced by the launcher at first run |
-| 0.2.0    | 0.0.2  | `IMAGE_TAG` pinning lands in the launcher (pin e.g. `0.0.2` or a digest) |
-| 0.1.0    | 0.0.1  | First release |
+- **Supported pairing: the latest launcher + the latest image.** That's what we
+  test and keep working. `IMAGE_TAG=latest` (the default) keeps the image
+  current; `git pull` this repo now and then for the launcher. After either
+  updates, re-check your `.env` against `.env.example` for new or renamed
+  variables.
+- **If an image needs a newer launcher**, that image's entry below says so on
+  its *Action required* line (e.g. `update launcher (≥ 0.5.0)`). No such note
+  means any reasonably current launcher works.
+- Pinning an old image is fine, but mixing an old launcher with a new image (or
+  vice versa) isn't something we test.
 
 ---
 
@@ -83,7 +78,7 @@ _Changes to the launcher itself._
 ### Changed
 - Synced the launcher's integration surface with the image: GitLab plus
   read-only Bitbucket/Jira credentials now flow through `.env`, setup, the
-  doctor checks, and allowlist reporting. _(Pairs with image 0.0.5.)_
+  doctor checks, and allowlist reporting.
 - Refactored `start.sh` into sourced `lib/` modules with a thin `main()`,
   extracted the usage text, moved the compose stack under `docker/` and
   `SYNC.md` under `docs/`, and made the stack pull-only.
@@ -101,8 +96,7 @@ _Changes to the launcher itself._
 
 ### Added
 - Opt-in `ENABLED_PLUGINS` support surfaced through the launcher, with a
-  first-run prompt to enable the image's baked-in plugins. _(Pairs with image
-  0.0.3–0.0.4.)_
+  first-run prompt to enable the image's baked-in plugins.
 - `docs/MODELS.md` model comparison guide and plugin provenance docs.
 - `pip:` prefix support in `extra-packages.txt`.
 
@@ -116,7 +110,7 @@ _Changes to the launcher itself._
 
 ### Added
 - `IMAGE_TAG` drives image selection (default `latest`; pin e.g. `0.0.2` or a
-  digest). _(Pairs with image 0.0.2.)_
+  digest).
 - A bats test suite, a self-service build-time system-package layer, and a
   `--continue`/`-c` passthrough.
 
@@ -130,8 +124,7 @@ _Changes to the launcher itself._
 
 ### Added
 - Initial launcher: `docker compose` glue, `start.sh`, the `.env` template,
-  docs, and a host-editable user layer (`USER_LAYER_PATH`). _(Pairs with image
-  0.0.1.)_
+  docs, and a host-editable user layer (`USER_LAYER_PATH`).
 
 <!--
 ## [x.y.z] — YYYY-MM-DD
@@ -149,7 +142,7 @@ here.)
 
 ## [0.0.5] — 2026-06-18
 
-**Action required:** re-pull image + edit .env (new credentials)
+**Action required:** re-pull image + edit .env (new credentials) + update launcher (≥ 0.5.0)
 
 - Read-only **Bitbucket, Jira, and GitLab** integration: the agent can browse
   PRs/MRs, diffs, commits, files, and issues directly. Each turns on
