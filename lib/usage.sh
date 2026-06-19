@@ -69,8 +69,9 @@ needed):
   --help     Show this help.
 
 The image tag comes from IMAGE_TAG in .env (default 'latest'; pin e.g. 0.0.2).
-The TUI is the default frontend because the current image's web UI roots the
-agent at / instead of /workspace.
+The TUI is the default frontend — zero setup and always rooted at /workspace. The
+web/desktop UI also works; a new session just defaults its working directory to /,
+so click 'New session' and type /workspace to root that session at your repo.
 
 First run creates .env from .env.example and prompts for your secrets; later
 runs reuse it (edit by hand any time).

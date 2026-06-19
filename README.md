@@ -140,9 +140,11 @@ per-flag detail.
 
 ### TUI (default) vs. web UI
 
-`start.sh` also prints a web-UI URL (`http://localhost:4096`), but the **TUI is
-the default and recommended** — the web/desktop UI has a known workspace-rooting
-bug (see [Known limitations](#known-limitations)). The TUI is unaffected.
+`start.sh` also prints a web-UI URL (e.g. `http://localhost:4096`). The **TUI is
+the default** — it's the simplest frontend (zero setup, always rooted at
+`/workspace`). The web and desktop UIs are fully usable too; a new session just
+needs a one-step working-directory action (see
+[Known limitations](#known-limitations)).
 
 ## Running more than one repo
 
@@ -153,24 +155,22 @@ One launcher clone handles many repos — just point `start.sh` at another path:
 ```
 
 Each invocation derives its own project slug, port, and workspace mount from the
-path (nothing stored in `.env`). Only one project can use the **browser UI** at
-a time — see [Known limitations](#known-limitations).
+path (nothing stored in `.env`). Each project gets its own web UI on its own port
+(the browser UI derives its backend from the page origin, so any port works) —
+they don't collide.
 
 ## Known limitations
 
-Both stem from the OpenCode build in the current image and will ease as newer
-images ship.
+One minor rough edge remains in the OpenCode build in the current image; it will
+ease as newer images ship.
 
-- **Web/desktop UI roots the agent at `/`, not `/workspace`.** It can read across
-  the container, but writes to your repo fail unless you give full paths.
-  Confirmed upstream bug
-  ([anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445),
-  [#14460](https://github.com/anomalyco/opencode/issues/14460)), not a launcher
-  defect. **Workaround:** make your first web-UI prompt `cd /workspace`. The
-  **TUI is unaffected.**
-- **Only one browser UI at a time (port 4096).** The web/desktop UI hardcodes
-  port **4096**. If it's taken, `start.sh` uses the next free port and warns you
-  — that project still works fully via the **TUI**, just not the browser UI.
+- **In the web/desktop UI, a new session defaults its working directory to `/`,
+  not `/workspace`.** This is just the upstream default
+  ([anomalyco/opencode#14445](https://github.com/anomalyco/opencode/issues/14445)),
+  not a launcher defect. **One-step fix:** in the web UI click **New session** and,
+  when prompted for the working directory, type `/workspace` — everything in that
+  session then runs inside your repo. The **TUI** needs no such step (it's always
+  rooted at `/workspace`).
 
 ## Egress allowlist
 

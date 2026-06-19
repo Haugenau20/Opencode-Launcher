@@ -132,13 +132,14 @@ setup() {
   grep -qE 'exec .*-w /workspace .*-it opencode-my-service opencode' "$FAKE_DOCKER_LOG"
 }
 
-@test "default boot prints the web-UI caveat with the workaround" {
+@test "default boot prints the web-UI note with the workaround" {
   seed_env
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  # Anchor on the stable upstream issue number and the workaround, not a version
-  # string (user-facing prose no longer names the exact OpenCode version).
-  [[ "$output" == *"cd /workspace"* ]]
+  # Anchor on the stable upstream issue number and the one-step workaround, not a
+  # version string (user-facing prose no longer names the exact OpenCode version).
+  [[ "$output" == *"New session"* ]]
+  [[ "$output" == *"/workspace"* ]]
   [[ "$output" == *"14445"* ]]
 }
 
