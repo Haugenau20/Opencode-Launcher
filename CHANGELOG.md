@@ -21,7 +21,6 @@ Every image release carries one line telling you what to do to pick it up:
 - **rerun only** — just re-launch. No new image, no config change.
 - **re-pull image** — set the image tag to the new version and pull.
 - **edit .env** — a variable was added or renamed; update your `.env`.
-- **rebuild squid** — the allowlist or squid config changed; rebuild/repull squid.
 - **update launcher** — you also need the launcher version noted alongside.
 
 ## Compatibility
@@ -137,8 +136,7 @@ _Changes to the launcher itself._
 # Image releases
 
 What's in each OpenCode Workplace image version, distilled for the people who
-run it. (Engineering-level detail lives in the image repo and isn't needed
-here.)
+run it.
 
 ## [0.0.5] — 2026-06-18
 
@@ -161,13 +159,13 @@ here.)
 
 ## [0.0.3] — 2026-06-11
 
-**Action required:** re-pull image + set `ENABLED_PLUGINS` (optional) + rebuild squid
+**Action required:** re-pull image + set `ENABLED_PLUGINS` (optional)
 
 - Curated **OpenCode plugins baked into the image, off by default** — opt in
   per developer via `ENABLED_PLUGINS` in `.env`, no network needed.
 - OpenCode version is now pinned in the image for reproducible builds.
 - Web UI / desktop app start in `/` instead of `/workspace` on this OpenCode
-  version — **prefer the TUI** (unaffected). Squid config was also cleaned up.
+  version — **prefer the TUI** (unaffected).
 
 ## [0.0.2] — 2026-05-29
 
