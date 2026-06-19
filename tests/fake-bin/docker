@@ -41,7 +41,28 @@ case "$sub" in
       exit "${FAKE_DOCKER_COMPOSE_VERSION_RC:-0}"
     fi
     if [ "${2:-}" = ls ]; then
-      [ -n "${FAKE_DOCKER_COMPOSE_LS_OUTPUT:-}" ] && printf '%s\n' "$FAKE_DOCKER_COMPOSE_LS_OUTPUT"
+      # Mirror real `docker compose ls`: --format only accepts table|json (a Go
+      # template is rejected), and json output is a single array. Tests still
+      # express the fixture as tab-separated name<TAB>status lines; convert them
+      # to the JSON the parser actually consumes. Rejecting a non-json --format
+      # makes the suite catch a regression to the old `--format '{{.Name}}…'`.
+      case "$*" in
+        *"--format json"*) ;;
+        *"--format "*)
+          echo "unsupported format: only 'table' and 'json' are accepted" >&2
+          exit 1 ;;
+      esac
+      printf '['
+      _first=1
+      while IFS=$'\t' read -r _n _s; do
+        [ -n "$_n" ] || continue
+        [ "$_first" -eq 1 ] || printf ','
+        _first=0
+        printf '{"Name":"%s","Status":"%s","ConfigFiles":"/fake/docker/docker-compose.yml"}' "$_n" "$_s"
+      done <<EOF
+${FAKE_DOCKER_COMPOSE_LS_OUTPUT:-}
+EOF
+      printf ']\n'
       exit "${FAKE_DOCKER_COMPOSE_RC:-0}"
     fi
     # pull / up -d / down / anything else

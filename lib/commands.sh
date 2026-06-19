@@ -9,6 +9,29 @@
 # Like --doctor, these short-circuit the normal boot flow: no image pull, no
 # TUI attach.
 
+# compose_ls_pairs — emit one "<project-name><TAB><status>" line per compose
+# project. Sourced by every command that needs to know which stacks exist.
+#
+# Note `docker compose ls --format` only accepts `table` or `json` — NOT a Go
+# template like `docker compose ps` does. Passing `--format '{{.Name}}...'`
+# silently yields nothing on a current compose, which is why --status/--logs/
+# --shell all reported "no stacks" even with one running. So we ask for json
+# and pull the fields out by key: no jq dependency, order-independent, and
+# robust to compose's column formatting.
+compose_ls_pairs() {
+  # Trailing `|| true` keeps this best-effort: a daemon-down `docker compose ls`
+  # (or simply no stacks) must yield empty output and success, never abort the
+  # caller under `set -euo pipefail`.
+  docker compose ls --all --format json 2>/dev/null \
+    | sed 's/}[[:space:]]*,[[:space:]]*{/}\n{/g' \
+    | while IFS= read -r _obj; do
+        local name status
+        name="$(printf '%s' "$_obj"   | sed -n 's/.*"Name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        status="$(printf '%s' "$_obj" | sed -n 's/.*"Status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        if [ -n "$name" ]; then printf '%s\t%s\n' "$name" "$status"; fi
+      done || true
+}
+
 # cmd_status [REPO_ARG] — read-only report on running launcher stacks. Never
 # requires .env/secrets, never pulls or attaches anything.
 cmd_status() {
@@ -21,7 +44,7 @@ cmd_status() {
       [ -n "$name" ] || continue
       found=1
       printf '  %-30s %s\n' "$name" "$status_str"
-    done < <(docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null | grep '^opencode-' || true)
+    done < <(compose_ls_pairs | grep '^opencode-' || true)
     if [ "$found" -eq 0 ]; then
       info "no launcher stacks found (docker compose ls shows nothing matching opencode-*)"
     fi
@@ -46,7 +69,7 @@ cmd_status() {
   fi
   [ -n "$port" ] || port=4096
 
-  running="$(docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null | awk -F'\t' -v p="$project_name" '$1==p{print $2}')"
+  running="$(compose_ls_pairs | awk -F'\t' -v p="$project_name" '$1==p{print $2}')"
 
   info "project: $project_name"
   info "repo:    $repo_path"
@@ -106,7 +129,7 @@ cmd_down() {
 # with --status on what "running" means. Never pulls or attaches anything.
 project_running() {
   local project_name="$1"
-  docker compose ls --all --format '{{.Name}}\t{{.Status}}' 2>/dev/null \
+  compose_ls_pairs \
     | awk -F'\t' -v p="$project_name" '$1==p{found=1} END{exit !found}'
 }
 
