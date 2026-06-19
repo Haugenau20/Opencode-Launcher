@@ -22,7 +22,9 @@ update the Compatibility table.
 Concretely:
 
 1. Bump the [`VERSION`](../VERSION) file.
-2. Move the `[Unreleased]` items in `CHANGELOG.md` under a new
-   `## [x.y.z] — YYYY-MM-DD` heading in the **Launcher releases** section.
+2. Add a new `## [x.y.z] — YYYY-MM-DD` entry at the top of the
+   **Launcher releases** section describing what shipped. (There is no
+   "Unreleased" section by design — the changelog lists released versions only;
+   upcoming work is not advertised here or in the README.)
 3. (Optional but recommended once a release is "real") tag the release commit:
    `git tag -a vX.Y.Z -m "Launcher vX.Y.Z" && git push --tags`.

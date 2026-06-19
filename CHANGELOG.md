@@ -28,12 +28,14 @@ Every image release carries one line telling you what to do to pick it up:
 
 Which launcher version goes with which image.
 
-> The launcher does **not** pin an image: `IMAGE_TAG` defaults to `latest`, and
-> any launcher version can run any image you point it at. This table maps each
-> image to the **launcher version that first ships the user-facing surface**
-> (env vars, credentials, prompts) that image needs — any launcher at or above
-> that version drives the image cleanly. An older launcher still boots a newer
-> image; you just won't have the new `.env` fields wired into setup/doctor yet.
+> **Pair the launcher and image on the same row.** They are versioned
+> independently but are **not** freely interchangeable. Each image release can
+> add or rename `.env` variables, so running a **newer image with an older
+> launcher** (and its older `.env.example`) means the new variables are
+> missing — at best the image's new features stay off, and in some cases the
+> stack won't come up correctly. Likewise a newer launcher may expect `.env`
+> fields an older image ignores. Keep your launcher — and your `.env`,
+> re-checked against `.env.example` — at the row for the image you run.
 
 | Launcher | Image  | Notes |
 |----------|--------|-------|
@@ -55,7 +57,7 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
-## [Unreleased]
+## [0.6.0] — 2026-06-19
 
 ### Added
 - This `CHANGELOG.md` (the single user-facing log for both launcher and image),
