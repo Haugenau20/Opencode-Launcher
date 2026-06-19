@@ -93,6 +93,13 @@ main() {
       --logs) WANT_LOGS=1; shift ;;
       --shell) WANT_SHELL=1; shift ;;
       --help|-h) usage; exit 0 ;;
+      --version|-V)
+        if [ -r "$__OCL_DIR/VERSION" ]; then
+          cat "$__OCL_DIR/VERSION"
+        else
+          echo "unknown"
+        fi
+        exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
       *)

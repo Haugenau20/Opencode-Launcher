@@ -19,6 +19,7 @@ Usage:
   ./start.sh --reconfigure
   ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
+  ./start.sh --version
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -66,6 +67,7 @@ needed):
              allowlist (LLM, Bitbucket, Jira, GitLab) is enforced in the squid
              image; this shows your configured LLM/Bitbucket hosts plus any
              local extra-allowlist.d/*.conf extensions.
+  --version  Print the launcher version (from the VERSION file). Alias: -V.
   --help     Show this help.
 
 The image tag comes from IMAGE_TAG in .env (default 'latest'; pin e.g. 0.0.2).

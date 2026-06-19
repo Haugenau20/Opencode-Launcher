@@ -7,6 +7,10 @@ whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, and
 GitLab. Everything locked down (agent bundle, policy, allowlist, CA) lives in
 the images; this repo is just the glue.
 
+> **What's new:** see the [CHANGELOG](CHANGELOG.md) — it tracks both launcher
+> releases and the OpenCode Workplace image versions you can run (each with an
+> "Action required" line for picking it up).
+
 ## Contents
 
 - [Repository layout](#repository-layout)
