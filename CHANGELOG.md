@@ -63,6 +63,14 @@ _Changes to the launcher itself._
   `./start.sh --version` flag that prints it.
 - A "What's new" pointer in the README and a maintainer release step in
   [`docs/MAINTAINERS.md`](docs/MAINTAINERS.md).
+- `--doctor` now flags `.env.example` drift — any new keys you haven't picked up
+  into your `.env` — and points you at `./start.sh --reconfigure` to add them
+  (key names only, never values).
+
+### Changed
+- `--doctor` no longer runs a port-free check: `start.sh` already picks a free
+  port automatically and any port works, so it was a non-issue. With a repo
+  path, `--doctor` now just validates that path.
 
 ### Fixed
 - `--status`/`--logs`/`--shell` no longer miss running stacks (use
