@@ -22,8 +22,8 @@ image's *Action required* line flags only what you must do **in addition** to
 that normal re-run:
 
 - **none** — just re-run `./start.sh`.
-- **edit .env** — a variable was added or renamed; update your `.env` (compare
-  it against `.env.example`) before re-running.
+- **edit .env** — a variable was added or renamed. The launcher flags any new
+  keys on the next boot; run `./start.sh --reconfigure` to fill them in.
 - **update launcher** — `git pull` the launcher to at least the version noted,
   then re-run.
 
