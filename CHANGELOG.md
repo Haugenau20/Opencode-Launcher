@@ -16,12 +16,16 @@ Format loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## How to read the "Action required" line
 
-Every image release carries one line telling you what to do to pick it up:
+On the default `IMAGE_TAG=latest`, **`./start.sh` pulls the newest image on
+every run** — so picking up a new image is usually just re-running it. Each
+image's *Action required* line flags only what you must do **in addition** to
+that normal re-run:
 
-- **rerun only** — just re-launch. No new image, no config change.
-- **re-pull image** — set the image tag to the new version and pull.
-- **edit .env** — a variable was added or renamed; update your `.env`.
-- **update launcher** — you also need the launcher version noted alongside.
+- **none** — just re-run `./start.sh`.
+- **edit .env** — a variable was added or renamed; update your `.env` (compare
+  it against `.env.example`) before re-running.
+- **update launcher** — `git pull` the launcher to at least the version noted,
+  then re-run.
 
 ## Compatibility
 
@@ -140,7 +144,7 @@ run it.
 
 ## [0.0.5] — 2026-06-18
 
-**Action required:** re-pull image + edit .env (new credentials) + update launcher (≥ 0.5.0)
+**Action required:** edit `.env` (new credentials) + update launcher (≥ 0.5.0)
 
 - Read-only **Bitbucket, Jira, and GitLab** integration: the agent can browse
   PRs/MRs, diffs, commits, files, and issues directly. Each turns on
@@ -150,7 +154,7 @@ run it.
 
 ## [0.0.4] — 2026-06-12
 
-**Action required:** re-pull image + review `ENABLED_PLUGINS` in .env
+**Action required:** review `ENABLED_PLUGINS` in `.env`
 
 - `ENABLED_PLUGINS` is now the **single source of truth** for plugins —
   anything not listed is off. Re-check your list after updating.
@@ -159,7 +163,7 @@ run it.
 
 ## [0.0.3] — 2026-06-11
 
-**Action required:** re-pull image + set `ENABLED_PLUGINS` (optional)
+**Action required:** set `ENABLED_PLUGINS` (optional)
 
 - Curated **OpenCode plugins baked into the image, off by default** — opt in
   per developer via `ENABLED_PLUGINS` in `.env`, no network needed.
@@ -169,7 +173,7 @@ run it.
 
 ## [0.0.2] — 2026-05-29
 
-**Action required:** re-pull image
+**Action required:** none — just re-run `./start.sh`
 
 - Reliability fixes: the OpenCode port now reaches the host on the
   internal-only network setup; `doctor.sh` verifies more of the stack; squid
