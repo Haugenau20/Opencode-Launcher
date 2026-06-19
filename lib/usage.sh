@@ -19,6 +19,7 @@ Usage:
   ./start.sh --reconfigure
   ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
+  ./start.sh --version
   ./start.sh --help
 
 Boots a locked-down OpenCode environment with your repo mounted at /workspace.
@@ -40,10 +41,10 @@ Run options:
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
-  --doctor   Check the environment (Docker, compose, registry auth, .env keys,
-             ports, disk) and print a PASS/WARN/FAIL report. An optional
-             <host-repo-path> also checks that project's port; exits non-zero
-             on any FAIL.
+  --doctor   Check the environment (Docker, compose, registry auth, .env keys
+             and .env.example drift, disk) and print a PASS/WARN/FAIL report. An
+             optional <host-repo-path> also validates that repo path; exits
+             non-zero on any FAIL.
   --status   Report on running stacks. With <host-repo-path>, shows whether that
              project is up, its web UI URL, and the resume command; without one,
              lists every opencode-* stack.
@@ -66,6 +67,7 @@ needed):
              allowlist (LLM, Bitbucket, Jira, GitLab) is enforced in the squid
              image; this shows your configured LLM/Bitbucket hosts plus any
              local extra-allowlist.d/*.conf extensions.
+  --version  Print the launcher version (from the VERSION file). Alias: -V.
   --help     Show this help.
 
 The image tag comes from IMAGE_TAG in .env (default 'latest'; pin e.g. 0.0.2).

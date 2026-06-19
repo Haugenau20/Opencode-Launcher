@@ -347,20 +347,35 @@ SCRIPT
   [[ "$output" == *"[FAIL] env: IMAGE_REGISTRY"* ]]
 }
 
-# --- doctor_check_port ---------------------------------------------------------
+# --- doctor_check_env_drift ----------------------------------------------------
 
-@test "doctor_check_port: PASSes a free port" {
-  port_in_use() { return 1; }
-  run doctor_check_port 4096 "web UI"
+@test "doctor_check_env_drift: PASS when .env has every .env.example key" {
+  local ex="$BATS_TEST_TMPDIR/ex" envf="$BATS_TEST_TMPDIR/envf"
+  printf 'FOO=1\nBAR=2\n' > "$ex"
+  printf 'FOO=x\nBAR=y\n' > "$envf"
+  ENV_EXAMPLE="$ex" ENV_FILE="$envf" run doctor_check_env_drift
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[PASS] port 4096 free (web UI)"* ]]
+  [[ "$output" == *"[PASS] env: in sync with"* ]]
 }
 
-@test "doctor_check_port: WARNs (not FAILs) a busy port" {
-  port_in_use() { return 0; }
-  run doctor_check_port 4096 "web UI"
+@test "doctor_check_env_drift: WARNs (not FAILs) and names a missing key" {
+  local ex="$BATS_TEST_TMPDIR/ex" envf="$BATS_TEST_TMPDIR/envf"
+  printf 'FOO=1\nNEWKEY=2\n' > "$ex"
+  printf 'FOO=x\n' > "$envf"
+  ENV_EXAMPLE="$ex" ENV_FILE="$envf" run doctor_check_env_drift
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[WARN] port 4096 free (web UI)"* ]]
+  [[ "$output" == *"[WARN] env: new keys in"* ]]
+  [[ "$output" == *"NEWKEY"* ]]
+}
+
+@test "doctor_check_env_drift: reports key names only, never values" {
+  local ex="$BATS_TEST_TMPDIR/ex" envf="$BATS_TEST_TMPDIR/envf"
+  printf 'FOO=1\nNEWKEY=super-secret\n' > "$ex"
+  printf 'FOO=x\n' > "$envf"
+  ENV_EXAMPLE="$ex" ENV_FILE="$envf" run doctor_check_env_drift
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEWKEY"* ]]
+  [[ "$output" != *"super-secret"* ]]
 }
 
 # --- url_host -----------------------------------------------------------------

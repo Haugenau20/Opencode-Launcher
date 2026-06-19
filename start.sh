@@ -93,6 +93,13 @@ main() {
       --logs) WANT_LOGS=1; shift ;;
       --shell) WANT_SHELL=1; shift ;;
       --help|-h) usage; exit 0 ;;
+      --version|-V)
+        if [ -r "$__OCL_DIR/VERSION" ]; then
+          cat "$__OCL_DIR/VERSION"
+        else
+          echo "unknown"
+        fi
+        exit 0 ;;
       --)     shift; break ;;
       -*)     usage; die "unknown option: $1" ;;
       *)
@@ -105,8 +112,8 @@ main() {
   [ $# -gt 0 ] && [ -z "$REPO_ARG" ] && { REPO_ARG="$1"; shift; }
 
   # --doctor short-circuits everything else: no secrets prompt, no image pull,
-  # no TUI attach. <host-repo-path> is OPTIONAL here (it only adds a check for
-  # that project's derived port); plain preflight/env/registry checks run
+  # no TUI attach. <host-repo-path> is OPTIONAL here (it only adds a check that
+  # the repo path is usable); plain preflight/env/registry checks run
   # either way.
   if [ "$WANT_DOCTOR" -eq 1 ]; then
     cmd_doctor "$REPO_ARG"
