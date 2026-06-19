@@ -561,7 +561,7 @@ seed_env_doctor() {
   [[ "$output" == *"[PASS] env: LLM_API_KEY"* ]]
   [[ "$output" == *"[PASS] env: IMAGE_REGISTRY"* ]]
   [[ "$output" == *"[PASS] registry access"* ]]
-  [[ "$output" == *"[PASS] port 4096 free"* ]]
+  [[ "$output" == *"[PASS] env: in sync with"* ]]
   [[ "$output" == *"all critical checks passed"* ]]
   ! [[ "$output" == *"[FAIL]"* ]]
 }
@@ -638,11 +638,31 @@ seed_env_doctor() {
   [[ "$output" == *"[PASS] podman shim"* ]]
 }
 
-@test "--doctor: an optional repo path also checks that project's port" {
+@test "--doctor: an optional repo path is validated and its project reported" {
   seed_env_doctor
   run_launcher --doctor "$(make_repo_arg "My Service")"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"project: my-service"* ]]
+  [[ "$output" == *"[PASS] project: my-service"* ]]
+}
+
+@test "--doctor: a new .env.example key missing from .env WARNs (not FAIL)" {
+  seed_env_doctor
+  printf 'A_BRAND_NEW_KEY=somedefault\n' >> "$SANDBOX/.env.example"
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] env: new keys in"* ]]
+  [[ "$output" == *"A_BRAND_NEW_KEY"* ]]
+  [[ "$output" == *"--reconfigure"* ]]
+  ! [[ "$output" == *"[FAIL]"* ]]
+}
+
+@test "--doctor: env drift never prints a new key's value" {
+  seed_env_doctor
+  printf 'SECRET_NEW_KEY=do-not-print-this\n' >> "$SANDBOX/.env.example"
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SECRET_NEW_KEY"* ]]
+  [[ "$output" != *"do-not-print-this"* ]]
 }
 
 @test "--doctor: never prints the secret LLM_API_KEY value" {

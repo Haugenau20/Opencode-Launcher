@@ -272,10 +272,11 @@ Images are pulled fresh on every `./start.sh`:
 ## Troubleshooting
 
 - **Start with `./start.sh --doctor`.** It checks Docker (PATH, daemon, compose
-  v2), the registry login state, your `.env` (required/optional keys), and
-  ports, then prints one pasteable PASS/WARN/FAIL report — paste that when
-  asking for help. Add a repo path to also check that project's derived port. It
-  never prints secrets, pulls an image, or attaches the TUI.
+  v2), the registry login state, and your `.env` (required/optional keys, plus
+  any new keys in `.env.example` you haven't picked up), then prints one
+  pasteable PASS/WARN/FAIL report — paste that when asking for help. Add a repo
+  path to also validate it. It never prints secrets, pulls an image, or attaches
+  the TUI.
 - **`unauthorized`/`denied` on pull** — the most common first-time failure: run
   `docker login <registry-host>` and retry (`--doctor` prints the exact command).
 - **`permission denied` from Docker** — you're not in the docker group:

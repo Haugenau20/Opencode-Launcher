@@ -41,10 +41,10 @@ Run options:
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
-  --doctor   Check the environment (Docker, compose, registry auth, .env keys,
-             ports, disk) and print a PASS/WARN/FAIL report. An optional
-             <host-repo-path> also checks that project's port; exits non-zero
-             on any FAIL.
+  --doctor   Check the environment (Docker, compose, registry auth, .env keys
+             and .env.example drift, disk) and print a PASS/WARN/FAIL report. An
+             optional <host-repo-path> also validates that repo path; exits
+             non-zero on any FAIL.
   --status   Report on running stacks. With <host-repo-path>, shows whether that
              project is up, its web UI URL, and the resume command; without one,
              lists every opencode-* stack.

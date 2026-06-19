@@ -145,14 +145,18 @@ doctor_check_env_keys() {
   return "$rc"
 }
 
-# doctor_check_port PORT LABEL — reuses port_in_use; a busy port is only a WARN
-# (start.sh itself falls back to find_free_port), never a FAIL.
-doctor_check_port() {
-  local port="$1" label="$2"
-  if port_in_use "$port"; then
-    doctor_line WARN "port $port free ($label)" "in use — start.sh will pick the next free port"
+# doctor_check_env_drift — WARN if .env.example carries key(s) the user's .env
+# is missing (reuses check_env_drift). Keys only, never values, so the report
+# stays paste-safe. Informational: never fails the overall report.
+doctor_check_env_drift() {
+  local drift_keys
+  [ -f "$ENV_FILE" ] || return 0
+  drift_keys="$(check_env_drift "$ENV_EXAMPLE" "$ENV_FILE")"
+  if [ -n "$drift_keys" ]; then
+    doctor_line WARN "env: new keys in $ENV_EXAMPLE" \
+      "$(printf '%s' "$drift_keys" | tr '\n' ' ' | sed 's/[[:space:]]*$//') — run ./start.sh --reconfigure to add them"
   else
-    doctor_line PASS "port $port free ($label)"
+    doctor_line PASS "env: in sync with $ENV_EXAMPLE"
   fi
   return 0
 }
@@ -199,6 +203,7 @@ cmd_doctor() {
 
   doctor_check_env_file || overall_rc=1
   doctor_check_env_keys || overall_rc=1
+  doctor_check_env_drift
 
   IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY 2>/dev/null || true)"
   if [ -n "$IMAGE_REGISTRY" ]; then
@@ -211,16 +216,14 @@ cmd_doctor() {
     doctor_line WARN "registry access" "skipped — IMAGE_REGISTRY not set"
   fi
 
-  doctor_check_port 4096 "web UI"
   if [ -n "$repo_path" ]; then
     if [ -e "$repo_path" ] && [ -d "$repo_path" ]; then
-      local abs_repo slug proj_port
+      local abs_repo slug
       abs_repo="$(cd -- "$repo_path" >/dev/null 2>&1 && pwd)" || abs_repo="$repo_path"
       slug="$(derive_slug "$abs_repo")"
-      proj_port="$(find_free_port 4096 4196)"
-      doctor_check_port "$proj_port" "project: $slug"
+      doctor_line PASS "project: $slug" "repo path OK"
     else
-      doctor_line WARN "project port" "repo path not found/usable: $repo_path"
+      doctor_line WARN "project" "repo path not found/usable: $repo_path"
     fi
   fi
 
