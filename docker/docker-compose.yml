@@ -1,13 +1,12 @@
+# Pull-only stack. Every image here is fetched from the configured Artifactory
+# (${IMAGE_REGISTRY}:${IMAGE_TAG}); nothing is built from this repo. The only
+# local build is the opt-in system-package layer, which lives in its own overlay
+# (docker-compose.user-packages.yml) and is applied by start.sh on demand.
 name: opencode-${PROJECT_SLUG:-default}
 
 services:
   opencode:
     image: ${IMAGE_REGISTRY:-opencode-workplace}:${IMAGE_TAG:-local}
-    build:
-      context: .
-      dockerfile: opencode/Dockerfile
-      args:
-        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
     container_name: opencode-${PROJECT_SLUG:-default}
     hostname: opencode
     depends_on:
@@ -59,9 +58,6 @@ services:
 
   squid:
     image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
-    build:
-      context: .
-      dockerfile: squid/Dockerfile
     container_name: opencode-squid-${PROJECT_SLUG:-default}
     hostname: squid
     volumes:

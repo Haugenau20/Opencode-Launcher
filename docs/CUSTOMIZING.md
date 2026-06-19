@@ -1,8 +1,9 @@
 # Customizing the environment
 
-Two self-service ways to tailor the environment — without entering the container
-or bloating the shared base image for everyone else: layer in your own OpenCode
-config (agents/skills/commands), and bake in extra system packages.
+Self-service ways to tailor the environment — without entering the container or
+bloating the shared base image for everyone else: layer in your own OpenCode
+config (agents/skills/commands), bake in extra system packages, extend the
+egress allowlist, and configure the built-in service integrations.
 
 ## Adding your own agents/skills
 
@@ -58,3 +59,21 @@ config syntax) — it's bind-mounted read-only into Squid at
 `/etc/squid/extra-allowlist.d`. The directory is tracked but its `*.conf`
 contents are gitignored, so your additions stay local. A restart (`./start.sh`)
 applies them.
+
+## Service integrations
+
+Bitbucket, Jira, and GitLab are MCP servers the image auto-enables purely from
+the credentials you put in `.env` (each with a `DISABLE_*_MCP` off-switch).
+Every service needs its own `*_BASE_URL`; GitLab's is required for its MCP to
+start at all.
+
+- **Bitbucket** and **GitLab** each provide both a read-only MCP and a git
+  remote. Bitbucket talks plain HTTP on the internal instance; GitLab is HTTPS,
+  with REST auth via the `PRIVATE-TOKEN` header and git Basic auth from
+  `GITLAB_USER:GITLAB_PAT`.
+- **Jira** is REST-only, authenticated with its PAT as a Bearer token.
+
+The service hostnames themselves are baked into the squid allowlist in the
+image, so the launcher can't see or change them — it only passes through the
+credentials and base URLs you configure. Set or change these any time with
+`./start.sh --reconfigure`.

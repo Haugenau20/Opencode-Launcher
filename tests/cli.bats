@@ -708,7 +708,9 @@ seed_env_doctor() {
   [[ "$output" == *"opencode-my-service"* ]]
   [[ "$output" == *"status:  up"* ]]
   [[ "$output" == *"web UI:  http://localhost:"* ]]
-  [[ "$output" == *"resume:"* ]]
+  # resume points at the launcher's own --continue flag, not a raw docker exec
+  [[ "$output" == *"resume:  ./start.sh --continue $repo"* ]]
+  [[ "$output" != *"resume:  docker exec"* ]]
   ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
   ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
 }
@@ -729,6 +731,16 @@ seed_env_doctor() {
   FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status
   [ "$status" -eq 0 ]
   [[ "$output" == *"no launcher stacks found"* ]]
+}
+
+@test "--status queries compose ls with --format json, never a Go template" {
+  # Regression: `docker compose ls --format '{{.Name}}…'` is silently rejected
+  # by current compose (only table|json are valid), which made --status/--logs
+  # report nothing even with a stack up.
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" run_launcher --status
+  [ "$status" -eq 0 ]
+  grep -qE 'compose ls .*--format json' "$FAKE_DOCKER_LOG"
+  ! grep -qF '{{.Name}}' "$FAKE_DOCKER_LOG"
 }
 
 @test "--status does not require .env to exist" {

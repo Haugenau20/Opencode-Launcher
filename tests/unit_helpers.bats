@@ -109,7 +109,7 @@ setup() {
 @test "project_running: true when compose ls lists the project name" {
   docker() {
     if [ "$1" = compose ] && [ "$2" = ls ]; then
-      printf '%s\n' "opencode-my-service	running(3)"
+      printf '%s\n' '[{"Name":"opencode-my-service","Status":"running(3)"}]'
       return 0
     fi
     return 1
@@ -121,7 +121,7 @@ setup() {
 @test "project_running: false when compose ls does not list the project" {
   docker() {
     if [ "$1" = compose ] && [ "$2" = ls ]; then
-      printf '%s\n' "opencode-other	exited(0)"
+      printf '%s\n' '[{"Name":"opencode-other","Status":"exited(0)"}]'
       return 0
     fi
     return 1
@@ -133,12 +133,38 @@ setup() {
 @test "project_running: false when compose ls reports nothing" {
   docker() {
     if [ "$1" = compose ] && [ "$2" = ls ]; then
+      printf '%s\n' '[]'
       return 0
     fi
     return 1
   }
   run project_running "opencode-my-service"
   [ "$status" -ne 0 ]
+}
+
+# --- compose_ls_pairs (JSON parser) -----------------------------------------
+# `docker compose ls --format` only supports table|json (NOT a Go template, the
+# way `ps` does), so the launcher asks for json and parses it. These pin that.
+
+@test "compose_ls_pairs: parses the real ls JSON (extra fields, comma config-files) into name<TAB>status" {
+  docker() {
+    if [ "$1" = compose ] && [ "$2" = ls ]; then
+      printf '%s\n' '[{"Name":"opencode-scaffolder","Status":"running(3)","ConfigFiles":"/g/docker-compose.yml,/g/docker-compose.user-packages.yml"},{"Name":"rag","Status":"running(2)","ConfigFiles":"/g/ai_rag/docker-compose.yml"}]'
+      return 0
+    fi
+    return 1
+  }
+  run compose_ls_pairs
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf 'opencode-scaffolder\trunning(3)')" ]
+  [ "${lines[1]}" = "$(printf 'rag\trunning(2)')" ]
+}
+
+@test "compose_ls_pairs: empty array yields no lines and still succeeds (set -e safe)" {
+  docker() { [ "$1" = compose ] && [ "$2" = ls ] && { printf '[]\n'; return 0; }; return 1; }
+  run compose_ls_pairs
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 0 ]
 }
 
 # --- open_url (opener stubbed via PATH) -------------------------------------
