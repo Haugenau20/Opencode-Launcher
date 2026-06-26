@@ -47,6 +47,10 @@ Jira|JIRA_PAT|secret|Jira personal access token|optional
 GitLab|GITLAB_BASE_URL|url|GitLab base URL|optional; https://, required if you use GitLab
 GitLab|GITLAB_USER|text|GitLab username|optional
 GitLab|GITLAB_PAT|secret|GitLab personal access token|optional
+JFrog|JFROG_BASE_URL|url|JFrog base URL|optional; https://, no trailing slash
+JFrog|JFROG_PAT|secret|JFrog access token|optional
+Confluence|CONFLUENCE_BASE_URL|url|Confluence base URL|optional; include :8090 for the default HTTP connector
+Confluence|CONFLUENCE_PAT|secret|Confluence personal access token|optional
 Git identity|GIT_USER_NAME|text|Git user name for container commits|optional
 Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
@@ -56,6 +60,8 @@ Safety|ENABLE_SESSION_LOGS|bool|Enable session logs|0 swaps session state for tm
 Safety|DISABLE_BITBUCKET_MCP|bool|Force-disable the Bitbucket MCP|
 Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
 Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
+Safety|DISABLE_JFROG_MCP|bool|Force-disable the JFrog MCP|
+Safety|DISABLE_CONFLUENCE_MCP|bool|Force-disable the Confluence MCP|
 User layer|USER_LAYER_PATH|text|Personal agents/skills/commands layer path|optional; empty uses a per-project named volume instead
 Plugins|ENABLED_PLUGINS|list|Enable plugins|space-separated
 Image|IMAGE_REGISTRY|text|Image registry (Artifactory path)|
@@ -127,6 +133,18 @@ field_help_text() {
     GITLAB_PAT)
       printf 'GitLab personal access token (covers git + REST API via the PRIVATE-TOKEN header). Optional.'
       ;;
+    JFROG_BASE_URL)
+      printf 'JFrog platform base URL over HTTPS, no trailing slash (the MCP appends /artifactory/api).\nAPI-only (no git transport). Optional — the JFrog MCP turns on once this + JFROG_PAT are set.'
+      ;;
+    JFROG_PAT)
+      printf 'JFrog access token, sent as a Bearer token (no username needed). Optional.'
+      ;;
+    CONFLUENCE_BASE_URL)
+      printf 'Confluence site base URL, no trailing slash (the MCP appends /rest/api).\nInclude :8090 for the default HTTP connector, or use plain https:// with no port.\nAPI-only. Optional — the Confluence MCP turns on once this + CONFLUENCE_PAT are set.'
+      ;;
+    CONFLUENCE_PAT)
+      printf 'Confluence personal access token, sent as a Bearer token (no username needed). Optional.'
+      ;;
     GIT_USER_NAME)
       printf 'Git user name used for commits made inside the container. Optional.'
       ;;
@@ -147,6 +165,12 @@ field_help_text() {
       ;;
     DISABLE_GITLAB_MCP)
       printf 'Force-disable the GitLab MCP even if GitLab credentials are present in .env.'
+      ;;
+    DISABLE_JFROG_MCP)
+      printf 'Force-disable the JFrog MCP even if JFrog credentials are present in .env.'
+      ;;
+    DISABLE_CONFLUENCE_MCP)
+      printf 'Force-disable the Confluence MCP even if Confluence credentials are present in .env.'
       ;;
     USER_LAYER_PATH)
       printf 'Host path to bind-mount as your personal agents/skills/commands layer (e.g. ./user-layer).\nLeave empty to use a per-project named volume instead.'
@@ -182,6 +206,10 @@ JIRA_PAT
 GITLAB_BASE_URL
 GITLAB_USER
 GITLAB_PAT
+JFROG_BASE_URL
+JFROG_PAT
+CONFLUENCE_BASE_URL
+CONFLUENCE_PAT
 GIT_USER_NAME
 GIT_USER_EMAIL
 ENABLED_PLUGINS

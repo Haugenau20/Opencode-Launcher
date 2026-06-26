@@ -27,22 +27,24 @@ list_extra_allowlist_files() {
 
 # cmd_show_allowlist [REPO_PATH] — read-only report of the egress this launcher
 # knows about. Honest by construction: the AUTHORITATIVE allowlist (LLM
-# endpoint, Bitbucket, Jira, GitLab) is baked into the squid image, not this repo, so
-# this can only show the bits start.sh itself knows: the configured LLM/
-# Bitbucket/Jira/GitLab hosts from .env, and any local extra-allowlist.d/*.conf
-# drop-ins. Never requires an LLM key, never pulls or attaches anything.
+# endpoint, Bitbucket, Jira, GitLab, JFrog, Confluence) is baked into the squid
+# image, not this repo, so this can only show the bits start.sh itself knows:
+# the configured LLM/Bitbucket/Jira/GitLab/JFrog/Confluence hosts from .env, and
+# any local extra-allowlist.d/*.conf drop-ins. Never requires an LLM key, never
+# pulls or attaches anything.
 cmd_show_allowlist() {
   local repo_path="${1:-}"
 
   echo "OpenCode Launcher egress allowlist"
   echo "==================================="
-  info "the AUTHORITATIVE allowlist (LLM endpoint, Bitbucket, Jira, GitLab) is enforced"
-  info "inside the squid image, not in this repo — this report shows only what"
-  info "start.sh itself knows about: configured hosts + local extensions."
+  info "the AUTHORITATIVE allowlist (LLM endpoint, Bitbucket, Jira, GitLab, JFrog,"
+  info "Confluence) is enforced inside the squid image, not in this repo — this"
+  info "report shows only what start.sh itself knows about: configured hosts +"
+  info "local extensions."
   echo
 
   if [ -f "$ENV_FILE" ]; then
-    local llm_base llm_host bb_user jira_base gl_user
+    local llm_base llm_host bb_user jira_base gl_user jfrog_base conf_base
     llm_base="$(get_env LLM_API_BASE)"
     if [ -n "$llm_base" ]; then
       llm_host="$(url_host "$llm_base")"
@@ -70,6 +72,20 @@ cmd_show_allowlist() {
       info "GitLab: credentials configured (host is baked into the squid image, not visible here)"
     else
       info "GitLab: not configured (no GITLAB_USER in $ENV_FILE)"
+    fi
+
+    jfrog_base="$(get_env JFROG_BASE_URL)"
+    if [ -n "$jfrog_base" ]; then
+      info "JFrog: credentials configured (host is baked into the squid image, not visible here)"
+    else
+      info "JFrog: not configured (no JFROG_BASE_URL in $ENV_FILE)"
+    fi
+
+    conf_base="$(get_env CONFLUENCE_BASE_URL)"
+    if [ -n "$conf_base" ]; then
+      info "Confluence: credentials configured (host is baked into the squid image, not visible here)"
+    else
+      info "Confluence: not configured (no CONFLUENCE_BASE_URL in $ENV_FILE)"
     fi
   else
     warn "$ENV_FILE not found — run ./start.sh once to create it. Showing local extensions only."
@@ -110,10 +126,10 @@ allowlist_summary_line() {
   [ -n "$llm_base" ] && llm_host="$(url_host "$llm_base")"
   extra_count="$(list_extra_allowlist_files "extra-allowlist.d" | grep -c . || true)"
   if [ "${extra_count:-0}" -gt 0 ]; then
-    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab (baked into image) + %s local extension file(s) — see ./start.sh --show-allowlist' \
+    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab/JFrog/Confluence (baked into image) + %s local extension file(s) — see ./start.sh --show-allowlist' \
       "$llm_host" "$extra_count"
   else
-    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab (baked into image) — see ./start.sh --show-allowlist' \
+    printf 'egress allowlist: LLM(%s) + Bitbucket/Jira/GitLab/JFrog/Confluence (baked into image) — see ./start.sh --show-allowlist' \
       "$llm_host"
   fi
 }
