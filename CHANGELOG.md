@@ -55,6 +55,24 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.9.0] — 2026-07-03
+
+### Added
+- Image self-description: newer images ship `/etc/opencode/manifest.json`
+  (the env keys they read), `/etc/opencode/CHANGELOG.md`, and an
+  `org.opencontainers.image.version` OCI label. `./start.sh` now reads these
+  best-effort (never pulling, never failing on an older image that has
+  none of them) and, only when a boot's image digest actually changed,
+  prints the new image version and that version's changelog section, and
+  warns if the image now reads an env key this launcher's `.env.example`
+  doesn't know about ("this image reads env key(s) your launcher doesn't
+  know: ... — git pull the launcher, then ./start.sh --reconfigure").
+- `./start.sh --doctor` gained an `image manifest` check: PASS when the
+  image's manifest is present and every key it reads is known to this
+  launcher, WARN (never FAIL) listing the unknown key(s) on drift, and a
+  neutral skipped WARN when the image isn't pulled locally or predates the
+  manifest.
+
 ## [0.8.0] — 2026-07-03
 
 ### Fixed

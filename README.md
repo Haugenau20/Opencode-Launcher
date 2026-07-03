@@ -216,6 +216,17 @@ A value starting with `sha256:` or `@sha256:` is joined with `@` (Docker's
 digest-reference syntax, `registry/image@sha256:…`), guaranteeing byte-identical
 pulls — the moving-tag concern no longer applies once pinned this way.
 
+**Newer images self-describe.** Alongside the digest, a newer image also
+carries its own version, a changelog, and a manifest of every env key it
+reads. When the digest changes on a boot, `start.sh` surfaces what's new:
+the image version, that version's changelog section, and — if the image now
+reads an env key this launcher version doesn't know about — a warning
+telling you to `git pull` the launcher. An older image with none of this
+self-description just gets the plain `image updated:` nudge, as before.
+`./start.sh --doctor` checks the same manifest independently (`image
+manifest: ...`), so you can spot launcher/image drift without waiting for
+the next digest change.
+
 ## Customizing the environment
 
 Layer in your own OpenCode agents/skills/commands, bake extra system packages
