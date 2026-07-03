@@ -55,6 +55,35 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.8.0] — 2026-07-03
+
+### Fixed
+- Ports are now sticky per project. `--down`/`--logs`/`--shell` used to
+  re-derive the port with a fresh `port_in_use 4096` check and rewrite
+  `.envs/<slug>.env` on every call — if a project's own stack was running on
+  4096, those commands saw 4096 as "busy" (their own stack!), picked 4097,
+  and overwrote the recorded port, after which `--status` reported the wrong
+  web-UI URL. Re-running `./start.sh <repo>` while that repo's stack was
+  already up had the same problem: it moved the port instead of reusing it.
+  Port resolution is now a single shared helper (`resolve_project_port`,
+  used by both the boot flow and the management commands): a running
+  project's own recorded port is always reused, and a down project's
+  recorded port is reused whenever it's still free.
+- `--down`/`--logs`/`--shell` no longer rewrite `.envs/<slug>.env` at all
+  when it already exists — they read it back verbatim (compose still needs
+  `--env-file` to point at *something*, so it's generated once if missing).
+  Only the boot flow (re)writes the file unconditionally, as intended.
+
+### Removed
+- `ENABLE_SESSION_LOGS` — the tmpfs-swap knob never actually worked (the
+  image-side mount needs `CAP_SYS_ADMIN`, which the container is never
+  granted, so the mount silently failed and session state was always
+  persisted regardless of the setting). Removed from `.env.example`, the
+  config schema, and the `--reconfigure`/`--config` UI; it never functioned
+  in the image either and is being removed there too. A leftover
+  `ENABLE_SESSION_LOGS=` line in an existing `.env` is harmless — it's simply
+  ignored.
+
 ## [0.7.0] — 2026-06-26
 
 ### Added
