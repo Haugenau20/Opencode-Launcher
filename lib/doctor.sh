@@ -89,6 +89,30 @@ doctor_check_registry_access() {
   return 0
 }
 
+# doctor_check_image_manifest CHECK_IMAGE — WARN if CHECK_IMAGE's
+# manifest.json (newer images only — see lib/manifest.sh) lists an env key
+# this launcher's .env.example doesn't know about, since that means the
+# image needs a newer launcher. PASS when a manifest is present and every key
+# is known. Neutral WARN "skipped" when CHECK_IMAGE isn't pulled locally or
+# has no manifest at all (older image) — that is the expected, common case
+# and must never look like a problem, so this never FAILs the doctor.
+doctor_check_image_manifest() {
+  local check_image="$1" manifest_json missing_keys
+  manifest_json="$(image_manifest "$check_image" 2>/dev/null || true)"
+  if [ -z "$manifest_json" ]; then
+    doctor_line WARN "image manifest" "not available (older image or image not pulled) — skipped"
+    return 0
+  fi
+  missing_keys="$(manifest_missing_keys "$manifest_json")"
+  if [ -n "$missing_keys" ]; then
+    doctor_line WARN "image manifest" \
+      "reads key(s) this launcher doesn't know: $(printf '%s' "$missing_keys" | tr '\n' ' ' | sed 's/[[:space:]]*$//') — git pull the launcher"
+  else
+    doctor_line PASS "image manifest: launcher knows every key"
+  fi
+  return 0
+}
+
 # doctor_check_env_file — $ENV_FILE exists at all (a missing .env means the
 # required-keys check below has nothing to read; report it as its own line).
 doctor_check_env_file() {
@@ -212,8 +236,10 @@ cmd_doctor() {
     REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
     CHECK_IMAGE="$(compute_base_image "$IMAGE_REGISTRY" "$IMAGE_TAG")"
     doctor_check_registry_access "$CHECK_IMAGE" "$REGISTRY_HOST" || overall_rc=1
+    doctor_check_image_manifest "$CHECK_IMAGE"
   else
     doctor_line WARN "registry access" "skipped — IMAGE_REGISTRY not set"
+    doctor_line WARN "image manifest" "skipped — IMAGE_REGISTRY not set"
   fi
 
   if [ -n "$repo_path" ]; then

@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config usage project packages allowlist digest doctor commands; do
+for __lib in core config usage project packages allowlist digest manifest doctor commands; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -409,11 +409,41 @@ cmd_run() {
   # registry/runtime that doesn't expose RepoDigests just means this is
   # skipped, never a failure. Also records it so the NEXT run can report
   # whether the image changed since last time (the update nudge below).
-  local IMAGE_DIGEST=""
+  local IMAGE_DIGEST="" DIGEST_CHANGED=1
   IMAGE_DIGEST="$(get_image_digest "$CHECK_IMAGE" 2>/dev/null || true)"
   if [ -n "$IMAGE_DIGEST" ]; then
     info "image:   $IMAGE_DIGEST"
-    report_digest_update "$SLUG" "$IMAGE_DIGEST"
+    if report_digest_update "$SLUG" "$IMAGE_DIGEST"; then
+      DIGEST_CHANGED=0
+    fi
+  fi
+
+  # --- image self-description (newer images only) ---------------------------
+  # Only worth the extra `docker run`s when the digest actually changed above
+  # — on an unchanged digest there's nothing new to say, and on an old image
+  # (no manifest/label at all) every piece below degrades to empty output
+  # anyway. Keeps a same-digest boot exactly as fast as before this feature.
+  if [ "$DIGEST_CHANGED" -eq 0 ]; then
+    local IMG_VERSION="" CHANGELOG_SECTION="" MANIFEST_JSON="" MISSING_KEYS=""
+    IMG_VERSION="$(image_version_label "$CHECK_IMAGE" 2>/dev/null || true)"
+    if [ -n "$IMG_VERSION" ]; then
+      info "image version: $IMG_VERSION"
+      CHANGELOG_SECTION="$(image_changelog_section "$CHECK_IMAGE" "$IMG_VERSION" 2>/dev/null || true)"
+      if [ -n "$CHANGELOG_SECTION" ]; then
+        info "changelog for $IMG_VERSION:"
+        echo "  ---------------------------------------------------------------"
+        printf '%s\n' "$CHANGELOG_SECTION" | sed 's/^/  /'
+        echo "  ---------------------------------------------------------------"
+      fi
+    fi
+    MANIFEST_JSON="$(image_manifest "$CHECK_IMAGE" 2>/dev/null || true)"
+    if [ -n "$MANIFEST_JSON" ]; then
+      MISSING_KEYS="$(manifest_missing_keys "$MANIFEST_JSON")"
+      if [ -n "$MISSING_KEYS" ]; then
+        warn "this image reads env key(s) your launcher doesn't know: $(printf '%s' "$MISSING_KEYS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        warn "  git pull the launcher, then ./start.sh --reconfigure"
+      fi
+    fi
   fi
 
   # --- 8. report ------------------------------------------------------------

@@ -642,6 +642,34 @@ seed_env_doctor() {
   [[ "$output" == *"could not verify"* ]]
 }
 
+@test "--doctor: image manifest PASSes when every key is known" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false} ]}' \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] image manifest: launcher knows every key"* ]]
+}
+
+@test "--doctor: image manifest WARNs (not FAILs) when the image reads an unknown env key" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "NEW_KEY_X", "required": false} ]}' \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] image manifest"* ]]
+  [[ "$output" == *"NEW_KEY_X"* ]]
+  [[ "$output" == *"git pull the launcher"* ]]
+  ! [[ "$output" == *"[FAIL] image manifest"* ]]
+}
+
+@test "--doctor: image manifest is a neutral skipped WARN on an old/unpulled image" {
+  seed_env_doctor
+  run_launcher --doctor   # FAKE_DOCKER_MANIFEST unset => empty, mirrors an old image
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] image manifest"* ]]
+  [[ "$output" == *"not available"* ]]
+  [[ "$output" == *"skipped"* ]]
+}
+
 @test "--doctor: podman shim is reported as WARN, not FAIL" {
   seed_env_doctor
   FAKE_DOCKER_VERSION_OUTPUT="Docker version 0.0.0, podman" \
@@ -1606,6 +1634,86 @@ seed_env_doctor() {
   [[ "$output" == *"image updated:"* ]]
   [[ "$output" == *"sha256:444444444444"* ]]
   [[ "$output" == *"sha256:333333333333"* ]]
+}
+
+# --- image self-description on update (manifest/changelog/version label) ---
+
+@test "boot on a digest change prints the image version + changelog and warns on manifest drift" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:5555555555555555555555555555555555555555555555555555555555555e" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:6666666666666666666666666666666666666666666666666666666666666f" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "NEW_KEY_X", "required": false} ]}' \
+    FAKE_DOCKER_CHANGELOG='## [0.0.7] — 2026-07-01
+
+### Added
+- JFrog MCP server.' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" == *"image version: 0.0.7"* ]]
+  [[ "$output" == *"JFrog MCP server."* ]]
+  [[ "$output" == *"this image reads env key(s) your launcher doesn't know: NEW_KEY_X"* ]]
+  [[ "$output" == *"git pull the launcher"* ]]
+}
+
+@test "boot on a digest change with a drift-free manifest prints no drift warning" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:9999999999999999999999999999999999999999999999999999999999999c" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true} ]}' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image version: 0.0.7"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
+}
+
+@test "boot stays silent about manifest/version/changelog for an old image, even when the digest changes" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:7777777777777777777777777777777777777777777777777777777777777a" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  # No FAKE_DOCKER_IMAGE_LABEL / FAKE_DOCKER_MANIFEST / FAKE_DOCKER_CHANGELOG
+  # set — mirrors an old image that has none of the newer self-description
+  # files, even though the digest still changed.
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:8888888888888888888888888888888888888888888888888888888888888b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" != *"image version:"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
+  [[ "$output" != *"changelog"* ]]
+}
+
+@test "boot on an UNCHANGED digest never runs the manifest/version/changelog reporting" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  # Same digest again, but WITH a manifest/label/changelog fixture set — if
+  # the reporting ran anyway it would show up; it must not, since nothing
+  # changed and boot should stay exactly as fast/quiet as before this feature.
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "NEW_KEY_X", "required": false} ]}' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+  [[ "$output" != *"image version:"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
 }
 
 # --- .env.example drift check -----------------------------------------------
