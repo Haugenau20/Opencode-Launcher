@@ -25,6 +25,11 @@
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
 #                                      inspect --format '{{index .RepoDigests 0}}'`
 #                                      (default: a stable fake digest)
+#   FAKE_DOCKER_PS_OUTPUT         stdout for `docker ps --format {{.Names}}`
+#                                  (default ""): one container name per line,
+#                                  used by publish_container_running (sticky
+#                                  port resolution) to decide which project's
+#                                  own oc-publish container is currently up.
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
@@ -80,6 +85,11 @@ EOF
       *"sh -c"*"command -v bash"*) exit "${FAKE_DOCKER_EXEC_PROBE_RC:-0}" ;;
     esac
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
+    ;;
+  ps)
+    printf '%s' "${FAKE_DOCKER_PS_OUTPUT:-}"
+    [ -n "${FAKE_DOCKER_PS_OUTPUT:-}" ] && printf '\n'
+    exit 0
     ;;
   image)
     if [ "${2:-}" = inspect ]; then

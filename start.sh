@@ -345,12 +345,15 @@ cmd_run() {
   local SLUG PORT
   SLUG="$(derive_slug "$REPO_PATH")"
 
-  # Port: default to 4096, find next free port if taken. The browser web UI
-  # derives its backend from the page's own origin, so any host port works.
-  PORT=4096
-  if port_in_use 4096; then
-    PORT="$(find_free_port 4097 4196)"
-    info "port 4096 in use; booting $SLUG on port $PORT instead (the web UI works on any port)."
+  # Port: sticky per project via resolve_project_port (shared with
+  # derive_project_settings in lib/project.sh — see there for the full rule).
+  # In short: reuse this project's own running port, else its last-recorded
+  # port if that's free, else 4096, else the first free port in 4097-4196.
+  # The browser web UI derives its backend from the page's own origin, so any
+  # host port works.
+  PORT="$(resolve_project_port "$SLUG")"
+  if [ "$PORT" != "4096" ]; then
+    info "booting $SLUG on port $PORT (sticky/first-free; the web UI works on any port)."
   fi
 
   # --- 6. generate per-project env file (superset of .env) ------------------

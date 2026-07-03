@@ -93,9 +93,14 @@ cmd_status() {
   fi
 }
 
-# cmd_down REPO_ARG — re-derive the same project boot would, then `compose
+# cmd_down REPO_ARG — reuse the recorded per-project settings, then `compose
 # down`. Never requires .env secrets to be filled in; gracefully no-ops when
-# there's no .env at all (nothing could have been started).
+# there's no .env at all (nothing could have been started). Reuses
+# .envs/<slug>.env VERBATIM when it already exists — via
+# project_env_for_management, it does NOT recompute the port; down needs the
+# exact values the stack was booted with, not a fresh guess (see
+# resolve_project_port in lib/project.sh for why re-deriving here would be
+# wrong: another process could have taken the recorded port in the meantime).
 cmd_down() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -112,9 +117,9 @@ cmd_down() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   info "tearing down $PROJECT_NAME ..."
   if "${COMPOSE[@]}" down; then
@@ -133,10 +138,13 @@ project_running() {
     | awk -F'\t' -v p="$project_name" '$1==p{found=1} END{exit !found}'
 }
 
-# cmd_logs REPO_ARG — re-derive the same project boot would, then tail its
+# cmd_logs REPO_ARG — reuse the recorded per-project settings, then tail its
 # compose logs (follow). Never requires .env secrets, never pulls an image,
 # never attaches the TUI. Gracefully no-ops (not an error) when nothing is
-# running for this project.
+# running for this project. Read-only: via project_env_for_management, this
+# never rewrites an existing .envs/<slug>.env (only generates one, once, if
+# it's missing) — a --logs call must never perturb the port a running stack
+# is actually using.
 cmd_logs() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -153,9 +161,9 @@ cmd_logs() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   if ! project_running "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to tail. Start it with ./start.sh $repo_arg"
@@ -166,10 +174,12 @@ cmd_logs() {
   "${COMPOSE[@]}" logs -f
 }
 
-# cmd_shell REPO_ARG — re-derive the same project boot would, then drop into
+# cmd_shell REPO_ARG — reuse the recorded per-project settings, then drop into
 # an interactive shell inside the running opencode container as the `dev`
 # user rooted at /workspace. Never requires .env secrets, never pulls an
 # image. Gracefully no-ops (not an error) when the container isn't running.
+# Read-only: via project_env_for_management, this never rewrites an existing
+# .envs/<slug>.env (only generates one, once, if it's missing).
 cmd_shell() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -186,9 +196,9 @@ cmd_shell() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   if ! project_running "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to shell into. Start it with ./start.sh $repo_arg"
