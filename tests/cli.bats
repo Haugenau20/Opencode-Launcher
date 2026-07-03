@@ -924,14 +924,14 @@ seed_env_doctor() {
 @test "--reconfigure preserves unrelated keys it doesn't own" {
   seed_env
   sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
-  sed -i 's|^ENABLE_SESSION_LOGS=.*|ENABLE_SESSION_LOGS=0|' "$SANDBOX/.env"
+  sed -i 's|^DISABLE_JIRA_MCP=.*|DISABLE_JIRA_MCP=1|' "$SANDBOX/.env"
 
   printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
 
   [ "$status" -eq 0 ]
   grep -q '^ALLOW_REMOTE_GIT=1$' "$SANDBOX/.env"
-  grep -q '^ENABLE_SESSION_LOGS=0$' "$SANDBOX/.env"
+  grep -q '^DISABLE_JIRA_MCP=1$' "$SANDBOX/.env"
 }
 
 @test "--reconfigure masks existing secrets instead of echoing them" {
@@ -1366,6 +1366,124 @@ seed_env_doctor() {
     run_launcher --shell "$repo"
   [ "$status" -eq 0 ]
   grep -qE '^exec .*-it opencode-myrepo bash$' "$FAKE_DOCKER_LOG"
+}
+
+# --- sticky ports / read-only commands must not rewrite state ---------------
+# Regression coverage for: derive_project_settings used to recompute the port
+# with a fresh `port_in_use 4096` and rewrite .envs/<slug>.env on EVERY call
+# (including --down/--logs/--shell). If a project's own stack was running on
+# 4096, those commands saw 4096 "busy" (their own stack!), picked 4097, and
+# overwrote the recorded port — after which --status read the wrong web-UI
+# URL back out of the file. Ports must be sticky per project, and read-only
+# commands must never perturb the recorded file.
+
+@test "boot: sticky port — re-running while the project's own stack is already up keeps the recorded (non-default) port" {
+  seed_env
+  local repo; repo="$(make_repo_arg "Sticky Repo")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/sticky-repo.env"
+  [ -f "$penv" ]
+
+  # Simulate the project having previously landed on a non-default port (e.g.
+  # 4096 was busy at the time) and its own oc-publish container being up
+  # right now — re-running boot must NOT bounce it back to 4096.
+  sed -i 's|^OPENCODE_PORT=.*|OPENCODE_PORT=5555|' "$penv"
+  FAKE_DOCKER_PS_OUTPUT="opencode-publish-sticky-repo" run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://localhost:5555"* ]]
+  grep -q '^OPENCODE_PORT=5555$' "$penv"
+}
+
+@test "regression: --logs does not clobber the recorded port for a running stack (matches --status afterward)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  grep -q '^OPENCODE_PORT=4096$' "$penv"
+
+  # The project's own oc-publish container is up (so 4096 would look "busy"
+  # to a naive re-derivation) — --logs must leave the recorded port alone.
+  FAKE_DOCKER_PS_OUTPUT="opencode-publish-my-service" \
+    FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -q '^OPENCODE_PORT=4096$' "$penv"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://localhost:4096"* ]]
+}
+
+@test "--logs never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--shell never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--down never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--down generates .envs/<slug>.env when nothing was ever booted for this repo (but .env exists)" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  local penv="$SANDBOX/.envs/myrepo.env"
+  [ ! -f "$penv" ]
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [ -f "$penv" ]
 }
 
 # --- --open ---------------------------------------------------------------

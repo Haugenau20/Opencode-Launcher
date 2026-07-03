@@ -104,6 +104,180 @@ setup() {
   [ "$output" = "4100" ]
 }
 
+# --- resolve_project_port / publish_container_running (sticky ports) --------
+# lib/project.sh — the fix for the "management commands clobber the recorded
+# port" bug: ports must be sticky per project rather than recomputed on every
+# call. port_in_use and docker (for publish_container_running's `docker ps`)
+# are stubbed directly, same convention as the find_free_port tests above.
+
+@test "recorded_port: empty when there is no .envs/<slug>.env file" {
+  run recorded_port "no-such-project"
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+}
+
+@test "recorded_port: reads OPENCODE_PORT out of .envs/<slug>.env" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/x\n' > "$ENVS_DIR/demo.env"
+  run recorded_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "publish_container_running: true when docker ps lists this project's oc-publish container" {
+  docker() {
+    [ "$1" = ps ] && printf 'opencode-publish-demo\n'
+  }
+  run publish_container_running demo
+  [ "$status" -eq 0 ]
+}
+
+@test "publish_container_running: false when docker ps lists a different project's container" {
+  docker() {
+    [ "$1" = ps ] && printf 'opencode-publish-other\n'
+  }
+  run publish_container_running demo
+  [ "$status" -ne 0 ]
+}
+
+@test "publish_container_running: false when docker ps lists nothing" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  run publish_container_running demo
+  [ "$status" -ne 0 ]
+}
+
+@test "resolve_project_port: (a) reuses the recorded port when this project's own oc-publish container is running, even though the port would otherwise look busy" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf 'opencode-publish-demo\n'; }
+  port_in_use() { return 0; }   # would look busy everywhere if this were consulted
+  run resolve_project_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "resolve_project_port: running with no recorded port falls back to default logic" {
+  docker() { [ "$1" = ps ] && printf 'opencode-publish-demo\n'; }
+  port_in_use() { return 1; }   # 4096 free
+  run resolve_project_port demo
+  [ "$output" = "4096" ]
+}
+
+@test "resolve_project_port: (b) reuses the recorded port when it is free and the project is down" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf ''; }   # not running
+  port_in_use() { return 1; }   # nothing busy
+  run resolve_project_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "resolve_project_port: (c) picks a new free port when the recorded port is taken by something else and the project is down" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf ''; }   # not running
+  # 5555 (recorded) and 4096 (default) both busy; 4097 is free.
+  port_in_use() { case "$1" in 5555|4096) return 0 ;; *) return 1 ;; esac; }
+  run resolve_project_port demo
+  [ "$output" = "4097" ]
+}
+
+@test "resolve_project_port: no recorded port, nothing running, 4096 free -> defaults to 4096" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  run resolve_project_port demo
+  [ "$output" = "4096" ]
+}
+
+@test "resolve_project_port: no recorded port, 4096 busy -> first free port from 4097" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
+  run resolve_project_port demo
+  [ "$output" = "4097" ]
+}
+
+# --- derive_project_settings is a pure compute step (no file writes) --------
+
+@test "derive_project_settings: never writes .envs/<slug>.env (compute only)" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$SLUG" = "some-repo" ]
+  [ "$PORT" = "4096" ]
+  [ ! -e "$PROJECT_ENV" ]
+}
+
+@test "derive_project_settings: reuses a recorded port instead of recomputing 4096" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/sticky-repo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }   # everything free, including 4096
+  local repo="$BATS_TEST_TMPDIR/sticky-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PORT" = "5555" ]
+}
+
+# --- write_project_env / project_env_for_management -------------------------
+
+@test "write_project_env: writes PROJECT_SLUG/OPENCODE_PORT/REPO_PATH using the caller's SLUG/PORT/PROJECT_ENV" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  write_project_env "/some/repo"
+  [ -f "$PROJECT_ENV" ]
+  grep -q '^PROJECT_SLUG=demo$' "$PROJECT_ENV"
+  grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
+  grep -q '^REPO_PATH=/some/repo$' "$PROJECT_ENV"
+  grep -q '^FOO=bar$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: succeeds under set -e even with no USER_LAYER_PATH set (regression: bare && as the last statement)" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  # A bash `set -euo pipefail` gotcha: if the last statement in a function is
+  # a short-circuited `[ cond ] && cmd` that evaluates false, the function
+  # returns non-zero and can abort the whole script at the call site. This
+  # test just needs to not abort (bats itself runs under bash, but the real
+  # regression only shows up under a strict-mode caller — see the cli.bats
+  # sticky-port boot tests for the end-to-end version of this check).
+  run write_project_env "/some/repo"
+  [ "$status" -eq 0 ]
+}
+
+@test "project_env_for_management: reuses .envs/<slug>.env verbatim (port not re-resolved) when it already exists" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/old/path\n' > "$ENVS_DIR/demo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  # If this were re-resolved, port_in_use reporting everything busy would
+  # force a completely different port (or die trying); it must not be
+  # consulted at all when the file already exists.
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }
+  local repo="$BATS_TEST_TMPDIR/demo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$SLUG" = "demo" ]
+  [ "$PORT" = "5555" ]
+  # File content is untouched — REPO_PATH still says /old/path, not $repo.
+  grep -q '^REPO_PATH=/old/path$' "$PROJECT_ENV"
+}
+
+@test "project_env_for_management: generates .envs/<slug>.env when missing" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/fresh-repo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ -f "$PROJECT_ENV" ]
+  grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
+  grep -q "^REPO_PATH=${repo}\$" "$PROJECT_ENV"
+}
+
 # --- project_running (docker stubbed) ---------------------------------------
 
 @test "project_running: true when compose ls lists the project name" {
@@ -559,7 +733,7 @@ SCRIPT
   run editable_schema_keys
   [ "$status" -eq 0 ]
   [[ "$output" == *"ALLOW_REMOTE_GIT"* ]]
-  [[ "$output" == *"ENABLE_SESSION_LOGS"* ]]
+  [[ "$output" == *"DISABLE_BITBUCKET_MCP"* ]]
   [[ "$output" == *"USER_LAYER_PATH"* ]]
   [[ "$output" == *"LLM_API_BASE"* ]]
   [[ "$output" == *"IMAGE_REGISTRY"* ]]
