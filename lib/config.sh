@@ -56,7 +56,6 @@ Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
 User layer|HOST_GID|internal|Host GID|auto-filled from `id -g` on first run
 Safety|ALLOW_REMOTE_GIT|bool|Allow remote git (push/fetch/pull/clone)|1 enables, 0 disables
-Safety|ENABLE_SESSION_LOGS|bool|Enable session logs|0 swaps session state for tmpfs
 Safety|DISABLE_BITBUCKET_MCP|bool|Force-disable the Bitbucket MCP|
 Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
 Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
@@ -153,9 +152,6 @@ field_help_text() {
       ;;
     ALLOW_REMOTE_GIT)
       printf 'Allow git push/fetch/pull/clone to remote hosts. 1 enables, 0 disables.'
-      ;;
-    ENABLE_SESSION_LOGS)
-      printf 'Keep session state on disk. 0 swaps session state for tmpfs instead.'
       ;;
     DISABLE_BITBUCKET_MCP)
       printf 'Force-disable the Bitbucket MCP even if Bitbucket credentials are present in .env.'
