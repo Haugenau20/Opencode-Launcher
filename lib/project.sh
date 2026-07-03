@@ -112,14 +112,20 @@ open_url() {
   info "--open: launching $opener for $url"
 }
 
-# _project_compose_files — echo (as a COMPOSE-array-ready sequence, one -f/path
-# pair at a time via the caller's array-append idiom below) which compose
-# overlay files apply on top of docker-compose.yml, based on the CURRENT
-# USER_LAYER_PATH in $ENV_FILE. Internal helper shared by derive_project_settings
-# and write_project_env so both agree on the overlay set without duplicating
-# the USER_LAYER_PATH resolution logic. Side effect: mkdir -p's USER_LAYER_PATH
-# if set (same as before this was split out) so the bind mount target exists.
+# _project_compose_files SLUG — echo (as a COMPOSE-array-ready sequence, one
+# -f/path pair at a time via the caller's array-append idiom below) which
+# compose overlay files apply on top of docker-compose.yml, based on the
+# CURRENT USER_LAYER_PATH in $ENV_FILE and whether SLUG has a generated
+# --also overlay on disk. Internal helper shared by derive_project_settings
+# and write_project_env/project_env_for_management so all three agree on the
+# overlay set without duplicating the USER_LAYER_PATH resolution logic. Side
+# effect: mkdir -p's USER_LAYER_PATH if set (same as before this was split
+# out) so the bind mount target exists. The --also overlay (lib/also.sh) is
+# appended LAST, same as the boot flow (cmd_run in start.sh) — it is only
+# ever included when the file already exists (i.e. a previous boot with
+# --also wrote it); management commands never generate it themselves.
 _project_compose_files() {
+  local slug="$1"
   local user_layer_path
   user_layer_path="$(get_env USER_LAYER_PATH)"
   compose_files=(-f "$__OCL_DIR/docker/docker-compose.yml")
@@ -128,6 +134,15 @@ _project_compose_files() {
     user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
       || die "could not resolve USER_LAYER_PATH"
     compose_files+=(-f "$__OCL_DIR/docker/docker-compose.user-layer.yml")
+  fi
+  # NOTE: as with write_project_env below, the LAST statement of this function
+  # must never be a bare `[ cond ] && cmd` — under set -euo pipefail a false
+  # (short-circuited) `&&` list would abort the whole script here. `if ... fi`
+  # returns 0 on a false condition, `&&` does not.
+  local also_overlay
+  also_overlay="$(also_overlay_file "$slug")"
+  if [ -f "$also_overlay" ]; then
+    compose_files+=(-f "$also_overlay")
   fi
 }
 
@@ -148,7 +163,7 @@ derive_project_settings() {
   PORT="$(resolve_project_port "$SLUG")"
 
   local compose_files
-  _project_compose_files
+  _project_compose_files "$SLUG"
 
   mkdir -p "$ENVS_DIR"
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
@@ -219,7 +234,7 @@ project_env_for_management() {
     PORT="$(recorded_port "$SLUG")"
     [ -n "$PORT" ] || PORT=4096
     local compose_files
-    _project_compose_files
+    _project_compose_files "$SLUG"
     COMPOSE=(docker compose
       --project-directory "$__OCL_DIR"
       --env-file "$PROJECT_ENV"

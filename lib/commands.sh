@@ -82,6 +82,11 @@ cmd_status() {
     info "resume:  ./start.sh $repo_arg"
   fi
 
+  # --also extra mounts, parsed back out of the generated overlay (if this
+  # project was last booted with any). Shown regardless of up/down — it
+  # reports what the NEXT boot will reuse, same as the image digest below.
+  also_mount_lines "$(also_mounts_from_overlay "$slug")"
+
   # Last-recorded image digest for this project (written by a previous boot's
   # report_digest_update). Read-only — just shows what was last seen, never
   # pulls or inspects anything live.
@@ -90,6 +95,43 @@ cmd_status() {
   if [ -f "$digest_file" ]; then
     last_digest="$(cat "$digest_file" 2>/dev/null || true)"
     [ -n "$last_digest" ] && info "image:   $last_digest (as of last boot)"
+  fi
+
+  # MCP servers the image actually wired up — entirely best-effort, and only
+  # meaningful while the container is running (a down container can't be
+  # exec'd into). Any failure (no jq, exec fails, file missing) prints
+  # nothing, never an error — see mcp_status_line.
+  #
+  # NOTE: as with write_project_env, the LAST statement of this function must
+  # never be a bare `[ cond ] && cmd` (or an `if` whose only branch ends in
+  # one) — under set -euo pipefail, cmd_status is called as a bare statement
+  # in main() (before its own `return 0`), so a false/short-circuited `&&`
+  # here would abort the whole script on the (common!) down/no-mcps case
+  # rather than just skipping the print. `if ... fi` returns 0 either way.
+  if [ -n "$running" ]; then
+    local mcps_line
+    mcps_line="$(mcp_status_line "$project_name")"
+    if [ -n "$mcps_line" ]; then
+      info "$mcps_line"
+    fi
+  fi
+}
+
+# mcp_status_line PROJECT_NAME — echo "mcps:    <comma-separated names>" (or
+# "mcps:    (none configured)") read from the running PROJECT_NAME container's
+# own /home/dev/.config/opencode/opencode.json via `jq`, or nothing at all on
+# ANY failure (container gone, no jq in the image, file missing, malformed
+# JSON, etc.) — this is a best-effort convenience, never an error condition.
+# The `|| rc=$?` idiom keeps this set -e safe regardless of caller context.
+mcp_status_line() {
+  local project_name="$1" out rc=0
+  out="$(docker exec "$project_name" jq -r '(.mcp // {}) | keys | join(", ")' \
+    /home/dev/.config/opencode/opencode.json 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  if [ -n "$out" ]; then
+    printf 'mcps:    %s' "$out"
+  else
+    printf 'mcps:    (none configured)'
   fi
 }
 
