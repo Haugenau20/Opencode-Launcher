@@ -1218,3 +1218,242 @@ older"
   grep -q "^HOST_UID=$(id -u)$" "$ENV_FILE"
   grep -q "^HOST_GID=$(id -g)$" "$ENV_FILE"
 }
+
+# --- resolve_also_mounts (lib/also.sh) ---------------------------------------
+
+@test "resolve_also_mounts: a bare path defaults to read-only" {
+  local liba="$BATS_TEST_TMPDIR/liba"; mkdir -p "$liba"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$liba"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\tro\tliba' "$liba")" ]
+}
+
+@test "resolve_also_mounts: a trailing :rw suffix opts into read-write" {
+  local libb="$BATS_TEST_TMPDIR/libb"; mkdir -p "$libb"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "${libb}:rw"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\trw\tlibb' "$libb")" ]
+}
+
+@test "resolve_also_mounts: emits one line per spec, in argument order" {
+  local liba="$BATS_TEST_TMPDIR/liba" libb="$BATS_TEST_TMPDIR/libb"
+  mkdir -p "$liba" "$libb"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$liba" "${libb}:rw"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf '%s\tro\tliba' "$liba")" ]
+  [ "${lines[1]}" = "$(printf '%s\trw\tlibb' "$libb")" ]
+}
+
+@test "resolve_also_mounts: a name collision between two paths gets -2/-3 suffixing" {
+  mkdir -p "$BATS_TEST_TMPDIR/one/lib" "$BATS_TEST_TMPDIR/two/lib" "$BATS_TEST_TMPDIR/three/lib"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" \
+    "$BATS_TEST_TMPDIR/one/lib" "$BATS_TEST_TMPDIR/two/lib" "$BATS_TEST_TMPDIR/three/lib"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *$'\t'lib ]]
+  [[ "${lines[1]}" == *$'\t'lib-2 ]]
+  [[ "${lines[2]}" == *$'\t'lib-3 ]]
+}
+
+@test "resolve_also_mounts: dies on a nonexistent path" {
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path does not exist"* ]]
+}
+
+@test "resolve_also_mounts: dies when the path is a file, not a directory" {
+  local f="$BATS_TEST_TMPDIR/afile"; : > "$f"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path is not a directory"* ]]
+}
+
+@test "resolve_also_mounts: dies when a spec resolves to the main repo path" {
+  local repo="$BATS_TEST_TMPDIR/repo"; mkdir -p "$repo"
+  run resolve_also_mounts "$repo" "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"duplicates the main repo path"* ]]
+}
+
+# --- also_mount_lines / write_also_overlay / also_mounts_from_overlay --------
+# (lib/also.sh)
+
+@test "also_mount_lines: formats read-only and read-write lines distinctly" {
+  local mounts; mounts="$(printf '/a/b\tro\tb\n/c/d\trw\td\n')"
+  run also_mount_lines "$mounts"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"also: /a/b -> /workspace-extra/b (read-only)"* ]]
+  [[ "${lines[1]}" == *"also: /c/d -> /workspace-extra/d (read-write)"* ]]
+}
+
+@test "also_mount_lines: empty input is a silent no-op" {
+  run also_mount_lines ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "write_also_overlay + also_mounts_from_overlay: round-trips ro/rw flags and names" {
+  local mounts; mounts="$(printf '/a/b\tro\tliba\n/c/d\trw\tlibb\n')"
+  write_also_overlay myslug "$mounts"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  grep -qF -- "- /a/b:/workspace-extra/liba:ro,z" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF -- "- /c/d:/workspace-extra/libb:z" "${ENVS_DIR}/myslug.also.yml"
+
+  run also_mounts_from_overlay myslug
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf '/a/b\tro\tliba')" ]
+  [ "${lines[1]}" = "$(printf '/c/d\trw\tlibb')" ]
+}
+
+@test "also_mounts_from_overlay: empty (not an error) when the overlay file doesn't exist" {
+  run also_mounts_from_overlay no-such-slug
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "delete_also_overlay: removes an existing overlay and is a no-op when absent" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  delete_also_overlay myslug
+  [ ! -f "${ENVS_DIR}/myslug.also.yml" ]
+  # calling again (nothing to delete) must not error
+  run delete_also_overlay myslug
+  [ "$status" -eq 0 ]
+}
+
+@test "also_overlay_file: path is <ENVS_DIR>/<slug>.also.yml" {
+  run also_overlay_file myslug
+  [ "$status" -eq 0 ]
+  [ "$output" = "${ENVS_DIR}/myslug.also.yml" ]
+}
+
+# --- mcp_status_line (lib/commands.sh) ---------------------------------------
+
+@test "mcp_status_line: reports the comma-joined MCP keys" {
+  docker() {
+    if [ "$1" = exec ]; then printf 'bitbucket, jira\n'; return 0; fi
+    return 1
+  }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ "$output" = "mcps:    bitbucket, jira" ]
+}
+
+@test "mcp_status_line: reports '(none configured)' on an empty-but-successful probe" {
+  docker() { [ "$1" = exec ] && { printf '\n'; return 0; }; return 1; }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ "$output" = "mcps:    (none configured)" ]
+}
+
+@test "mcp_status_line: silent (not an error) when the exec fails" {
+  docker() { [ "$1" = exec ] && return 1; return 1; }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- launcher_behind_count (lib/update.sh) -----------------------------------
+#
+# Deliberately uses REAL git (bare "origin" + a clone, in the bats temp dir),
+# not a fake-bin stub — this is exercising real `git fetch`/`rev-list`
+# semantics, which a stub would just assert away.
+
+# git_repo_pair NAME — set up a bare "$BATS_TEST_TMPDIR/NAME-origin.git" and a
+# clone of it at "$BATS_TEST_TMPDIR/NAME" tracking origin/main. Echoes nothing;
+# callers reference the two paths directly.
+git_repo_pair() {
+  local name="$1" origin="$BATS_TEST_TMPDIR/${1}-origin.git" clone="$BATS_TEST_TMPDIR/${1}"
+  git init -q --bare "$origin"
+  git init -q -b main "$BATS_TEST_TMPDIR/${1}-seed"
+  ( cd "$BATS_TEST_TMPDIR/${1}-seed" \
+      && git config user.email t@example.com && git config user.name t \
+      && echo seed > f && git add f && git commit -q -m seed \
+      && git remote add origin "$origin" && git push -q origin main )
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+  git clone -q "$origin" "$clone"
+  ( cd "$clone" && git config user.email t@example.com && git config user.name t )
+}
+
+@test "launcher_behind_count: empty for a directory that is not a git repo at all" {
+  run launcher_behind_count "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "launcher_behind_count: empty when the repo has no upstream configured" {
+  git init -q -b main "$BATS_TEST_TMPDIR/norepo-upstream"
+  ( cd "$BATS_TEST_TMPDIR/norepo-upstream" && git config user.email t@example.com && git config user.name t \
+      && echo x > f && git add f && git commit -q -m init )
+  run launcher_behind_count "$BATS_TEST_TMPDIR/norepo-upstream"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "launcher_behind_count: 0 when the clone is fully in sync with its upstream" {
+  git_repo_pair insync
+  run launcher_behind_count "$BATS_TEST_TMPDIR/insync"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "launcher_behind_count: 1 after a single new commit lands on the upstream" {
+  git_repo_pair behind1
+  ( cd "$BATS_TEST_TMPDIR/behind1-seed" && echo more >> f && git add f && git commit -q -m second && git push -q origin main )
+  run launcher_behind_count "$BATS_TEST_TMPDIR/behind1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "launcher_behind_count: counts multiple upstream commits correctly" {
+  git_repo_pair behind3
+  for i in 1 2 3; do
+    ( cd "$BATS_TEST_TMPDIR/behind3-seed" && echo "change $i" >> f && git add f && git commit -q -m "change $i" && git push -q origin main )
+  done
+  run launcher_behind_count "$BATS_TEST_TMPDIR/behind3"
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+}
+
+@test "launcher_behind_count: never a script-fatal error under set -e (no git on PATH)" {
+  run bash -c '
+    PATH="/nonexistent-path-with-no-git"
+    source "'"$REPO_ROOT"'/lib/core.sh"
+    source "'"$REPO_ROOT"'/lib/update.sh"
+    set -euo pipefail
+    launcher_behind_count "'"$BATS_TEST_TMPDIR"'"
+    echo "still running"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"still running"* ]]
+}
+
+# --- doctor_check_launcher_update (lib/doctor.sh) ----------------------------
+#
+# launcher_behind_count itself is exercised with real git above; here the
+# formatting/PASS-WARN choice is pinned by stubbing launcher_behind_count
+# directly (bash lets a test-local function shadow the sourced one) so these
+# stay fast and deterministic.
+
+@test "doctor_check_launcher_update: PASS 'launcher up to date' when 0 behind" {
+  launcher_behind_count() { printf '0'; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] launcher up to date"* ]]
+}
+
+@test "doctor_check_launcher_update: WARN (never FAIL) naming the count when behind" {
+  launcher_behind_count() { printf '4'; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN]"* ]]
+  [[ "$output" == *"4 commit(s) behind origin — git pull"* ]]
+  [[ "$output" != *"[FAIL]"* ]]
+}
+
+@test "doctor_check_launcher_update: neutral skipped WARN when undeterminable" {
+  launcher_behind_count() { printf ''; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] launcher update check"* ]]
+  [[ "$output" == *"skipped (no upstream/offline)"* ]]
+}
