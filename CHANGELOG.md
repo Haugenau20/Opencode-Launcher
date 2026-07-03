@@ -55,6 +55,15 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.7.0] — 2026-06-26
+
+### Added
+- JFrog and Confluence support, matching the new MCP servers in image `0.0.6`:
+  `JFROG_BASE_URL`/`JFROG_PAT` and `CONFLUENCE_BASE_URL`/`CONFLUENCE_PAT`, plus
+  the `DISABLE_JFROG_MCP`/`DISABLE_CONFLUENCE_MCP` switches. They now flow
+  through `.env.example`, the first-run/`--reconfigure` wizard, the `--config`
+  dashboard, `--show-allowlist`, and the `--doctor` env checks.
+
 ## [0.6.0] — 2026-06-19
 
 ### Added
@@ -149,6 +158,26 @@ _Changes to the launcher itself._
 
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
+
+## [0.0.6] — 2026-06-26
+
+**Action required:** edit `.env` (new MCP credentials) + update launcher (≥ 0.7.0)
+
+- Read-only **JFrog Artifactory** integration: browse repositories, search
+  artifacts (incl. AQL), look up the latest version, fetch files, and read
+  build info. Auto-enables once `JFROG_BASE_URL` + `JFROG_PAT` are set (force off
+  with `DISABLE_JFROG_MCP=1`). Bearer token, no username — same shape as Jira.
+- Read-only **Confluence** integration: read pages, CQL search, browse a space's
+  page tree, list spaces. Auto-enables once `CONFLUENCE_BASE_URL` +
+  `CONFLUENCE_PAT` are set (force off with `DISABLE_CONFLUENCE_MCP=1`). Bearer
+  token, no username. Note the default HTTP connector is port **8090** — include
+  it in the URL unless your instance is on standard HTTPS.
+- New bundled `jfrog-fetch` and `confluence-fetch` skills driving the two
+  integrations.
+- Add the new per-service credentials to your `.env` to enable these (re-run
+  `./start.sh --reconfigure` to fill them in), then re-run `./start.sh` — it
+  re-pulls both the agent and squid images on `latest`.
+- Newer pinned OpenCode version inside the image.
 
 ## [0.0.5] — 2026-06-18
 

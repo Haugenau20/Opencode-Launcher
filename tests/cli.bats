@@ -406,11 +406,12 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]   # precondition: no .env yet
   local repo; repo="$(make_repo_arg)"
 
-  # 14 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
-  # Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab PAT, git name,
-  # git email, plugins, image registry. Feed a key with sed-special chars to
-  # exercise sed_escape and a space-bearing plugin list. Feed via a redirect
-  # (not a pipe): `printf | run` would run `run` in a subshell, losing $status.
+  # 18 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
+  # Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab PAT, JFrog base
+  # URL, JFrog PAT, Confluence base URL, Confluence PAT, git name, git email,
+  # plugins, image registry. Feed a key with sed-special chars to exercise
+  # sed_escape and a space-bearing plugin list. Feed via a redirect (not a pipe):
+  # `printf | run` would run `run` in a subshell, losing $status.
   printf '%s\n' \
     'https://llm.test/v1' \
     'sk-a&b|c' \
@@ -422,6 +423,10 @@ setup() {
     'https://gitlab.test' \
     'glu' \
     'glpat' \
+    'https://jfrog.test' \
+    'jfrogpat' \
+    'http://confluence.test:8090' \
+    'confpat' \
     'Bob Builder' \
     'bob@test.dev' \
     'superpowers dcp' \
@@ -440,6 +445,10 @@ setup() {
   grep -q '^GITLAB_BASE_URL=https://gitlab.test$' "$SANDBOX/.env"
   grep -q '^GITLAB_USER=glu$' "$SANDBOX/.env"
   grep -q '^GITLAB_PAT=glpat$' "$SANDBOX/.env"
+  grep -q '^JFROG_BASE_URL=https://jfrog.test$' "$SANDBOX/.env"
+  grep -q '^JFROG_PAT=jfrogpat$' "$SANDBOX/.env"
+  grep -q '^CONFLUENCE_BASE_URL=http://confluence.test:8090$' "$SANDBOX/.env"
+  grep -q '^CONFLUENCE_PAT=confpat$' "$SANDBOX/.env"
   grep -q '^GIT_USER_NAME=Bob Builder$' "$SANDBOX/.env"
   grep -q '^ENABLED_PLUGINS=superpowers dcp$' "$SANDBOX/.env"  # opt-in, space kept
   grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
@@ -450,7 +459,7 @@ setup() {
   # make_sandbox already puts tests/fake-bin (a fake whiptail included) first
   # on PATH. This is the critical regression: have_tui requires a real tty,
   # and bats's stdin here is a redirected file, not a tty, so a piped/CI
-  # first-run must still hit the linear run_setup_wizard (pinned 14-prompt
+  # first-run must still hit the linear run_setup_wizard (pinned 18-prompt
   # walk + UID/GID autofill) — the ncurses --first-run path must never
   # hijack it just because a backend happens to be installed.
   [ ! -f "$SANDBOX/.env" ]
@@ -461,6 +470,7 @@ setup() {
     '' '' '' \
     '' '' \
     '' '' '' \
+    '' '' '' '' \
     '' '' \
     '' \
     'reg.test.local/opencode' \
@@ -478,12 +488,14 @@ setup() {
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
-  # Same 14 prompts, but press Enter past the plugins one (empty line).
+  # Same 18 prompts, but press Enter past the plugins one (empty line).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
     'http://bb.test' 'bobu' 'bbpat' \
     'https://jira.test' 'jirapat' \
     'https://gitlab.test' 'glu' 'glpat' \
+    'https://jfrog.test' 'jfrogpat' \
+    'http://confluence.test:8090' 'confpat' \
     'Bob Builder' 'bob@test.dev' \
     '' \
     'reg.test.local/opencode' \
@@ -497,12 +509,14 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
   # Provide the required LLM base + registry; press Enter past every optional
-  # integration prompt (Bitbucket/Jira/GitLab base URLs, users, PATs).
+  # integration prompt (Bitbucket/Jira/GitLab/JFrog/Confluence base URLs, users,
+  # PATs).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
     '' '' '' \
     '' '' \
     '' '' '' \
+    '' '' '' '' \
     '' '' \
     '' \
     'reg.test.local/opencode' \
@@ -518,6 +532,11 @@ setup() {
   grep -q '^GITLAB_BASE_URL=$' "$SANDBOX/.env"
   grep -q '^GITLAB_USER=$' "$SANDBOX/.env"
   grep -q '^GITLAB_PAT=$' "$SANDBOX/.env"
+  # JFrog/Confluence base URLs are url-type fields that ship with non-empty
+  # example values (like LLM_API_BASE), so Enter keeps the placeholder; the
+  # empty PATs are what keep each MCP off (auto-enable needs both set).
+  grep -q '^JFROG_PAT=$' "$SANDBOX/.env"
+  grep -q '^CONFLUENCE_PAT=$' "$SANDBOX/.env"
 }
 
 @test "placeholder IMAGE_REGISTRY triggers a warning" {
@@ -855,11 +874,16 @@ seed_env_doctor() {
   sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
   sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
 
-  # 14 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
+  # 18 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
   # BB user (keep), BB PAT (keep/empty), Jira base (keep), Jira PAT (keep),
-  # GitLab base (keep), GitLab user (keep), GitLab PAT (keep), git name (CHANGE),
-  # git email (keep), plugins (keep), registry (keep).
+  # GitLab base (keep), GitLab user (keep), GitLab PAT (keep), JFrog base (keep),
+  # JFrog PAT (keep), Confluence base (keep), Confluence PAT (keep),
+  # git name (CHANGE), git email (keep), plugins (keep), registry (keep).
   printf '%s\n' \
+    '' \
+    '' \
+    '' \
+    '' \
     '' \
     '' \
     '' \
@@ -930,6 +954,8 @@ seed_env_doctor() {
     'http://bb.test' 'newuser' 'newpat' \
     'https://jira.test' 'jirapat' \
     'https://gitlab.test' 'glu' 'glpat' \
+    'https://jfrog.test' 'jfrogpat' \
+    'http://confluence.test:8090' 'confpat' \
     'New Person' 'new@test.dev' 'superpowers' 'reg.test.local/opencode' \
     > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
@@ -975,7 +1001,7 @@ seed_env_doctor() {
   seed_env
   command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
   sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
-  printf '%s\n' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]

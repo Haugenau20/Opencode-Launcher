@@ -3,8 +3,9 @@
 A thin **launcher** for a pre-built, locked-down OpenCode environment that runs
 against your own repo. It pulls two images from Artifactory and wires them
 together with `docker compose`: the agent runs sandboxed behind a Squid proxy
-whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, and
-GitLab. Everything locked down (agent bundle, policy, allowlist, CA) lives in
+whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, GitLab,
+JFrog, and Confluence. Everything locked down (agent bundle, policy, allowlist,
+CA) lives in
 the images; this repo is just the glue.
 
 > **What's new:** see the [CHANGELOG](CHANGELOG.md) — it tracks both launcher
@@ -96,7 +97,8 @@ your LLM endpoint/key and Artifactory path — the only required fields. At a re
 terminal with `whiptail` or `dialog` it's a small ncurses editor that refuses to
 finish until those are set (unmet ones marked `(REQUIRED)`); otherwise (piped
 input, CI, or `OC_CONFIG_TUI=0`) it's a plain-text wizard. The service
-integrations — Bitbucket, Jira, GitLab, and git identity — are all optional;
+integrations — Bitbucket, Jira, GitLab, JFrog, Confluence, and git identity —
+are all optional;
 press Enter to skip. It then auto-fills `HOST_UID`/`HOST_GID`, pulls the images,
 and boots the stack. Later runs reuse `.env` (edit it by hand any time; it's
 gitignored).
@@ -179,13 +181,13 @@ ease as newer images ship.
 ## Egress allowlist
 
 The agent runs sandboxed behind a Squid proxy. The **authoritative allowlist**
-(LLM endpoint, Bitbucket, Jira, GitLab) is enforced **inside the squid image**,
-not in this repo — so the launcher only knows about, and can report on, the bits
-it configures:
+(LLM endpoint, Bitbucket, Jira, GitLab, JFrog, Confluence) is enforced **inside
+the squid image**, not in this repo — so the launcher only knows about, and can
+report on, the bits it configures:
 
 - the LLM host from `LLM_API_BASE`,
-- whether Bitbucket/Jira/GitLab credentials are set (their hostnames are baked
-  into the image, not visible here), and
+- whether Bitbucket/Jira/GitLab/JFrog/Confluence credentials are set (their
+  hostnames are baked into the image, not visible here), and
 - any local `extra-allowlist.d/*.conf` extensions (see
   [Extending the egress allowlist](docs/CUSTOMIZING.md#extending-the-egress-allowlist)).
 
