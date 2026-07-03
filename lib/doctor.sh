@@ -185,6 +185,30 @@ doctor_check_env_drift() {
   return 0
 }
 
+# doctor_check_launcher_update [DIR] — best-effort launcher-self-update check
+# (see lib/update.sh). PASS "launcher up to date" when 0 commits behind, WARN
+# (never FAIL — this is informational, not a broken environment) naming the
+# count when behind, and a neutral skipped WARN when it can't be determined at
+# all (not a git checkout, no upstream configured, offline, `git`/`timeout`
+# missing, etc.) — the common case for a tarball install or an air-gapped host,
+# and never a problem to flag as such. Defaults DIR to $SCRIPT_DIR (the
+# launcher's own checkout — set in main() and visible here via bash's dynamic
+# scoping, same pattern as doctor_check_disk_space below); a DIR argument
+# exists purely for testability.
+doctor_check_launcher_update() {
+  local dir="${1:-$SCRIPT_DIR}" behind
+  behind="$(launcher_behind_count "$dir")"
+  case "$behind" in
+    ''|*[!0-9]*)
+      doctor_line WARN "launcher update check" "skipped (no upstream/offline)" ;;
+    0)
+      doctor_line PASS "launcher up to date" ;;
+    *)
+      doctor_line WARN "launcher update check" "$behind commit(s) behind origin — git pull" ;;
+  esac
+  return 0
+}
+
 # doctor_check_disk_space [PATH] — best-effort free-space check for image
 # pulls. Never fails hard: no `df`, unparsable output, etc. all degrade to an
 # informational WARN rather than blocking --doctor's exit code.
@@ -241,6 +265,8 @@ cmd_doctor() {
     doctor_line WARN "registry access" "skipped — IMAGE_REGISTRY not set"
     doctor_line WARN "image manifest" "skipped — IMAGE_REGISTRY not set"
   fi
+
+  doctor_check_launcher_update || true
 
   if [ -n "$repo_path" ]; then
     if [ -e "$repo_path" ] && [ -d "$repo_path" ]; then
