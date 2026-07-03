@@ -654,21 +654,21 @@ SCRIPT
 
 @test "report_digest_update: first run (no prior record) is silent but writes the file" {
   run report_digest_update "myslug" "sha256:aaaa1111"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [ -f "$(digest_state_file myslug)" ]
   [ "$(cat "$(digest_state_file myslug)")" = "sha256:aaaa1111" ]
 }
 
 @test "report_digest_update: unchanged digest stays silent" {
-  report_digest_update "myslug" "sha256:aaaa1111"
+  report_digest_update "myslug" "sha256:aaaa1111" || true  # first run: no prior record, returns 1
   run report_digest_update "myslug" "sha256:aaaa1111"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
-@test "report_digest_update: changed digest prints an INFO nudge" {
-  report_digest_update "myslug" "sha256:aaaa1111"
+@test "report_digest_update: changed digest prints an INFO nudge and returns 0 (a change-flag return, not an error)" {
+  report_digest_update "myslug" "sha256:aaaa1111" || true  # first run: no prior record, returns 1
   run report_digest_update "myslug" "sha256:bbbb2222"
   [ "$status" -eq 0 ]
   [[ "$output" == *"image updated:"* ]]
@@ -677,8 +677,145 @@ SCRIPT
 
 @test "report_digest_update: empty digest is a no-op" {
   run report_digest_update "myslug" ""
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ ! -f "$(digest_state_file myslug)" ]
+}
+
+# --- image_manifest / manifest_env_keys / manifest_missing_keys ------------------
+
+# A realistic manifest.json fixture matching the fixed image contract,
+# including the whole env_keys array collapsed onto one line (as the
+# contract's own example shows it) — the extraction must handle multiple
+# "key" matches per line, not just one per line.
+REALISTIC_MANIFEST='{
+  "manifest_version": 1,
+  "image_version": "0.0.7",
+  "opencode_version": "1.17.11",
+  "env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false}, {"key": "NEW_KEY_X", "required": false} ],
+  "mcps": ["bitbucket", "gitlab", "jira", "jfrog", "confluence"],
+  "plugins": ["superpowers", "dcp", "opencode-workspace"]
+}'
+
+@test "image_manifest: echoes manifest.json when the image exists and has one" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_MANIFEST="$REALISTIC_MANIFEST" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"image_version": "0.0.7"'* ]]
+}
+
+@test "image_manifest: silent (non-zero) when the image isn't present locally" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_INSPECT_RC=1 FAKE_DOCKER_MANIFEST="$REALISTIC_MANIFEST" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "image_manifest: silent (non-zero) on an old image with no manifest.json" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_MANIFEST="" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "manifest_env_keys: extracts every key from a realistic manifest, one line each" {
+  run manifest_env_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'LLM_API_BASE\nJFROG_BASE_URL\nNEW_KEY_X')" ]
+}
+
+@test "manifest_env_keys: also reads the manifest JSON from stdin" {
+  run manifest_env_keys <<< "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM_API_BASE"* ]]
+  [[ "$output" == *"NEW_KEY_X"* ]]
+}
+
+@test "manifest_missing_keys: a real .env.example key (LLM_API_BASE) is not reported missing" {
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"LLM_API_BASE"* ]]
+  [[ "$output" != *"JFROG_BASE_URL"* ]]
+}
+
+@test "manifest_missing_keys: an unknown key (NEW_KEY_X) IS reported missing" {
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [ "$output" = "NEW_KEY_X" ]
+}
+
+@test "manifest_missing_keys: empty when every manifest key is known" {
+  local manifest='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false} ]}'
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$manifest"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- image_version_label ----------------------------------------------------
+
+@test "image_version_label: echoes the OCI version label when present" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_LABEL="0.0.7" run image_version_label "reg.test.local/opencode:latest"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0.0.7" ]
+}
+
+@test "image_version_label: silent (non-zero) on an old image with no label" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_LABEL="" run image_version_label "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+# --- image_changelog_section -------------------------------------------------
+
+REALISTIC_CHANGELOG='# Changelog
+
+## [0.0.7] — 2026-07-01
+
+### Added
+- JFrog MCP server.
+- Confluence MCP server.
+
+## [0.0.6] — 2026-06-20
+
+### Added
+- Something older.'
+
+@test "image_changelog_section: extracts just the requested version's section" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$REALISTIC_CHANGELOG" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.7"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## [0.0.7]"* ]]
+  [[ "$output" == *"JFrog MCP server."* ]]
+  # trimmed: does not bleed into the next section's own heading/body
+  [[ "$output" != *"## [0.0.6]"* ]]
+  [[ "$output" != *"Something older."* ]]
+}
+
+@test "image_changelog_section: the newest (last) section has no trailing heading to trim" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$REALISTIC_CHANGELOG" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.6"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## [0.0.6]"* ]]
+  [[ "$output" == *"Something older."* ]]
+}
+
+@test "image_changelog_section: caps output at 25 lines" {
+  local long="## [9.9.9]"
+  for i in $(seq 1 40); do long="$long
+line$i"; done
+  long="$long
+## [9.9.8]
+older"
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$long" \
+    run image_changelog_section "reg.test.local/opencode:latest" "9.9.9"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -le 25 ]
+}
+
+@test "image_changelog_section: silent (non-zero) on an old image with no CHANGELOG.md" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.7"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
 }
 
 # --- env_example_keys / check_env_drift -----------------------------------------

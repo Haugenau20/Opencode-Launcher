@@ -25,11 +25,27 @@
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
 #                                      inspect --format '{{index .RepoDigests 0}}'`
 #                                      (default: a stable fake digest)
+#   FAKE_DOCKER_IMAGE_LABEL           org.opencontainers.image.version stdout for
+#                                      `docker image inspect --format '{{index
+#                                      .Config.Labels "org.opencontainers.image.version"}}'`
+#                                      (default ""  == old image, no label)
 #   FAKE_DOCKER_PS_OUTPUT         stdout for `docker ps --format {{.Names}}`
 #                                  (default ""): one container name per line,
 #                                  used by publish_container_running (sticky
 #                                  port resolution) to decide which project's
 #                                  own oc-publish container is currently up.
+#   FAKE_DOCKER_RUN_RC            rc for `docker run --rm --entrypoint ...`
+#                                  (default 0 — set nonzero to simulate the
+#                                  entrypoint itself failing)
+#   FAKE_DOCKER_MANIFEST          stdout for `--entrypoint cat .../manifest.json`
+#                                  (default "" == old image, no manifest.json)
+#   FAKE_DOCKER_CHANGELOG         fake /etc/opencode/CHANGELOG.md content for
+#                                  `--entrypoint sed .../CHANGELOG.md` — piped
+#                                  through a REAL local `sed` with the same
+#                                  arguments the caller passed, so the caller's
+#                                  sed expression is genuinely exercised against
+#                                  this fixture rather than stubbed wholesale
+#                                  (default "" == old image, no CHANGELOG.md)
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
@@ -94,10 +110,73 @@ EOF
   image)
     if [ "${2:-}" = inspect ]; then
       [ "${FAKE_DOCKER_IMAGE_INSPECT_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_IMAGE_INSPECT_RC}"
-      printf '%s\n' "${FAKE_DOCKER_IMAGE_DIGEST:-reg.test.local/opencode@sha256:fake0000000000000000000000000000000000000000000000000000000000}"
+      # Distinguish which --format template (if any) was requested, so one
+      # stub serves get_image_digest (RepoDigests), image_version_label
+      # (Config.Labels) and image_manifest's plain existence probe (no
+      # --format at all — image_manifest only cares about the exit code).
+      case "$*" in
+        *"Config.Labels"*)
+          printf '%s\n' "${FAKE_DOCKER_IMAGE_LABEL:-}"
+          ;;
+        *"RepoDigests"*)
+          printf '%s\n' "${FAKE_DOCKER_IMAGE_DIGEST:-reg.test.local/opencode@sha256:fake0000000000000000000000000000000000000000000000000000000000}"
+          ;;
+      esac
       exit 0
     fi
     exit 0
+    ;;
+  run)
+    # `docker run --rm --entrypoint ENTRYPOINT IMAGE ARGS...` — used by
+    # lib/manifest.sh to read /etc/opencode/manifest.json (--entrypoint cat)
+    # and to extract a CHANGELOG.md section (--entrypoint sed). Simulated
+    # locally against FAKE_DOCKER_MANIFEST / FAKE_DOCKER_CHANGELOG instead of
+    # a real container filesystem.
+    [ "${FAKE_DOCKER_RUN_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_RUN_RC}"
+    shift # drop "run"
+    _entrypoint=""
+    _rest=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rm) shift ;;
+        --entrypoint) _entrypoint="$2"; shift 2 ;;
+        *) _rest+=("$1"); shift ;;
+      esac
+    done
+    # _rest[0] is IMAGE (unused — the fixture is chosen by entrypoint/path,
+    # not by which image was named); the remainder are the entrypoint's own
+    # argv, ending in the in-container path it reads.
+    _entrypoint_args=("${_rest[@]:1}")
+    case "$_entrypoint" in
+      cat)
+        case "${_entrypoint_args[*]:-}" in
+          *manifest.json) printf '%s\n' "${FAKE_DOCKER_MANIFEST:-}" ;;
+        esac
+        exit 0
+        ;;
+      sed)
+        # Substitute a real temp file holding FAKE_DOCKER_CHANGELOG for the
+        # in-container CHANGELOG.md path (the last arg), then run the actual
+        # `sed` with the same expression the caller passed — this exercises
+        # the caller's sed script for real rather than stubbing its output.
+        _last=$(( ${#_entrypoint_args[@]} - 1 ))
+        case "${_entrypoint_args[$_last]:-}" in
+          */CHANGELOG.md)
+            _tmp="$(mktemp)"
+            printf '%s\n' "${FAKE_DOCKER_CHANGELOG:-}" > "$_tmp"
+            _entrypoint_args[$_last]="$_tmp"
+            sed "${_entrypoint_args[@]}"
+            _rc=$?
+            rm -f "$_tmp"
+            exit "$_rc"
+            ;;
+        esac
+        exit 1
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
     ;;
   --version)
     printf '%s\n' "${FAKE_DOCKER_VERSION_OUTPUT:-Docker version 99.0.0-fake}"
