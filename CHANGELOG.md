@@ -55,6 +55,39 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.10.0] — 2026-07-03
+
+### Added
+- `--also <path>[:rw]`: mount an extra host folder (e.g. a library repo the
+  agent should read for context) into the container alongside your main repo,
+  at `/workspace-extra/<name>` (`<name>` derives from the folder's own
+  basename the same way the project slug does, with `-2`/`-3`/... suffixing
+  on a name collision between two `--also` paths). Read-only by default;
+  append `:rw` to opt one mount into read-write. Repeatable. Implemented as a
+  small generated per-project compose overlay
+  (`.envs/<slug>.also.yml`, appended last so it always wins); a boot with no
+  `--also` flags deletes any stale overlay from a previous run. `--down`/
+  `--logs`/`--shell` pick it up automatically when present, and
+  `./start.sh --status <repo>` lists the mounts a stack was last booted with.
+- `--exec "<prompt>"`: boot the stack without attaching the TUI, run
+  `<prompt>` non-interactively via `opencode run` inside the container, tear
+  the stack down (unless `--persist` is also given), and exit with that
+  command's own exit code — for scripting/CI one-shot runs. `--continue`
+  prepends opencode's own `-c` (resume most recent session) ahead of the
+  prompt; `--also` works as normal. Conflicts with `--detach` (both are
+  non-interactive; pick one).
+- `./start.sh --status <repo>` now also reports the MCP servers the running
+  container's image actually wired up (`mcps:    bitbucket, jira`, or
+  `mcps:    (none configured)`), read from the container's own
+  `opencode.json` via `jq`. Entirely best-effort: any failure (exec fails, no
+  jq, file missing) prints nothing, only shown while the stack is running.
+- Best-effort launcher self-update check: on every boot, and as its own
+  `--doctor` PASS/WARN line, `start.sh` reports when this launcher checkout
+  is behind its git upstream (`launcher update available: N commit(s) behind
+  origin — git pull to update`). Silent/neutral on any failure (offline, no
+  upstream, not a git checkout) — never a FAIL. Skip the boot-time check
+  entirely with `OC_SKIP_UPDATE_CHECK=1`.
+
 ## [0.9.0] — 2026-07-03
 
 ### Added

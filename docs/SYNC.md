@@ -55,6 +55,17 @@ to match the new location. Nothing to mirror.)
 
 ## Intentional launcher-only deltas (not mirrored to the maintainer repo)
 
+- **`--also` extra-mount overlay** (`.envs/<slug>.also.yml`, generated at boot
+  by `start.sh` — see `lib/also.sh`, not a file checked into the repo). Adds
+  `/workspace-extra/<name>` bind mounts (`:ro,z` by default, `:z` for a
+  `--also <path>:rw`) for extra host folders the launcher user wants the agent
+  to read, alongside the main repo at `/workspace`. This is a pure
+  launcher-side UX feature (repeatable `--also <path>[:rw]` flag, sticky
+  overlay file, `--status` reporting) with no image-side dependency — the
+  entrypoint only ever `chown -R`s `/workspace`, never `/workspace-extra`, so
+  there is nothing for the image to know about. Launcher-only by design; do
+  **not** port it back.
+
 - **System-package layer** (`docker/docker-compose.user-packages.yml`,
   `docker/Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
   launcher bakes on top of the pulled base when a developer lists packages. This

@@ -10,7 +10,9 @@
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--continue] [--persist] [--detach] [--podman] [--open] <host-repo-path>
+  ./start.sh [--continue] [--persist] [--detach] [--podman] [--open]
+              [--also <path>[:rw]]... <host-repo-path>
+  ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... <host-repo-path>
   ./start.sh --doctor [<host-repo-path>]
   ./start.sh --status [<host-repo-path>]
   ./start.sh --down|--stop <host-repo-path>
@@ -32,12 +34,34 @@ Run options:
   --persist  Keep the stack (and its web UI) running after you exit the TUI, so
              you can resume later. Alias: --web.
   --detach   Boot headless — don't attach the TUI; the stack keeps running.
-             For scripted/CI or web-only runs. Alias: --no-tui.
+             For scripted/CI or web-only runs. Alias: --no-tui. Conflicts with
+             --exec (both are non-interactive; pick one).
   --podman   Add the Podman overlay (keep-id userns) for rootless Podman.
              Auto-detected; pass the flag to force it.
   --tui      Attach the TUI (the default; accepted for back-compat).
   --open     Open the web UI URL in your browser via xdg-open once it's known.
              Non-fatal if xdg-open is missing.
+  --also <path>[:rw]
+             Bind-mount an extra host folder into the container at
+             /workspace-extra/<name> (<name> is derived from the folder's own
+             basename, like the project slug; -2/-3/... on a name collision
+             between two --also paths), alongside your main repo at
+             /workspace. Read-only by default; append :rw to mount that one
+             path read-write. Repeatable. A path containing ':' beyond the
+             optional trailing ':rw' isn't supported (matches Docker's own
+             short bind-mount syntax) — avoid such paths. Applies to the run
+             and --exec paths; --status <repo> lists the mounts a stack was
+             last booted with.
+  --exec "<prompt>"
+             Boot the stack (no TUI attached), run <prompt> non-interactively
+             via `opencode run` inside the container, print its output, tear
+             the stack down (unless --persist is also given), and exit with
+             that command's own exit code — for scripting/CI. --continue
+             prepends opencode's own -c (resume most recent session) ahead of
+             the prompt. The normal boot output (pull/up progress etc.) still
+             prints to stdout alongside it; a scripting caller that wants only
+             the command's own output can rely on the exit code and/or `tail`
+             the last block of output.
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
@@ -77,5 +101,11 @@ so click 'New session' and type /workspace to root that session at your repo.
 
 First run creates .env from .env.example and prompts for your secrets; later
 runs reuse it (edit by hand any time).
+
+On every boot, a best-effort check reports if this launcher checkout is behind
+its git upstream ("launcher update available: N commit(s) behind origin — git
+pull to update"); silent when up to date, offline, or not a git checkout. Set
+OC_SKIP_UPDATE_CHECK=1 to skip the check entirely (e.g. scripted/CI runs).
+--doctor reports the same check as its own PASS/WARN line.
 EOF
 }
