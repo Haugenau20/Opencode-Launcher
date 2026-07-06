@@ -1846,6 +1846,25 @@ seed_env_doctor() {
   [ ! -f "$SANDBOX/.envs/myrepo.also.yml" ]
 }
 
+@test "--also: writes a breadcrumb and wires OPENCODE_EXTRA_INSTRUCTIONS so the image surfaces it" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  # breadcrumb generated next to the overlay, naming the mount + its container path
+  [ -f "$SANDBOX/.envs/myrepo.also-context.md" ]
+  grep -qF -- '`/workspace-extra/liba`' "$SANDBOX/.envs/myrepo.also-context.md"
+  # overlay tells the image to load it via the generic hook (no --also knowledge image-side)
+  grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF -- "/etc/opencode/also-context.md:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+
+  # a later boot with no --also removes the breadcrumb too, not just the overlay
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [ ! -f "$SANDBOX/.envs/myrepo.also-context.md" ]
+}
+
 @test "--also overlay is appended LAST in COMPOSE_FILES (after the podman overlay)" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"

@@ -1326,6 +1326,50 @@ older"
   [ "$output" = "${ENVS_DIR}/myslug.also.yml" ]
 }
 
+@test "also_context_file: path is <ENVS_DIR>/<slug>.also-context.md" {
+  run also_context_file myslug
+  [ "$status" -eq 0 ]
+  [ "$output" = "${ENVS_DIR}/myslug.also-context.md" ]
+}
+
+@test "write_also_overlay: sets OPENCODE_EXTRA_INSTRUCTIONS and mounts the breadcrumb read-only" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  # the generic image hook: the var points at the breadcrumb's container path...
+  grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" \
+    "${ENVS_DIR}/myslug.also.yml"
+  # ...and the breadcrumb itself is bind-mounted there read-only (ro,z).
+  grep -qF -- "- ${ENVS_DIR}/myslug.also-context.md:/etc/opencode/also-context.md:ro,z" \
+    "${ENVS_DIR}/myslug.also.yml"
+}
+
+@test "write_also_overlay: the breadcrumb names each mount, its container path, and ro/rw" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n/c/d\trw\tlibb\n')"
+  local ctx="${ENVS_DIR}/myslug.also-context.md"
+  [ -f "$ctx" ]
+  grep -qF -- '- **liba** — `/workspace-extra/liba` (read-only)' "$ctx"
+  grep -qF -- '- **libb** — `/workspace-extra/libb` (read-write)' "$ctx"
+}
+
+@test "write_also_overlay: the breadcrumb mount is NOT reported by also_mounts_from_overlay (--status)" {
+  # The context file mounts to /etc/opencode, not /workspace-extra, so the
+  # overlay parse that drives --status keeps listing only the real --also
+  # mounts — never the launcher's own breadcrumb.
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  run also_mounts_from_overlay myslug
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  [ "${lines[0]}" = "$(printf '/a/b\tro\tliba')" ]
+}
+
+@test "delete_also_overlay: removes the breadcrumb as well as the overlay" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  [ -f "${ENVS_DIR}/myslug.also-context.md" ]
+  delete_also_overlay myslug
+  [ ! -f "${ENVS_DIR}/myslug.also.yml" ]
+  [ ! -f "${ENVS_DIR}/myslug.also-context.md" ]
+}
+
 # --- mcp_status_line (lib/commands.sh) ---------------------------------------
 
 @test "mcp_status_line: reports the comma-joined MCP keys" {

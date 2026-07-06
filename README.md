@@ -183,6 +183,16 @@ A path containing `:` beyond the optional trailing `:rw` isn't supported
 path must exist and be a directory, and can't be the main repo path itself
 (that's already `/workspace`).
 
+**The agent is told these folders exist.** opencode runs with `/workspace` as
+its project root, so an open-ended file search never leaves `/workspace` and
+wouldn't find the siblings on its own. The launcher fixes that: it writes a
+short breadcrumb listing each `--also` folder and its `/workspace-extra/<name>`
+path, mounts it read-only, and points the image at it via the
+`OPENCODE_EXTRA_INSTRUCTIONS` env var (a generic "load these instruction files"
+hook — the image knows nothing about `--also`). So asking the agent to "look at
+the libA folder" just works. Needs an image new enough to honor that var; on an
+older image the folders are still mounted and readable, just not advertised.
+
 Mechanically this is a small generated per-project compose overlay
 (`.envs/<slug>.also.yml`) applied on top of the base stack; a boot with no
 `--also` flags removes any stale overlay from a previous run, so mounts never

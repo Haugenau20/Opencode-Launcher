@@ -69,6 +69,15 @@ _Changes to the launcher itself._
   `--also` flags deletes any stale overlay from a previous run. `--down`/
   `--logs`/`--shell` pick it up automatically when present, and
   `./start.sh --status <repo>` lists the mounts a stack was last booted with.
+  The launcher also makes the mounts **discoverable** to the agent: opencode's
+  file tools are anchored to `/workspace`, so it would never find the siblings
+  on its own. On each `--also` boot the launcher writes a breadcrumb
+  (`.envs/<slug>.also-context.md`) listing each folder and its
+  `/workspace-extra/<name>` path, mounts it read-only, and points the image at
+  it via `OPENCODE_EXTRA_INSTRUCTIONS` — a generic "load these instruction
+  files" hook the image honors (it has no `--also` knowledge of its own).
+  Needs an image that honors that var (see the image release below); on an
+  older image the folders are still mounted, just not advertised.
 - `--exec "<prompt>"`: boot the stack without attaching the TUI, run
   `<prompt>` non-interactively via `opencode run` inside the container, tear
   the stack down (unless `--persist` is also given), and exit with that
