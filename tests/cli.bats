@@ -1991,6 +1991,25 @@ seed_env_doctor() {
   [ "$(cat "$slog")" = "PIPED-CONTEXT" ]
 }
 
+@test "--exec drops opencode's 'No .git found' stderr noise but keeps the answer + real diagnostics" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Fake opencode: answer on stdout, project-id noise (x2) + a real diagnostic
+  # on stderr. Capture the launcher's stdout in $output and its stderr in a file
+  # so we can assert on each stream independently.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1
+  run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 0 ]
+  # stdout: the model's answer survives, and the noise never leaks onto it.
+  [[ "$output" == *"ANSWER-MARKER"* ]]
+  [[ "$output" != *"No .git found"* ]]
+  # stderr: the noise is gone, but a genuine opencode diagnostic is preserved.
+  run cat "$errfile"
+  [[ "$output" != *"No .git found"* ]]
+  [[ "$output" == *"REAL-STDERR-DIAGNOSTIC"* ]]
+}
+
 @test "--exec does not hang when the launcher is attached to an interactive TTY" {
   command -v python3 >/dev/null 2>&1 || skip "python3 required for the PTY harness"
   seed_env

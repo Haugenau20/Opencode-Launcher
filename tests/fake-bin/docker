@@ -34,6 +34,11 @@
 #   FAKE_DOCKER_EXEC_STDIN_LOG     file the drained `opencode run` stdin is
 #                                  written to when FAKE_DOCKER_EXEC_DRAIN_STDIN
 #                                  is on (default /dev/null == discarded)
+#   FAKE_DOCKER_EXEC_EMIT_NOISE    when non-empty, an `opencode run` exec prints
+#                                  ANSWER-MARKER to stdout and, to stderr, the
+#                                  "[project-id] No .git found ..." noise (twice)
+#                                  plus REAL-STDERR-DIAGNOSTIC — for the --exec
+#                                  stderr-noise-filter test (default "" == off)
 #   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
 #   FAKE_DOCKER_IMAGE_INSPECT_RC      rc for `docker image inspect`       (default 0)
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
@@ -127,6 +132,17 @@ EOF
         # EOF-terminated stdin (recorded to FAKE_DOCKER_EXEC_STDIN_LOG) instead.
         if [ -n "${FAKE_DOCKER_EXEC_DRAIN_STDIN:-}" ]; then
           cat > "${FAKE_DOCKER_EXEC_STDIN_LOG:-/dev/null}"
+        fi
+        # Optionally emulate opencode's real output split: the model's answer on
+        # stdout, and on stderr the harmless "[project-id] No .git found ..."
+        # project-id fallback (twice, like the real one) plus a genuine
+        # diagnostic. Lets the --exec noise-filter test prove the launcher drops
+        # only the noise, keeping the answer (stdout) and real stderr intact.
+        if [ -n "${FAKE_DOCKER_EXEC_EMIT_NOISE:-}" ]; then
+          printf 'ANSWER-MARKER\n'
+          printf '[project-id] No .git found at /workspace, using path hash\n' >&2
+          printf '[project-id] No .git found at /workspace, using path hash\n' >&2
+          printf 'REAL-STDERR-DIAGNOSTIC\n' >&2
         fi
         exit "${FAKE_DOCKER_EXEC_RC:-0}" ;;
     esac
