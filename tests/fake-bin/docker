@@ -27,6 +27,13 @@
 #                                  comma-joined MCP key list, e.g. "bitbucket,
 #                                  jira" (default "" == empty/none configured,
 #                                  as long as FAKE_DOCKER_MCP_RC is 0)
+#   FAKE_DOCKER_EXEC_DRAIN_STDIN   when non-empty, an `opencode run` exec drains
+#                                  its stdin (emulating the real opencode) —
+#                                  blocks until EOF, so it hangs if handed a
+#                                  never-closing terminal (default "" == off)
+#   FAKE_DOCKER_EXEC_STDIN_LOG     file the drained `opencode run` stdin is
+#                                  written to when FAKE_DOCKER_EXEC_DRAIN_STDIN
+#                                  is on (default /dev/null == discarded)
 #   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
 #   FAKE_DOCKER_IMAGE_INSPECT_RC      rc for `docker image inspect`       (default 0)
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
@@ -112,6 +119,16 @@ EOF
         [ "${FAKE_DOCKER_MCP_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_MCP_RC}"
         [ -n "${FAKE_DOCKER_MCP_OUTPUT:-}" ] && printf '%s\n' "${FAKE_DOCKER_MCP_OUTPUT}"
         exit 0 ;;
+      *"opencode run"*)
+        # Optionally emulate the real `opencode run`, which drains stdin for any
+        # piped prompt context. This is what makes --exec hang when the launcher
+        # hands it a never-closing terminal: the drain below blocks until EOF.
+        # The --exec stdin tests flip this on to prove the launcher feeds an
+        # EOF-terminated stdin (recorded to FAKE_DOCKER_EXEC_STDIN_LOG) instead.
+        if [ -n "${FAKE_DOCKER_EXEC_DRAIN_STDIN:-}" ]; then
+          cat > "${FAKE_DOCKER_EXEC_STDIN_LOG:-/dev/null}"
+        fi
+        exit "${FAKE_DOCKER_EXEC_RC:-0}" ;;
     esac
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
     ;;

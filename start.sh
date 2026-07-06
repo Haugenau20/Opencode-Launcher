@@ -538,17 +538,33 @@ cmd_run() {
     # --exec: non-interactive one-shot run. `-i` but deliberately NOT `-t` —
     # output must pipe cleanly for scripting. `--continue` (OC_ARGS) prepends
     # opencode's own `-c` (resume most recent session) ahead of the prompt.
+    #
+    # stdin needs care. `docker exec -i` binds opencode's stdin to whatever the
+    # launcher was started with, and `opencode run` drains stdin for any piped
+    # prompt context. When the launcher is attached to an interactive terminal
+    # that pipe never closes, so the run blocks forever waiting for an EOF that
+    # can't come — opencode prints its startup lines and then hangs (the exact
+    # symptom this branch used to produce). So only forward stdin when it's
+    # genuinely piped/redirected into the launcher (`data | ./start.sh --exec …`
+    # still reaches opencode); on a TTY, hand opencode /dev/null instead so it
+    # sees an immediate EOF and runs the prompt argument alone.
+    #
     # rc capture must survive `set -euo pipefail`: guard every step with
     # `|| ...` so a nonzero `opencode run` (or teardown) never aborts the
     # script before we can exit with the RIGHT code.
     info "exec: running one-shot prompt in $PROJECT_NAME ..."
     local rc=0
-    docker exec -u dev \
-      -e HOME=/home/dev \
-      -e XDG_CONFIG_HOME=/home/dev/.config \
-      -e XDG_DATA_HOME=/home/dev/.local/share \
-      -w /workspace \
-      -i "opencode-${SLUG}" opencode run ${OC_ARGS[@]+"${OC_ARGS[@]}"} "$EXEC_PROMPT" || rc=$?
+    local exec_cmd=(docker exec -u dev
+      -e HOME=/home/dev
+      -e XDG_CONFIG_HOME=/home/dev/.config
+      -e XDG_DATA_HOME=/home/dev/.local/share
+      -w /workspace
+      -i "opencode-${SLUG}" opencode run ${OC_ARGS[@]+"${OC_ARGS[@]}"} "$EXEC_PROMPT")
+    if [ -t 0 ]; then
+      "${exec_cmd[@]}" </dev/null || rc=$?
+    else
+      "${exec_cmd[@]}" || rc=$?
+    fi
     if [ "$PERSIST" -eq 1 ]; then
       info "exec finished (rc=$rc) — --persist: leaving $PROJECT_NAME running."
     else

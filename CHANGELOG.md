@@ -97,6 +97,15 @@ _Changes to the launcher itself._
   upstream, not a git checkout) — never a FAIL. Skip the boot-time check
   entirely with `OC_SKIP_UPDATE_CHECK=1`.
 
+### Fixed
+- `--exec` no longer hangs when run from an interactive terminal. The
+  one-shot `docker exec -i ... opencode run` left opencode's stdin bound to
+  the launcher's terminal; `opencode run` drains stdin for piped prompt
+  context, so it blocked forever on an EOF that never came (it printed its
+  startup lines, then hung). The launcher now feeds `opencode run` `/dev/null`
+  when its own stdin is a TTY, while still forwarding stdin that is genuinely
+  piped/redirected in (`data | ./start.sh --exec …`).
+
 ## [0.9.0] — 2026-07-03
 
 ### Added

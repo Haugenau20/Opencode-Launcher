@@ -1977,6 +1977,37 @@ seed_env_doctor() {
   [[ "$output" == *"pulling images"* ]]
 }
 
+@test "--exec forwards genuinely piped stdin through to opencode run" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local infile="$BATS_TEST_TMPDIR/in.txt"
+  printf 'PIPED-CONTEXT' > "$infile"
+  local slog="$BATS_TEST_TMPDIR/exec-stdin.log"
+  # stdin is a regular file (not a TTY): the launcher must forward it, so the
+  # (drain-emulating) fake opencode receives exactly the piped bytes.
+  export FAKE_DOCKER_EXEC_DRAIN_STDIN=1 FAKE_DOCKER_EXEC_STDIN_LOG="$slog"
+  run_launcher --exec "summarize" "$repo" < "$infile"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$slog")" = "PIPED-CONTEXT" ]
+}
+
+@test "--exec does not hang when the launcher is attached to an interactive TTY" {
+  command -v python3 >/dev/null 2>&1 || skip "python3 required for the PTY harness"
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  # Reproduce the original hang: a fake `opencode run` that drains stdin, driven
+  # under a genuine, never-closing PTY on the launcher's stdin (see pty-run.py).
+  # The fix must feed opencode /dev/null for a TTY so the drain sees EOF; without
+  # it the drain blocks forever and the PTY harness times out (status 124).
+  export FAKE_DOCKER_EXEC_DRAIN_STDIN=1
+  run python3 "$REPO_ROOT/tests/pty-run.py" 20 \
+    bash "$SANDBOX/start.sh" --exec "hi" "$repo"
+  [ "$status" -ne 124 ]   # 124 == the harness timed out => the hang is back
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-i opencode-myrepo opencode run hi$' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
 # --- --status: --also mounts + MCP servers ----------------------------------
 
 @test "--status lists --also mounts from the generated overlay" {
