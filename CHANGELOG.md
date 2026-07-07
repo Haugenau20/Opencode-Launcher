@@ -312,12 +312,11 @@ run it.
 
 **Action required:** none — just re-run `./start.sh`
 
-- The image now honors **`OPENCODE_EXTRA_INSTRUCTIONS`**, a generic hook for
-  loading instruction files from outside the project root. This is what makes
-  the launcher's `--also` folders **discoverable** to the agent, whose file
-  tools are otherwise anchored to `/workspace`. Nothing to set yourself: it's a
-  no-op unless a launcher points it at a breadcrumb, so you get the benefit with
-  launcher ≥ 0.10.0 (see that entry) and an older launcher simply ignores it.
+- The launcher's **`--also`** extra folders are now **discoverable** to the
+  agent. opencode's file tools are anchored to `/workspace`, so on an older
+  image those sibling folders are mounted but the agent won't find them on its
+  own; this image lets a launcher (≥ 0.10.0) advertise them. Nothing to
+  configure — see the launcher 0.10.0 entry for the `--also` side.
 - **Squid now logs *denied* requests** — a blocked destination, a disallowed
   `CONNECT` port, an unsafe port — to `docker compose logs squid`, so you can
   debug allowlist misses yourself. Allowed traffic, including all
