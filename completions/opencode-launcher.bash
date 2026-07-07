@@ -17,6 +17,8 @@ _opencode_launcher_flags=(
   --podman
   --tui
   --open
+  --also
+  --exec
   --doctor
   --status
   --down --stop
@@ -41,6 +43,11 @@ _opencode_launcher_complete() {
     return 0
   fi
 
+  # --also takes a <path>[:rw] argument — directory completion, same as the
+  # repo path (a trailing :rw is typed by hand, not completed). --exec takes
+  # a free-text <prompt> argument, which has no useful completion, so it
+  # falls through to directory completion too (harmless: it just offers
+  # nothing useful rather than something wrong).
   # <host-repo-path>: native directory completion (compgen -d), matching
   # every flag above that takes a repo path argument.
   COMPREPLY=($(compgen -d -- "$cur"))

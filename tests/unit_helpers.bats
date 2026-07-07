@@ -104,6 +104,180 @@ setup() {
   [ "$output" = "4100" ]
 }
 
+# --- resolve_project_port / publish_container_running (sticky ports) --------
+# lib/project.sh — the fix for the "management commands clobber the recorded
+# port" bug: ports must be sticky per project rather than recomputed on every
+# call. port_in_use and docker (for publish_container_running's `docker ps`)
+# are stubbed directly, same convention as the find_free_port tests above.
+
+@test "recorded_port: empty when there is no .envs/<slug>.env file" {
+  run recorded_port "no-such-project"
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+}
+
+@test "recorded_port: reads OPENCODE_PORT out of .envs/<slug>.env" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/x\n' > "$ENVS_DIR/demo.env"
+  run recorded_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "publish_container_running: true when docker ps lists this project's oc-publish container" {
+  docker() {
+    [ "$1" = ps ] && printf 'opencode-publish-demo\n'
+  }
+  run publish_container_running demo
+  [ "$status" -eq 0 ]
+}
+
+@test "publish_container_running: false when docker ps lists a different project's container" {
+  docker() {
+    [ "$1" = ps ] && printf 'opencode-publish-other\n'
+  }
+  run publish_container_running demo
+  [ "$status" -ne 0 ]
+}
+
+@test "publish_container_running: false when docker ps lists nothing" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  run publish_container_running demo
+  [ "$status" -ne 0 ]
+}
+
+@test "resolve_project_port: (a) reuses the recorded port when this project's own oc-publish container is running, even though the port would otherwise look busy" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf 'opencode-publish-demo\n'; }
+  port_in_use() { return 0; }   # would look busy everywhere if this were consulted
+  run resolve_project_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "resolve_project_port: running with no recorded port falls back to default logic" {
+  docker() { [ "$1" = ps ] && printf 'opencode-publish-demo\n'; }
+  port_in_use() { return 1; }   # 4096 free
+  run resolve_project_port demo
+  [ "$output" = "4096" ]
+}
+
+@test "resolve_project_port: (b) reuses the recorded port when it is free and the project is down" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf ''; }   # not running
+  port_in_use() { return 1; }   # nothing busy
+  run resolve_project_port demo
+  [ "$output" = "5555" ]
+}
+
+@test "resolve_project_port: (c) picks a new free port when the recorded port is taken by something else and the project is down" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/demo.env"
+  docker() { [ "$1" = ps ] && printf ''; }   # not running
+  # 5555 (recorded) and 4096 (default) both busy; 4097 is free.
+  port_in_use() { case "$1" in 5555|4096) return 0 ;; *) return 1 ;; esac; }
+  run resolve_project_port demo
+  [ "$output" = "4097" ]
+}
+
+@test "resolve_project_port: no recorded port, nothing running, 4096 free -> defaults to 4096" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  run resolve_project_port demo
+  [ "$output" = "4096" ]
+}
+
+@test "resolve_project_port: no recorded port, 4096 busy -> first free port from 4097" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
+  run resolve_project_port demo
+  [ "$output" = "4097" ]
+}
+
+# --- derive_project_settings is a pure compute step (no file writes) --------
+
+@test "derive_project_settings: never writes .envs/<slug>.env (compute only)" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$SLUG" = "some-repo" ]
+  [ "$PORT" = "4096" ]
+  [ ! -e "$PROJECT_ENV" ]
+}
+
+@test "derive_project_settings: reuses a recorded port instead of recomputing 4096" {
+  mkdir -p "$ENVS_DIR"
+  printf 'OPENCODE_PORT=5555\n' > "$ENVS_DIR/sticky-repo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }   # everything free, including 4096
+  local repo="$BATS_TEST_TMPDIR/sticky-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PORT" = "5555" ]
+}
+
+# --- write_project_env / project_env_for_management -------------------------
+
+@test "write_project_env: writes PROJECT_SLUG/OPENCODE_PORT/REPO_PATH using the caller's SLUG/PORT/PROJECT_ENV" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  write_project_env "/some/repo"
+  [ -f "$PROJECT_ENV" ]
+  grep -q '^PROJECT_SLUG=demo$' "$PROJECT_ENV"
+  grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
+  grep -q '^REPO_PATH=/some/repo$' "$PROJECT_ENV"
+  grep -q '^FOO=bar$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: succeeds under set -e even with no USER_LAYER_PATH set (regression: bare && as the last statement)" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  # A bash `set -euo pipefail` gotcha: if the last statement in a function is
+  # a short-circuited `[ cond ] && cmd` that evaluates false, the function
+  # returns non-zero and can abort the whole script at the call site. This
+  # test just needs to not abort (bats itself runs under bash, but the real
+  # regression only shows up under a strict-mode caller — see the cli.bats
+  # sticky-port boot tests for the end-to-end version of this check).
+  run write_project_env "/some/repo"
+  [ "$status" -eq 0 ]
+}
+
+@test "project_env_for_management: reuses .envs/<slug>.env verbatim (port not re-resolved) when it already exists" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/old/path\n' > "$ENVS_DIR/demo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  # If this were re-resolved, port_in_use reporting everything busy would
+  # force a completely different port (or die trying); it must not be
+  # consulted at all when the file already exists.
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }
+  local repo="$BATS_TEST_TMPDIR/demo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$SLUG" = "demo" ]
+  [ "$PORT" = "5555" ]
+  # File content is untouched — REPO_PATH still says /old/path, not $repo.
+  grep -q '^REPO_PATH=/old/path$' "$PROJECT_ENV"
+}
+
+@test "project_env_for_management: generates .envs/<slug>.env when missing" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/fresh-repo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ -f "$PROJECT_ENV" ]
+  grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
+  grep -q "^REPO_PATH=${repo}\$" "$PROJECT_ENV"
+}
+
 # --- project_running (docker stubbed) ---------------------------------------
 
 @test "project_running: true when compose ls lists the project name" {
@@ -480,21 +654,21 @@ SCRIPT
 
 @test "report_digest_update: first run (no prior record) is silent but writes the file" {
   run report_digest_update "myslug" "sha256:aaaa1111"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [ -f "$(digest_state_file myslug)" ]
   [ "$(cat "$(digest_state_file myslug)")" = "sha256:aaaa1111" ]
 }
 
 @test "report_digest_update: unchanged digest stays silent" {
-  report_digest_update "myslug" "sha256:aaaa1111"
+  report_digest_update "myslug" "sha256:aaaa1111" || true  # first run: no prior record, returns 1
   run report_digest_update "myslug" "sha256:aaaa1111"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
-@test "report_digest_update: changed digest prints an INFO nudge" {
-  report_digest_update "myslug" "sha256:aaaa1111"
+@test "report_digest_update: changed digest prints an INFO nudge and returns 0 (a change-flag return, not an error)" {
+  report_digest_update "myslug" "sha256:aaaa1111" || true  # first run: no prior record, returns 1
   run report_digest_update "myslug" "sha256:bbbb2222"
   [ "$status" -eq 0 ]
   [[ "$output" == *"image updated:"* ]]
@@ -503,8 +677,145 @@ SCRIPT
 
 @test "report_digest_update: empty digest is a no-op" {
   run report_digest_update "myslug" ""
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [ ! -f "$(digest_state_file myslug)" ]
+}
+
+# --- image_manifest / manifest_env_keys / manifest_missing_keys ------------------
+
+# A realistic manifest.json fixture matching the fixed image contract,
+# including the whole env_keys array collapsed onto one line (as the
+# contract's own example shows it) — the extraction must handle multiple
+# "key" matches per line, not just one per line.
+REALISTIC_MANIFEST='{
+  "manifest_version": 1,
+  "image_version": "0.0.7",
+  "opencode_version": "1.17.11",
+  "env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false}, {"key": "NEW_KEY_X", "required": false} ],
+  "mcps": ["bitbucket", "gitlab", "jira", "jfrog", "confluence"],
+  "plugins": ["superpowers", "dcp", "opencode-workspace"]
+}'
+
+@test "image_manifest: echoes manifest.json when the image exists and has one" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_MANIFEST="$REALISTIC_MANIFEST" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"image_version": "0.0.7"'* ]]
+}
+
+@test "image_manifest: silent (non-zero) when the image isn't present locally" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_INSPECT_RC=1 FAKE_DOCKER_MANIFEST="$REALISTIC_MANIFEST" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "image_manifest: silent (non-zero) on an old image with no manifest.json" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_MANIFEST="" \
+    run image_manifest "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "manifest_env_keys: extracts every key from a realistic manifest, one line each" {
+  run manifest_env_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'LLM_API_BASE\nJFROG_BASE_URL\nNEW_KEY_X')" ]
+}
+
+@test "manifest_env_keys: also reads the manifest JSON from stdin" {
+  run manifest_env_keys <<< "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM_API_BASE"* ]]
+  [[ "$output" == *"NEW_KEY_X"* ]]
+}
+
+@test "manifest_missing_keys: a real .env.example key (LLM_API_BASE) is not reported missing" {
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"LLM_API_BASE"* ]]
+  [[ "$output" != *"JFROG_BASE_URL"* ]]
+}
+
+@test "manifest_missing_keys: an unknown key (NEW_KEY_X) IS reported missing" {
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$REALISTIC_MANIFEST"
+  [ "$status" -eq 0 ]
+  [ "$output" = "NEW_KEY_X" ]
+}
+
+@test "manifest_missing_keys: empty when every manifest key is known" {
+  local manifest='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false} ]}'
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$manifest"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- image_version_label ----------------------------------------------------
+
+@test "image_version_label: echoes the OCI version label when present" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_LABEL="0.0.7" run image_version_label "reg.test.local/opencode:latest"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0.0.7" ]
+}
+
+@test "image_version_label: silent (non-zero) on an old image with no label" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_IMAGE_LABEL="" run image_version_label "reg.test.local/opencode:latest"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+# --- image_changelog_section -------------------------------------------------
+
+REALISTIC_CHANGELOG='# Changelog
+
+## [0.0.7] — 2026-07-01
+
+### Added
+- JFrog MCP server.
+- Confluence MCP server.
+
+## [0.0.6] — 2026-06-20
+
+### Added
+- Something older.'
+
+@test "image_changelog_section: extracts just the requested version's section" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$REALISTIC_CHANGELOG" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.7"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## [0.0.7]"* ]]
+  [[ "$output" == *"JFrog MCP server."* ]]
+  # trimmed: does not bleed into the next section's own heading/body
+  [[ "$output" != *"## [0.0.6]"* ]]
+  [[ "$output" != *"Something older."* ]]
+}
+
+@test "image_changelog_section: the newest (last) section has no trailing heading to trim" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$REALISTIC_CHANGELOG" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.6"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## [0.0.6]"* ]]
+  [[ "$output" == *"Something older."* ]]
+}
+
+@test "image_changelog_section: caps output at 25 lines" {
+  local long="## [9.9.9]"
+  for i in $(seq 1 40); do long="$long
+line$i"; done
+  long="$long
+## [9.9.8]
+older"
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="$long" \
+    run image_changelog_section "reg.test.local/opencode:latest" "9.9.9"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -le 25 ]
+}
+
+@test "image_changelog_section: silent (non-zero) on an old image with no CHANGELOG.md" {
+  PATH="$FAKE_BIN:$PATH" FAKE_DOCKER_CHANGELOG="" \
+    run image_changelog_section "reg.test.local/opencode:latest" "0.0.7"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
 }
 
 # --- env_example_keys / check_env_drift -----------------------------------------
@@ -559,7 +870,7 @@ SCRIPT
   run editable_schema_keys
   [ "$status" -eq 0 ]
   [[ "$output" == *"ALLOW_REMOTE_GIT"* ]]
-  [[ "$output" == *"ENABLE_SESSION_LOGS"* ]]
+  [[ "$output" == *"DISABLE_BITBUCKET_MCP"* ]]
   [[ "$output" == *"USER_LAYER_PATH"* ]]
   [[ "$output" == *"LLM_API_BASE"* ]]
   [[ "$output" == *"IMAGE_REGISTRY"* ]]
@@ -906,4 +1217,287 @@ SCRIPT
   set_host_ids
   grep -q "^HOST_UID=$(id -u)$" "$ENV_FILE"
   grep -q "^HOST_GID=$(id -g)$" "$ENV_FILE"
+}
+
+# --- resolve_also_mounts (lib/also.sh) ---------------------------------------
+
+@test "resolve_also_mounts: a bare path defaults to read-only" {
+  local liba="$BATS_TEST_TMPDIR/liba"; mkdir -p "$liba"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$liba"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\tro\tliba' "$liba")" ]
+}
+
+@test "resolve_also_mounts: a trailing :rw suffix opts into read-write" {
+  local libb="$BATS_TEST_TMPDIR/libb"; mkdir -p "$libb"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "${libb}:rw"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\trw\tlibb' "$libb")" ]
+}
+
+@test "resolve_also_mounts: emits one line per spec, in argument order" {
+  local liba="$BATS_TEST_TMPDIR/liba" libb="$BATS_TEST_TMPDIR/libb"
+  mkdir -p "$liba" "$libb"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$liba" "${libb}:rw"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf '%s\tro\tliba' "$liba")" ]
+  [ "${lines[1]}" = "$(printf '%s\trw\tlibb' "$libb")" ]
+}
+
+@test "resolve_also_mounts: a name collision between two paths gets -2/-3 suffixing" {
+  mkdir -p "$BATS_TEST_TMPDIR/one/lib" "$BATS_TEST_TMPDIR/two/lib" "$BATS_TEST_TMPDIR/three/lib"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" \
+    "$BATS_TEST_TMPDIR/one/lib" "$BATS_TEST_TMPDIR/two/lib" "$BATS_TEST_TMPDIR/three/lib"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *$'\t'lib ]]
+  [[ "${lines[1]}" == *$'\t'lib-2 ]]
+  [[ "${lines[2]}" == *$'\t'lib-3 ]]
+}
+
+@test "resolve_also_mounts: dies on a nonexistent path" {
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path does not exist"* ]]
+}
+
+@test "resolve_also_mounts: dies when the path is a file, not a directory" {
+  local f="$BATS_TEST_TMPDIR/afile"; : > "$f"
+  run resolve_also_mounts "$BATS_TEST_TMPDIR/repo" "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path is not a directory"* ]]
+}
+
+@test "resolve_also_mounts: dies when a spec resolves to the main repo path" {
+  local repo="$BATS_TEST_TMPDIR/repo"; mkdir -p "$repo"
+  run resolve_also_mounts "$repo" "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"duplicates the main repo path"* ]]
+}
+
+# --- also_mount_lines / write_also_overlay / also_mounts_from_overlay --------
+# (lib/also.sh)
+
+@test "also_mount_lines: formats read-only and read-write lines distinctly" {
+  local mounts; mounts="$(printf '/a/b\tro\tb\n/c/d\trw\td\n')"
+  run also_mount_lines "$mounts"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"also: /a/b -> /workspace-extra/b (read-only)"* ]]
+  [[ "${lines[1]}" == *"also: /c/d -> /workspace-extra/d (read-write)"* ]]
+}
+
+@test "also_mount_lines: empty input is a silent no-op" {
+  run also_mount_lines ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "write_also_overlay + also_mounts_from_overlay: round-trips ro/rw flags and names" {
+  local mounts; mounts="$(printf '/a/b\tro\tliba\n/c/d\trw\tlibb\n')"
+  write_also_overlay myslug "$mounts"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  grep -qF -- "- /a/b:/workspace-extra/liba:ro,z" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF -- "- /c/d:/workspace-extra/libb:z" "${ENVS_DIR}/myslug.also.yml"
+
+  run also_mounts_from_overlay myslug
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf '/a/b\tro\tliba')" ]
+  [ "${lines[1]}" = "$(printf '/c/d\trw\tlibb')" ]
+}
+
+@test "also_mounts_from_overlay: empty (not an error) when the overlay file doesn't exist" {
+  run also_mounts_from_overlay no-such-slug
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "delete_also_overlay: removes an existing overlay and is a no-op when absent" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  delete_also_overlay myslug
+  [ ! -f "${ENVS_DIR}/myslug.also.yml" ]
+  # calling again (nothing to delete) must not error
+  run delete_also_overlay myslug
+  [ "$status" -eq 0 ]
+}
+
+@test "also_overlay_file: path is <ENVS_DIR>/<slug>.also.yml" {
+  run also_overlay_file myslug
+  [ "$status" -eq 0 ]
+  [ "$output" = "${ENVS_DIR}/myslug.also.yml" ]
+}
+
+@test "also_context_file: path is <ENVS_DIR>/<slug>.also-context.md" {
+  run also_context_file myslug
+  [ "$status" -eq 0 ]
+  [ "$output" = "${ENVS_DIR}/myslug.also-context.md" ]
+}
+
+@test "write_also_overlay: sets OPENCODE_EXTRA_INSTRUCTIONS and mounts the breadcrumb read-only" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  # the generic image hook: the var points at the breadcrumb's container path...
+  grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" \
+    "${ENVS_DIR}/myslug.also.yml"
+  # ...and the breadcrumb itself is bind-mounted there read-only (ro,z).
+  grep -qF -- "- ${ENVS_DIR}/myslug.also-context.md:/etc/opencode/also-context.md:ro,z" \
+    "${ENVS_DIR}/myslug.also.yml"
+}
+
+@test "write_also_overlay: the breadcrumb names each mount, its container path, and ro/rw" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n/c/d\trw\tlibb\n')"
+  local ctx="${ENVS_DIR}/myslug.also-context.md"
+  [ -f "$ctx" ]
+  grep -qF -- '- **liba** — `/workspace-extra/liba` (read-only)' "$ctx"
+  grep -qF -- '- **libb** — `/workspace-extra/libb` (read-write)' "$ctx"
+}
+
+@test "write_also_overlay: the breadcrumb mount is NOT reported by also_mounts_from_overlay (--status)" {
+  # The context file mounts to /etc/opencode, not /workspace-extra, so the
+  # overlay parse that drives --status keeps listing only the real --also
+  # mounts — never the launcher's own breadcrumb.
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  run also_mounts_from_overlay myslug
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  [ "${lines[0]}" = "$(printf '/a/b\tro\tliba')" ]
+}
+
+@test "delete_also_overlay: removes the breadcrumb as well as the overlay" {
+  write_also_overlay myslug "$(printf '/a/b\tro\tliba\n')"
+  [ -f "${ENVS_DIR}/myslug.also.yml" ]
+  [ -f "${ENVS_DIR}/myslug.also-context.md" ]
+  delete_also_overlay myslug
+  [ ! -f "${ENVS_DIR}/myslug.also.yml" ]
+  [ ! -f "${ENVS_DIR}/myslug.also-context.md" ]
+}
+
+# --- mcp_status_line (lib/commands.sh) ---------------------------------------
+
+@test "mcp_status_line: reports the comma-joined MCP keys" {
+  docker() {
+    if [ "$1" = exec ]; then printf 'bitbucket, jira\n'; return 0; fi
+    return 1
+  }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ "$output" = "mcps:    bitbucket, jira" ]
+}
+
+@test "mcp_status_line: reports '(none configured)' on an empty-but-successful probe" {
+  docker() { [ "$1" = exec ] && { printf '\n'; return 0; }; return 1; }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ "$output" = "mcps:    (none configured)" ]
+}
+
+@test "mcp_status_line: silent (not an error) when the exec fails" {
+  docker() { [ "$1" = exec ] && return 1; return 1; }
+  run mcp_status_line opencode-myrepo
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- launcher_behind_count (lib/update.sh) -----------------------------------
+#
+# Deliberately uses REAL git (bare "origin" + a clone, in the bats temp dir),
+# not a fake-bin stub — this is exercising real `git fetch`/`rev-list`
+# semantics, which a stub would just assert away.
+
+# git_repo_pair NAME — set up a bare "$BATS_TEST_TMPDIR/NAME-origin.git" and a
+# clone of it at "$BATS_TEST_TMPDIR/NAME" tracking origin/main. Echoes nothing;
+# callers reference the two paths directly.
+git_repo_pair() {
+  local name="$1" origin="$BATS_TEST_TMPDIR/${1}-origin.git" clone="$BATS_TEST_TMPDIR/${1}"
+  git init -q --bare "$origin"
+  git init -q -b main "$BATS_TEST_TMPDIR/${1}-seed"
+  ( cd "$BATS_TEST_TMPDIR/${1}-seed" \
+      && git config user.email t@example.com && git config user.name t \
+      && echo seed > f && git add f && git commit -q -m seed \
+      && git remote add origin "$origin" && git push -q origin main )
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+  git clone -q "$origin" "$clone"
+  ( cd "$clone" && git config user.email t@example.com && git config user.name t )
+}
+
+@test "launcher_behind_count: empty for a directory that is not a git repo at all" {
+  run launcher_behind_count "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "launcher_behind_count: empty when the repo has no upstream configured" {
+  git init -q -b main "$BATS_TEST_TMPDIR/norepo-upstream"
+  ( cd "$BATS_TEST_TMPDIR/norepo-upstream" && git config user.email t@example.com && git config user.name t \
+      && echo x > f && git add f && git commit -q -m init )
+  run launcher_behind_count "$BATS_TEST_TMPDIR/norepo-upstream"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "launcher_behind_count: 0 when the clone is fully in sync with its upstream" {
+  git_repo_pair insync
+  run launcher_behind_count "$BATS_TEST_TMPDIR/insync"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "launcher_behind_count: 1 after a single new commit lands on the upstream" {
+  git_repo_pair behind1
+  ( cd "$BATS_TEST_TMPDIR/behind1-seed" && echo more >> f && git add f && git commit -q -m second && git push -q origin main )
+  run launcher_behind_count "$BATS_TEST_TMPDIR/behind1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "launcher_behind_count: counts multiple upstream commits correctly" {
+  git_repo_pair behind3
+  for i in 1 2 3; do
+    ( cd "$BATS_TEST_TMPDIR/behind3-seed" && echo "change $i" >> f && git add f && git commit -q -m "change $i" && git push -q origin main )
+  done
+  run launcher_behind_count "$BATS_TEST_TMPDIR/behind3"
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+}
+
+@test "launcher_behind_count: never a script-fatal error under set -e (no git on PATH)" {
+  run bash -c '
+    PATH="/nonexistent-path-with-no-git"
+    source "'"$REPO_ROOT"'/lib/core.sh"
+    source "'"$REPO_ROOT"'/lib/update.sh"
+    set -euo pipefail
+    launcher_behind_count "'"$BATS_TEST_TMPDIR"'"
+    echo "still running"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"still running"* ]]
+}
+
+# --- doctor_check_launcher_update (lib/doctor.sh) ----------------------------
+#
+# launcher_behind_count itself is exercised with real git above; here the
+# formatting/PASS-WARN choice is pinned by stubbing launcher_behind_count
+# directly (bash lets a test-local function shadow the sourced one) so these
+# stay fast and deterministic.
+
+@test "doctor_check_launcher_update: PASS 'launcher up to date' when 0 behind" {
+  launcher_behind_count() { printf '0'; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] launcher up to date"* ]]
+}
+
+@test "doctor_check_launcher_update: WARN (never FAIL) naming the count when behind" {
+  launcher_behind_count() { printf '4'; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN]"* ]]
+  [[ "$output" == *"4 commit(s) behind origin — git pull"* ]]
+  [[ "$output" != *"[FAIL]"* ]]
+}
+
+@test "doctor_check_launcher_update: neutral skipped WARN when undeterminable" {
+  launcher_behind_count() { printf ''; }
+  run doctor_check_launcher_update /some/dir
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] launcher update check"* ]]
+  [[ "$output" == *"skipped (no upstream/offline)"* ]]
 }

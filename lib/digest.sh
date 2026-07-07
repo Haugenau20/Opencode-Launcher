@@ -38,19 +38,27 @@ digest_state_file() {
 # report_digest_update SLUG NEW_DIGEST — compare NEW_DIGEST against the
 # last-seen digest recorded for SLUG; if it changed (and a previous digest was
 # recorded), print a short INFO nudge. Always (re)writes the new digest as the
-# last-seen one. Silent when nothing changed or there's no prior record (first
-# run for this project) — non-fatal either way.
+# last-seen one (unless NEW_DIGEST is empty, in which case this is a no-op).
+#
+# Return status doubles as a change flag for callers that want to do more
+# work only on an actual change (e.g. the manifest/changelog/version-label
+# reporting in cmd_run): 0 means the digest changed and the nudge was
+# printed; 1 means nothing changed (first run, unchanged digest, or an empty
+# NEW_DIGEST). Neither outcome is an error — callers should branch on the
+# status, not treat non-zero as failure.
 report_digest_update() {
-  local slug="$1" new_digest="$2" state_file prev_digest
-  [ -n "$new_digest" ] || return 0
+  local slug="$1" new_digest="$2" state_file prev_digest changed=1
+  [ -n "$new_digest" ] || return 1
   state_file="$(digest_state_file "$slug")"
   mkdir -p "$ENVS_DIR"
   prev_digest=""
   [ -f "$state_file" ] && prev_digest="$(cat "$state_file" 2>/dev/null || true)"
   if [ -n "$prev_digest" ] && [ "$prev_digest" != "$new_digest" ]; then
     info "image updated: $(short_digest "$new_digest") (was $(short_digest "$prev_digest"))"
+    changed=0
   fi
   printf '%s' "$new_digest" > "$state_file"
+  return "$changed"
 }
 
 # env_example_keys [FILE] — echo each KEY= name found in FILE (default

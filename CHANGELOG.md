@@ -55,6 +55,116 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.10.0] — 2026-07-03
+
+### Added
+- `--also <path>[:rw]`: mount an extra host folder (e.g. a library repo the
+  agent should read for context) into the container alongside your main repo,
+  at `/workspace-extra/<name>` (`<name>` derives from the folder's own
+  basename the same way the project slug does, with `-2`/`-3`/... suffixing
+  on a name collision between two `--also` paths). Read-only by default;
+  append `:rw` to opt one mount into read-write. Repeatable. Implemented as a
+  small generated per-project compose overlay
+  (`.envs/<slug>.also.yml`, appended last so it always wins); a boot with no
+  `--also` flags deletes any stale overlay from a previous run. `--down`/
+  `--logs`/`--shell` pick it up automatically when present, and
+  `./start.sh --status <repo>` lists the mounts a stack was last booted with.
+  The launcher also makes the mounts **discoverable** to the agent: opencode's
+  file tools are anchored to `/workspace`, so it would never find the siblings
+  on its own. On each `--also` boot the launcher writes a breadcrumb
+  (`.envs/<slug>.also-context.md`) listing each folder and its
+  `/workspace-extra/<name>` path, mounts it read-only, and points the image at
+  it via `OPENCODE_EXTRA_INSTRUCTIONS` — a generic "load these instruction
+  files" hook the image honors (it has no `--also` knowledge of its own).
+  Needs an image that honors that var (see the image release below); on an
+  older image the folders are still mounted, just not advertised.
+- `--exec "<prompt>"`: boot the stack without attaching the TUI, run
+  `<prompt>` non-interactively via `opencode run` inside the container, tear
+  the stack down (unless `--persist` is also given), and exit with that
+  command's own exit code — for scripting/CI one-shot runs. `--continue`
+  prepends opencode's own `-c` (resume most recent session) ahead of the
+  prompt; `--also` works as normal. Conflicts with `--detach` (both are
+  non-interactive; pick one).
+- `./start.sh --status <repo>` now also reports the MCP servers the running
+  container's image actually wired up (`mcps:    bitbucket, jira`, or
+  `mcps:    (none configured)`), read from the container's own
+  `opencode.json` via `jq`. Entirely best-effort: any failure (exec fails, no
+  jq, file missing) prints nothing, only shown while the stack is running.
+- Best-effort launcher self-update check: on every boot, and as its own
+  `--doctor` PASS/WARN line, `start.sh` reports when this launcher checkout
+  is behind its git upstream (`launcher update available: N commit(s) behind
+  origin — git pull to update`). Silent/neutral on any failure (offline, no
+  upstream, not a git checkout) — never a FAIL. Skip the boot-time check
+  entirely with `OC_SKIP_UPDATE_CHECK=1`.
+
+### Fixed
+- `--exec` no longer hangs when run from an interactive terminal. The
+  one-shot `docker exec -i ... opencode run` left opencode's stdin bound to
+  the launcher's terminal; `opencode run` drains stdin for piped prompt
+  context, so it blocked forever on an EOF that never came (it printed its
+  startup lines, then hung). The launcher now feeds `opencode run` `/dev/null`
+  when its own stdin is a TTY, while still forwarding stdin that is genuinely
+  piped/redirected in (`data | ./start.sh --exec …`).
+- `--exec` now prints **only the model's answer on success**, with no
+  `2>/dev/null` needed. opencode already splits its streams — answer on stdout,
+  logs on stderr, and only the final text when its output isn't a TTY — so the
+  launcher reserves stdout for `opencode run`'s stdout (via fd 3) and buffers
+  everything else (its own boot/teardown chatter *and* opencode's stderr,
+  including the harmless `No .git found at /workspace` notice). On success that
+  buffer is discarded — a clean answer on the terminal and a clean
+  `answer="$(./start.sh --exec "…" repo)"` capture. **On failure** (a boot error
+  or a non-zero `opencode run`) the buffer is replayed to stderr so nothing
+  fails silently. It's exit-code driven — no message-content matching — so it
+  stays correct whatever the launcher or opencode print, and `opencode run`'s
+  exit code is always propagated.
+
+## [0.9.0] — 2026-07-03
+
+### Added
+- Image self-description: newer images ship `/etc/opencode/manifest.json`
+  (the env keys they read), `/etc/opencode/CHANGELOG.md`, and an
+  `org.opencontainers.image.version` OCI label. `./start.sh` now reads these
+  best-effort (never pulling, never failing on an older image that has
+  none of them) and, only when a boot's image digest actually changed,
+  prints the new image version and that version's changelog section, and
+  warns if the image now reads an env key this launcher's `.env.example`
+  doesn't know about ("this image reads env key(s) your launcher doesn't
+  know: ... — git pull the launcher, then ./start.sh --reconfigure").
+- `./start.sh --doctor` gained an `image manifest` check: PASS when the
+  image's manifest is present and every key it reads is known to this
+  launcher, WARN (never FAIL) listing the unknown key(s) on drift, and a
+  neutral skipped WARN when the image isn't pulled locally or predates the
+  manifest.
+
+## [0.8.0] — 2026-07-03
+
+### Fixed
+- Ports are now sticky per project. `--down`/`--logs`/`--shell` used to
+  re-derive the port with a fresh `port_in_use 4096` check and rewrite
+  `.envs/<slug>.env` on every call — if a project's own stack was running on
+  4096, those commands saw 4096 as "busy" (their own stack!), picked 4097,
+  and overwrote the recorded port, after which `--status` reported the wrong
+  web-UI URL. Re-running `./start.sh <repo>` while that repo's stack was
+  already up had the same problem: it moved the port instead of reusing it.
+  Port resolution is now a single shared helper (`resolve_project_port`,
+  used by both the boot flow and the management commands): a running
+  project's own recorded port is always reused, and a down project's
+  recorded port is reused whenever it's still free.
+- `--down`/`--logs`/`--shell` no longer rewrite `.envs/<slug>.env` at all
+  when it already exists — they read it back verbatim (compose still needs
+  `--env-file` to point at *something*, so it's generated once if missing).
+  Only the boot flow (re)writes the file unconditionally, as intended.
+
+### Removed
+- `ENABLE_SESSION_LOGS` — the tmpfs-swap knob never actually worked (the
+  image-side mount needs `CAP_SYS_ADMIN`, which the container is never
+  granted, so the mount silently failed and session state was always
+  persisted regardless of the setting). Removed from `.env.example`, the
+  config schema, and the `--reconfigure`/`--config` UI; it never functioned
+  in the image either and is being removed there too. A leftover
+  `ENABLE_SESSION_LOGS=` line in an existing `.env` is harmless — it's simply
+  ignored.
+
 ## [0.7.0] — 2026-06-26
 
 ### Added

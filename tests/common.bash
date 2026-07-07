@@ -52,3 +52,38 @@ run_launcher() {
 
 # docker_log — print the recorded fake-docker call log.
 docker_log() { cat "$FAKE_DOCKER_LOG"; }
+
+# make_sandbox_git_repo_behind N — turn $SANDBOX itself into a real git repo
+# with an upstream that is N commits ahead (i.e. $SANDBOX's checked-out branch
+# is N commits behind). Used by the launcher self-update-check tests, which
+# need REAL git (not the fake docker stub) — see lib/update.sh. N=0 leaves
+# the two in sync. Requires $SANDBOX to already exist (call after
+# make_sandbox); uses $BATS_TEST_TMPDIR/git-origin as the bare "upstream".
+make_sandbox_git_repo_behind() {
+  local n="${1:-1}" origin push_clone i
+  origin="$BATS_TEST_TMPDIR/git-origin"
+  git init -q --bare "$origin"
+
+  ( cd "$SANDBOX" \
+      && git init -q -b main \
+      && git config user.email test@example.com \
+      && git config user.name "Test" \
+      && git add -A \
+      && git commit -q -m "initial" \
+      && git remote add origin "$origin" \
+      && git push -q origin main \
+      && git branch -q --set-upstream-to=origin/main main )
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+
+  if [ "$n" -gt 0 ]; then
+    push_clone="$BATS_TEST_TMPDIR/git-push-clone"
+    git clone -q "$origin" "$push_clone"
+    ( cd "$push_clone" \
+        && git config user.email test@example.com \
+        && git config user.name "Test" )
+    for ((i = 0; i < n; i++)); do
+      ( cd "$push_clone" && echo "change $i" >> upstream-only.txt && git add -A && git commit -q -m "upstream change $i" )
+    done
+    ( cd "$push_clone" && git push -q origin main )
+  fi
+}

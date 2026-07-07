@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config usage project packages allowlist digest doctor commands; do
+for __lib in core config usage project also packages allowlist digest manifest update doctor commands; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -75,6 +75,9 @@ main() {
   local WANT_LOGS=0
   local WANT_SHELL=0
   local WANT_OPEN=0
+  local WANT_EXEC=0
+  local EXEC_PROMPT=""
+  local ALSO_ARGS=()
   local REPO_ARG=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -84,6 +87,12 @@ main() {
       --tui)  ATTACH_TUI=1; shift ;;
       --continue|-c) CONTINUE=1; shift ;;
       --open) WANT_OPEN=1; shift ;;
+      --also)
+        [ $# -gt 1 ] || { usage; die "--also requires a <path>[:rw] argument"; }
+        ALSO_ARGS+=("$2"); shift 2 ;;
+      --exec)
+        [ $# -gt 1 ] || { usage; die "--exec requires a <prompt> argument"; }
+        WANT_EXEC=1; EXEC_PROMPT="$2"; shift 2 ;;
       --doctor) WANT_DOCTOR=1; shift ;;
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
@@ -174,18 +183,59 @@ main() {
 
   [ -n "$REPO_ARG" ] || { usage; die "missing <host-repo-path>"; }
 
+  # --exec is itself non-interactive (boots, runs one prompt via `docker exec`,
+  # tears down, exits with that command's rc) — combining it with --detach
+  # (also non-interactive, but leaves the stack running with nothing attached)
+  # is a contradiction the user should be told about rather than silently
+  # resolved one way. ATTACH_TUI is only ever 0 here because --detach/--no-tui
+  # was passed (--exec itself doesn't touch it at parse time), so this check
+  # is exactly "both flags given".
+  if [ "$WANT_EXEC" -eq 1 ] && [ "$ATTACH_TUI" -eq 0 ]; then
+    usage; die "--exec and --detach conflict — --exec is itself non-interactive"
+  fi
+
   # Everything validated; hand off to the boot flow with the parsed options.
-  cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN"
+  #
+  # --exec output contract: on success, print EXACTLY `opencode run`'s stdout
+  # (the model's answer) and nothing else — no `2>/dev/null` needed — while a
+  # failure still surfaces its diagnostics. opencode already splits its streams
+  # (answer -> stdout, logs -> stderr, and in piped/non-TTY mode it emits only
+  # the final text), so we never match on message content. We:
+  #   - save the real stdout as fd3 and the real stderr as fd4;
+  #   - run the whole boot flow with its stdout folded onto stderr (1>&2) and
+  #     that stderr captured to a buffer file (2>"$buf"), so every launcher
+  #     info()/warn()/err() line AND every opencode log line lands in the buffer,
+  #     never on the terminal — cmd_run sends opencode's stdout out on fd3;
+  #   - on EXIT, replay the buffer to the real stderr (fd4) ONLY if the run
+  #     failed (non-zero). Clean answer on success; boot errors and a non-zero
+  #     `opencode run` still print their diagnostics. Exit-code driven, so it
+  #     stays correct no matter what the launcher or opencode print.
+  # Every other run keeps the normal streams.
+  if [ "$WANT_EXEC" -eq 1 ]; then
+    exec 3>&1 4>&2
+    OC_EXEC_ERRBUF="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec.$$")"
+    trap 'oc_exec_rc=$?; { [ "$oc_exec_rc" -ne 0 ] && [ -s "$OC_EXEC_ERRBUF" ] && cat "$OC_EXEC_ERRBUF" >&4; }; rm -f "$OC_EXEC_ERRBUF"' EXIT
+    cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
+      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}" 2>"$OC_EXEC_ERRBUF" 1>&2
+  else
+    cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
+      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
+  fi
 }
 
 # --- boot flow --------------------------------------------------------------
-# cmd_run REPO_ARG ATTACH_TUI PERSIST USE_PODMAN CONTINUE WANT_OPEN — the full
-# boot sequence for the default "run" path: preflight, first-run secrets,
-# per-project env, pull, up, and (by default) attach the TUI. Split out of
+# cmd_run REPO_ARG ATTACH_TUI PERSIST USE_PODMAN CONTINUE WANT_OPEN WANT_EXEC
+# EXEC_PROMPT [ALSO_ARGS...] — the full boot sequence for the default "run"
+# path: preflight, first-run secrets, per-project env, pull, up, and (by
+# default) attach the TUI. ALSO_ARGS (the trailing, possibly-empty varargs)
+# are the raw `--also` specs, one per repeated flag. Split out of
 # main() so main() stays a thin parse-args-and-dispatch entry point. Inherits
 # strict mode (set -euo pipefail) and the cd to the script dir from main().
 cmd_run() {
   local REPO_ARG="$1" ATTACH_TUI="$2" PERSIST="$3" USE_PODMAN="$4" CONTINUE="$5" WANT_OPEN="$6"
+  local WANT_EXEC="$7" EXEC_PROMPT="$8"
+  shift 8
+  local ALSO_ARGS=("$@")
 
   if [ "$CONTINUE" -eq 1 ] && [ "$ATTACH_TUI" -eq 0 ]; then
     warn "--continue has no effect with --detach (no TUI is attached)."
@@ -223,6 +273,17 @@ cmd_run() {
   [ -d "$REPO_ARG" ] || die "repo path is not a directory: $REPO_ARG"
   local REPO_PATH
   REPO_PATH="$(cd -- "$REPO_ARG" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $REPO_ARG"
+
+  # --- --also: extra repo/folder mounts (read-only by default) --------------
+  # Validate/resolve now (needs only REPO_PATH, not the per-project SLUG) so a
+  # bad --also path fails fast, before the secrets prompt/pull/up below. The
+  # per-project overlay file itself is written later, once SLUG is known (see
+  # step 6) — resolve_also_mounts/also_mount_lines (lib/also.sh) are pure.
+  local ALSO_MOUNTS=""
+  if [ "${#ALSO_ARGS[@]}" -gt 0 ]; then
+    ALSO_MOUNTS="$(resolve_also_mounts "$REPO_PATH" "${ALSO_ARGS[@]}")"
+    also_mount_lines "$ALSO_MOUNTS"
+  fi
 
   # --- 3. first-run secrets setup -------------------------------------------
   if [ ! -f "$ENV_FILE" ]; then
@@ -345,12 +406,15 @@ cmd_run() {
   local SLUG PORT
   SLUG="$(derive_slug "$REPO_PATH")"
 
-  # Port: default to 4096, find next free port if taken. The browser web UI
-  # derives its backend from the page's own origin, so any host port works.
-  PORT=4096
-  if port_in_use 4096; then
-    PORT="$(find_free_port 4097 4196)"
-    info "port 4096 in use; booting $SLUG on port $PORT instead (the web UI works on any port)."
+  # Port: sticky per project via resolve_project_port (shared with
+  # derive_project_settings in lib/project.sh — see there for the full rule).
+  # In short: reuse this project's own running port, else its last-recorded
+  # port if that's free, else 4096, else the first free port in 4097-4196.
+  # The browser web UI derives its backend from the page's own origin, so any
+  # host port works.
+  PORT="$(resolve_project_port "$SLUG")"
+  if [ "$PORT" != "4096" ]; then
+    info "booting $SLUG on port $PORT (sticky/first-free; the web UI works on any port)."
   fi
 
   # --- 6. generate per-project env file (superset of .env) ------------------
@@ -371,6 +435,18 @@ cmd_run() {
     # FROM (the registry image start.sh would otherwise run for opencode).
     [ -n "$OC_BASE_IMAGE" ] && echo "OC_BASE_IMAGE=${OC_BASE_IMAGE}"
   } > "$PROJECT_ENV"
+
+  # --- --also overlay: write (or clear) .envs/<slug>.also.yml ---------------
+  # Now that SLUG is known: with mounts, (re)generate the overlay and append it
+  # LAST in COMPOSE_FILES (after the podman/user-layer/package-layer overlays
+  # above) so it always wins; with none, delete any stale overlay from a
+  # previous boot so `compose up -d` recreates the container without it.
+  if [ -n "$ALSO_MOUNTS" ]; then
+    write_also_overlay "$SLUG" "$ALSO_MOUNTS"
+    COMPOSE_FILES+=(-f "$(also_overlay_file "$SLUG")")
+  else
+    delete_also_overlay "$SLUG"
+  fi
 
   local PROJECT_NAME COMPOSE
   PROJECT_NAME="opencode-${SLUG}"
@@ -406,11 +482,41 @@ cmd_run() {
   # registry/runtime that doesn't expose RepoDigests just means this is
   # skipped, never a failure. Also records it so the NEXT run can report
   # whether the image changed since last time (the update nudge below).
-  local IMAGE_DIGEST=""
+  local IMAGE_DIGEST="" DIGEST_CHANGED=1
   IMAGE_DIGEST="$(get_image_digest "$CHECK_IMAGE" 2>/dev/null || true)"
   if [ -n "$IMAGE_DIGEST" ]; then
     info "image:   $IMAGE_DIGEST"
-    report_digest_update "$SLUG" "$IMAGE_DIGEST"
+    if report_digest_update "$SLUG" "$IMAGE_DIGEST"; then
+      DIGEST_CHANGED=0
+    fi
+  fi
+
+  # --- image self-description (newer images only) ---------------------------
+  # Only worth the extra `docker run`s when the digest actually changed above
+  # — on an unchanged digest there's nothing new to say, and on an old image
+  # (no manifest/label at all) every piece below degrades to empty output
+  # anyway. Keeps a same-digest boot exactly as fast as before this feature.
+  if [ "$DIGEST_CHANGED" -eq 0 ]; then
+    local IMG_VERSION="" CHANGELOG_SECTION="" MANIFEST_JSON="" MISSING_KEYS=""
+    IMG_VERSION="$(image_version_label "$CHECK_IMAGE" 2>/dev/null || true)"
+    if [ -n "$IMG_VERSION" ]; then
+      info "image version: $IMG_VERSION"
+      CHANGELOG_SECTION="$(image_changelog_section "$CHECK_IMAGE" "$IMG_VERSION" 2>/dev/null || true)"
+      if [ -n "$CHANGELOG_SECTION" ]; then
+        info "changelog for $IMG_VERSION:"
+        echo "  ---------------------------------------------------------------"
+        printf '%s\n' "$CHANGELOG_SECTION" | sed 's/^/  /'
+        echo "  ---------------------------------------------------------------"
+      fi
+    fi
+    MANIFEST_JSON="$(image_manifest "$CHECK_IMAGE" 2>/dev/null || true)"
+    if [ -n "$MANIFEST_JSON" ]; then
+      MISSING_KEYS="$(manifest_missing_keys "$MANIFEST_JSON")"
+      if [ -n "$MISSING_KEYS" ]; then
+        warn "this image reads env key(s) your launcher doesn't know: $(printf '%s' "$MISSING_KEYS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        warn "  git pull the launcher, then ./start.sh --reconfigure"
+      fi
+    fi
   fi
 
   # --- 8. report ------------------------------------------------------------
@@ -427,6 +533,19 @@ cmd_run() {
   warn "  when prompted for the working directory, type /workspace — that session"
   warn "  then runs inside your repo. The default TUI is unaffected (always"
   warn "  /workspace). Tracking: anomalyco/opencode#14445."
+
+  # Launcher self-update nudge: best-effort (see lib/update.sh), silent on any
+  # failure (offline, no upstream, not a git checkout, etc.) and skippable
+  # entirely via OC_SKIP_UPDATE_CHECK=1 (e.g. for CI/scripted runs that don't
+  # want the extra `git fetch`).
+  if [ "${OC_SKIP_UPDATE_CHECK:-0}" != "1" ]; then
+    local behind_count
+    behind_count="$(launcher_behind_count "$__OCL_DIR")"
+    case "$behind_count" in
+      ''|0|*[!0-9]*) : ;;
+      *) info "launcher update available: $behind_count commit(s) behind origin — git pull to update" ;;
+    esac
+  fi
   echo
 
   # --- 9. attach the TUI (default) ------------------------------------------
@@ -439,7 +558,54 @@ cmd_run() {
   # (headless — opencode serve is PID 1 and keeps running).
   local OC_ARGS=()
   [ "$CONTINUE" -eq 1 ] && OC_ARGS+=(-c)
-  if [ "$ATTACH_TUI" -eq 1 ]; then
+  if [ "$WANT_EXEC" -eq 1 ]; then
+    # --exec: non-interactive one-shot run. `-i` but deliberately NOT `-t` —
+    # output must pipe cleanly for scripting. `--continue` (OC_ARGS) prepends
+    # opencode's own `-c` (resume most recent session) ahead of the prompt.
+    #
+    # stdin needs care. `docker exec -i` binds opencode's stdin to whatever the
+    # launcher was started with, and `opencode run` drains stdin for any piped
+    # prompt context. When the launcher is attached to an interactive terminal
+    # that pipe never closes, so the run blocks forever waiting for an EOF that
+    # can't come — opencode prints its startup lines and then hangs (the exact
+    # symptom this branch used to produce). So only forward stdin when it's
+    # genuinely piped/redirected into the launcher (`data | ./start.sh --exec …`
+    # still reaches opencode); on a TTY, hand opencode /dev/null instead so it
+    # sees an immediate EOF and runs the prompt argument alone.
+    #
+    # Output isolation: main() has folded the launcher's own stdout onto stderr
+    # for --exec, captured that stderr to a buffer, and saved the real stdout as
+    # fd3 (see the dispatch there). So here we send opencode's stdout straight to
+    # fd3 (`1>&3`) — that's the answer, and the only thing on the real stdout —
+    # and leave its stderr alone: it flows into the same buffer as the launcher
+    # chatter and (on success) is discarded, or (on failure) replayed. Every
+    # opencode log line, including the harmless "[project-id] No .git found at
+    # /workspace" fallback, rides along with it. No message-content matching.
+    #
+    # rc capture must survive `set -euo pipefail`: guard every step with
+    # `|| ...` so a nonzero `opencode run` (or teardown) never aborts the
+    # script before we can exit with the RIGHT code.
+    info "exec: running one-shot prompt in $PROJECT_NAME ..."
+    local rc=0
+    local exec_cmd=(docker exec -u dev
+      -e HOME=/home/dev
+      -e XDG_CONFIG_HOME=/home/dev/.config
+      -e XDG_DATA_HOME=/home/dev/.local/share
+      -w /workspace
+      -i "opencode-${SLUG}" opencode run ${OC_ARGS[@]+"${OC_ARGS[@]}"} "$EXEC_PROMPT")
+    if [ -t 0 ]; then
+      "${exec_cmd[@]}" </dev/null 1>&3 || rc=$?
+    else
+      "${exec_cmd[@]}" 1>&3 || rc=$?
+    fi
+    if [ "$PERSIST" -eq 1 ]; then
+      info "exec finished (rc=$rc) — --persist: leaving $PROJECT_NAME running."
+    else
+      info "exec finished (rc=$rc) — tearing down $PROJECT_NAME (pass --persist to keep it running) ..."
+      "${COMPOSE[@]}" down || true
+    fi
+    exit "$rc"
+  elif [ "$ATTACH_TUI" -eq 1 ]; then
     if [ "$PERSIST" -eq 1 ]; then
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
       # straight to docker exec (the stack outlives this script either way).

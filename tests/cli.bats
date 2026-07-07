@@ -642,6 +642,34 @@ seed_env_doctor() {
   [[ "$output" == *"could not verify"* ]]
 }
 
+@test "--doctor: image manifest PASSes when every key is known" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "JFROG_BASE_URL", "required": false} ]}' \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] image manifest: launcher knows every key"* ]]
+}
+
+@test "--doctor: image manifest WARNs (not FAILs) when the image reads an unknown env key" {
+  seed_env_doctor
+  FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "NEW_KEY_X", "required": false} ]}' \
+    run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] image manifest"* ]]
+  [[ "$output" == *"NEW_KEY_X"* ]]
+  [[ "$output" == *"git pull the launcher"* ]]
+  ! [[ "$output" == *"[FAIL] image manifest"* ]]
+}
+
+@test "--doctor: image manifest is a neutral skipped WARN on an old/unpulled image" {
+  seed_env_doctor
+  run_launcher --doctor   # FAKE_DOCKER_MANIFEST unset => empty, mirrors an old image
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] image manifest"* ]]
+  [[ "$output" == *"not available"* ]]
+  [[ "$output" == *"skipped"* ]]
+}
+
 @test "--doctor: podman shim is reported as WARN, not FAIL" {
   seed_env_doctor
   FAKE_DOCKER_VERSION_OUTPUT="Docker version 0.0.0, podman" \
@@ -752,7 +780,11 @@ seed_env_doctor() {
   [[ "$output" == *"resume:  ./start.sh --continue $repo"* ]]
   [[ "$output" != *"resume:  docker exec"* ]]
   ! grep -qE 'pull' "$FAKE_DOCKER_LOG"
-  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  # An up stack DOES now get a non-interactive `docker exec ... jq ...`
+  # best-effort MCP-status probe (see mcp_status_line in lib/commands.sh) —
+  # but never an interactive (-it) exec, which would mean attaching a TUI.
+  ! grep -q -- '-it ' "$FAKE_DOCKER_LOG"
+  grep -qE '^exec opencode-my-service jq ' "$FAKE_DOCKER_LOG"
 }
 
 @test "--status with no repo path lists all running opencode-* stacks" {
@@ -924,14 +956,14 @@ seed_env_doctor() {
 @test "--reconfigure preserves unrelated keys it doesn't own" {
   seed_env
   sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
-  sed -i 's|^ENABLE_SESSION_LOGS=.*|ENABLE_SESSION_LOGS=0|' "$SANDBOX/.env"
+  sed -i 's|^DISABLE_JIRA_MCP=.*|DISABLE_JIRA_MCP=1|' "$SANDBOX/.env"
 
   printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
 
   [ "$status" -eq 0 ]
   grep -q '^ALLOW_REMOTE_GIT=1$' "$SANDBOX/.env"
-  grep -q '^ENABLE_SESSION_LOGS=0$' "$SANDBOX/.env"
+  grep -q '^DISABLE_JIRA_MCP=1$' "$SANDBOX/.env"
 }
 
 @test "--reconfigure masks existing secrets instead of echoing them" {
@@ -1368,6 +1400,124 @@ seed_env_doctor() {
   grep -qE '^exec .*-it opencode-myrepo bash$' "$FAKE_DOCKER_LOG"
 }
 
+# --- sticky ports / read-only commands must not rewrite state ---------------
+# Regression coverage for: derive_project_settings used to recompute the port
+# with a fresh `port_in_use 4096` and rewrite .envs/<slug>.env on EVERY call
+# (including --down/--logs/--shell). If a project's own stack was running on
+# 4096, those commands saw 4096 "busy" (their own stack!), picked 4097, and
+# overwrote the recorded port — after which --status read the wrong web-UI
+# URL back out of the file. Ports must be sticky per project, and read-only
+# commands must never perturb the recorded file.
+
+@test "boot: sticky port — re-running while the project's own stack is already up keeps the recorded (non-default) port" {
+  seed_env
+  local repo; repo="$(make_repo_arg "Sticky Repo")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/sticky-repo.env"
+  [ -f "$penv" ]
+
+  # Simulate the project having previously landed on a non-default port (e.g.
+  # 4096 was busy at the time) and its own oc-publish container being up
+  # right now — re-running boot must NOT bounce it back to 4096.
+  sed -i 's|^OPENCODE_PORT=.*|OPENCODE_PORT=5555|' "$penv"
+  FAKE_DOCKER_PS_OUTPUT="opencode-publish-sticky-repo" run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://localhost:5555"* ]]
+  grep -q '^OPENCODE_PORT=5555$' "$penv"
+}
+
+@test "regression: --logs does not clobber the recorded port for a running stack (matches --status afterward)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  grep -q '^OPENCODE_PORT=4096$' "$penv"
+
+  # The project's own oc-publish container is up (so 4096 would look "busy"
+  # to a naive re-derivation) — --logs must leave the recorded port alone.
+  FAKE_DOCKER_PS_OUTPUT="opencode-publish-my-service" \
+    FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -q '^OPENCODE_PORT=4096$' "$penv"
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://localhost:4096"* ]]
+}
+
+@test "--logs never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --logs "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--shell never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --shell "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--down never rewrites an existing .envs/<slug>.env (content and mtime unchanged)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  local before_sum before_mtime
+  before_sum="$(md5sum "$penv" | awk '{print $1}')"
+  before_mtime="$(stat -c %Y "$penv")"
+  sleep 1
+
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+
+  [ "$before_sum" = "$(md5sum "$penv" | awk '{print $1}')" ]
+  [ "$before_mtime" = "$(stat -c %Y "$penv")" ]
+}
+
+@test "--down generates .envs/<slug>.env when nothing was ever booted for this repo (but .env exists)" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  local penv="$SANDBOX/.envs/myrepo.env"
+  [ ! -f "$penv" ]
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  [ -f "$penv" ]
+}
+
 # --- --open ---------------------------------------------------------------
 
 @test "--help mentions --open" {
@@ -1490,6 +1640,86 @@ seed_env_doctor() {
   [[ "$output" == *"sha256:333333333333"* ]]
 }
 
+# --- image self-description on update (manifest/changelog/version label) ---
+
+@test "boot on a digest change prints the image version + changelog and warns on manifest drift" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:5555555555555555555555555555555555555555555555555555555555555e" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:6666666666666666666666666666666666666666666666666666666666666f" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true}, {"key": "NEW_KEY_X", "required": false} ]}' \
+    FAKE_DOCKER_CHANGELOG='## [0.0.7] — 2026-07-01
+
+### Added
+- JFrog MCP server.' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" == *"image version: 0.0.7"* ]]
+  [[ "$output" == *"JFrog MCP server."* ]]
+  [[ "$output" == *"this image reads env key(s) your launcher doesn't know: NEW_KEY_X"* ]]
+  [[ "$output" == *"git pull the launcher"* ]]
+}
+
+@test "boot on a digest change with a drift-free manifest prints no drift warning" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:9999999999999999999999999999999999999999999999999999999999999c" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "LLM_API_BASE", "required": true} ]}' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image version: 0.0.7"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
+}
+
+@test "boot stays silent about manifest/version/changelog for an old image, even when the digest changes" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:7777777777777777777777777777777777777777777777777777777777777a" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  # No FAKE_DOCKER_IMAGE_LABEL / FAKE_DOCKER_MANIFEST / FAKE_DOCKER_CHANGELOG
+  # set — mirrors an old image that has none of the newer self-description
+  # files, even though the digest still changed.
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:8888888888888888888888888888888888888888888888888888888888888b" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image updated:"* ]]
+  [[ "$output" != *"image version:"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
+  [[ "$output" != *"changelog"* ]]
+}
+
+@test "boot on an UNCHANGED digest never runs the manifest/version/changelog reporting" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc" \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  # Same digest again, but WITH a manifest/label/changelog fixture set — if
+  # the reporting ran anyway it would show up; it must not, since nothing
+  # changed and boot should stay exactly as fast/quiet as before this feature.
+  FAKE_DOCKER_IMAGE_DIGEST="reg.test.local/opencode@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc" \
+    FAKE_DOCKER_IMAGE_LABEL="0.0.7" \
+    FAKE_DOCKER_MANIFEST='{"env_keys": [ {"key": "NEW_KEY_X", "required": false} ]}' \
+    run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image updated:"* ]]
+  [[ "$output" != *"image version:"* ]]
+  [[ "$output" != *"reads env key(s)"* ]]
+}
+
 # --- .env.example drift check -----------------------------------------------
 
 @test "drift check is silent when .env has every .env.example key" {
@@ -1516,4 +1746,432 @@ seed_env_doctor() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"NEW_SECRET_FLAG"* ]]
   [[ "$output" != *"sk-super-secret-value"* ]]
+}
+
+# --- --also (extra repo/folder mounts) --------------------------------------
+
+@test "--also: default is read-only, prints the boot line and writes a ro,z overlay" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"also: ${liba} -> /workspace-extra/liba (read-only)"* ]]
+  [ -f "$SANDBOX/.envs/myrepo.also.yml" ]
+  grep -qF "# generated by start.sh --also; do not edit" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF -- "- ${liba}:/workspace-extra/liba:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -q 'myrepo.also.yml' "$FAKE_DOCKER_LOG"
+}
+
+@test "--also: a trailing :rw suffix opts a mount into read-write (z, not ro,z)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local libb; libb="$(make_repo_arg "libb")"
+  run_launcher --detach --also "${libb}:rw" "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"also: ${libb} -> /workspace-extra/libb (read-write)"* ]]
+  grep -qF -- "- ${libb}:/workspace-extra/libb:z" "$SANDBOX/.envs/myrepo.also.yml"
+  ! grep -qF -- "- ${libb}:/workspace-extra/libb:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+}
+
+@test "--also is repeatable: each mount gets its own line, in order" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  local libb; libb="$(make_repo_arg "libb")"
+  run_launcher --detach --also "$liba" --also "${libb}:rw" "$repo"
+  [ "$status" -eq 0 ]
+  grep -qF -- "- ${liba}:/workspace-extra/liba:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF -- "- ${libb}:/workspace-extra/libb:z" "$SANDBOX/.envs/myrepo.also.yml"
+}
+
+@test "--also: a name collision between two paths gets -2/-3 suffixing" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  mkdir -p "$BATS_TEST_TMPDIR/one/lib" "$BATS_TEST_TMPDIR/two/lib" "$BATS_TEST_TMPDIR/three/lib"
+  run_launcher --detach \
+    --also "$BATS_TEST_TMPDIR/one/lib" \
+    --also "$BATS_TEST_TMPDIR/two/lib" \
+    --also "$BATS_TEST_TMPDIR/three/lib" \
+    "$repo"
+  [ "$status" -eq 0 ]
+  grep -qF "/workspace-extra/lib:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "/workspace-extra/lib-2:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "/workspace-extra/lib-3:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+}
+
+@test "--also: a nonexistent path dies with a clear message" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach --also "$BATS_TEST_TMPDIR/does-not-exist" "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path does not exist"* ]]
+}
+
+@test "--also: a file (not a directory) path dies" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  local f="$BATS_TEST_TMPDIR/afile"
+  : > "$f"
+  run_launcher --detach --also "$f" "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also path is not a directory"* ]]
+}
+
+@test "--also: duplicating the main repo path dies with a clear message" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --detach --also "$repo" "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"duplicates the main repo path"* ]]
+}
+
+@test "--also requires a <path> argument" {
+  seed_env
+  run_launcher --detach --also
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--also requires a"* ]]
+}
+
+@test "--also: no --also flags on a later boot deletes a stale overlay" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  [ -f "$SANDBOX/.envs/myrepo.also.yml" ]
+
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [ ! -f "$SANDBOX/.envs/myrepo.also.yml" ]
+}
+
+@test "--also: writes a breadcrumb and wires OPENCODE_EXTRA_INSTRUCTIONS so the image surfaces it" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  # breadcrumb generated next to the overlay, naming the mount + its container path
+  [ -f "$SANDBOX/.envs/myrepo.also-context.md" ]
+  grep -qF -- '`/workspace-extra/liba`' "$SANDBOX/.envs/myrepo.also-context.md"
+  # overlay tells the image to load it via the generic hook (no --also knowledge image-side)
+  grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF -- "/etc/opencode/also-context.md:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+
+  # a later boot with no --also removes the breadcrumb too, not just the overlay
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  [ ! -f "$SANDBOX/.envs/myrepo.also-context.md" ]
+}
+
+@test "--also overlay is appended LAST in COMPOSE_FILES (after the podman overlay)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --podman --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  # the `pull` invocation lists every -f in COMPOSE_FILES order
+  local pull_line
+  pull_line="$(grep -E 'compose .*pull$' "$FAKE_DOCKER_LOG")"
+  [[ "$pull_line" == *"docker-compose.podman.yml"* ]]
+  [[ "$pull_line" == *"myrepo.also.yml"* ]]
+  local podman_pos also_pos
+  podman_pos="${pull_line%%docker-compose.podman.yml*}"
+  also_pos="${pull_line%%myrepo.also.yml*}"
+  [ "${#podman_pos}" -lt "${#also_pos}" ]
+}
+
+@test "--down/--logs/--shell include the --also overlay when present" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  : > "$FAKE_DOCKER_LOG"
+
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE 'compose .*myrepo\.also\.yml.*down' "$FAKE_DOCKER_LOG"
+}
+
+# --- --exec (non-interactive one-shot run) ----------------------------------
+
+@test "--exec runs opencode run non-interactively (-i, not -t) and tears the stack down" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "summarize the TODOs" "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-i opencode-myrepo opencode run summarize the TODOs$' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .*-it .*opencode run' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec requires a <prompt> argument" {
+  seed_env
+  run_launcher --exec
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--exec requires a"* ]]
+}
+
+@test "--exec conflicts with --detach" {
+  seed_env
+  run_launcher --exec "hi" --detach "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--exec and --detach conflict"* ]]
+
+  run_launcher --detach --exec "hi" "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--exec and --detach conflict"* ]]
+}
+
+@test "--exec propagates opencode run's exit code and still tears down" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_EXEC_RC=7 run_launcher --exec "do the thing" "$repo"
+  [ "$status" -eq 7 ]
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec --persist skips teardown (and stays quiet on success)" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  run_launcher --exec "hi" --persist "$repo"
+  [ "$status" -eq 0 ]
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+  # A successful --exec prints only opencode's answer; the launcher's own
+  # notices (this one included) are buffered and dropped, not shown.
+  [[ "$output" != *"--persist: leaving"* ]]
+}
+
+@test "--exec --persist still propagates a nonzero exit code" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_EXEC_RC=3 run_launcher --exec "hi" --persist "$repo"
+  [ "$status" -eq 3 ]
+  ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec --continue prepends -c to the opencode run args, ahead of the prompt" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "summarize" --continue "$repo"
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*opencode-myrepo opencode run -c summarize$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec works together with --also" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --exec "hi" --also "$liba" "$repo"
+  [ "$status" -eq 0 ]
+  # The overlay is still wired in (asserted via the compose files); the "also:"
+  # notice itself is a success-time diagnostic, so it's suppressed, not printed.
+  grep -qE 'compose .*myrepo\.also\.yml.*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec is quiet on success: boot chatter is suppressed" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "hi" "$repo"
+  [ "$status" -eq 0 ]
+  # On success the launcher emits nothing of its own — no `2>/dev/null` needed;
+  # the boot chatter is buffered and discarded (it's replayed only on failure,
+  # covered by the failure test below).
+  [[ "$output" != *"project: opencode-myrepo"* ]]
+  [[ "$output" != *"pulling images"* ]]
+  [[ "$output" != *"exec: running"* ]]
+}
+
+@test "--exec forwards genuinely piped stdin through to opencode run" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local infile="$BATS_TEST_TMPDIR/in.txt"
+  printf 'PIPED-CONTEXT' > "$infile"
+  local slog="$BATS_TEST_TMPDIR/exec-stdin.log"
+  # stdin is a regular file (not a TTY): the launcher must forward it, so the
+  # (drain-emulating) fake opencode receives exactly the piped bytes.
+  export FAKE_DOCKER_EXEC_DRAIN_STDIN=1 FAKE_DOCKER_EXEC_STDIN_LOG="$slog"
+  run_launcher --exec "summarize" "$repo" < "$infile"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$slog")" = "PIPED-CONTEXT" ]
+}
+
+@test "--exec success: stdout is ONLY opencode's answer, and nothing hits stderr" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Fake opencode: answer on stdout, project-id noise (x2) + a real diagnostic
+  # on stderr. Capture the launcher's stdout in $output and its stderr in a file
+  # so we can assert on each stream independently.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1
+  run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 0 ]
+  # stdout is EXACTLY opencode's answer — no launcher chatter, no opencode log.
+  [ "$output" = "ANSWER-MARKER" ]
+  # On success the buffered diagnostics are discarded: stderr is empty, so the
+  # user gets a clean answer without needing `2>/dev/null`.
+  [ ! -s "$errfile" ]
+}
+
+@test "--exec failure: answer still on stdout, buffered diagnostics replayed to stderr, rc preserved" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Same split output, but opencode exits non-zero this time.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1 FAKE_DOCKER_EXEC_RC=7
+  run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 7 ]
+  # opencode's own exit code is preserved, and whatever it wrote to stdout stays.
+  [ "$output" = "ANSWER-MARKER" ]
+  # Because the run FAILED, the buffer is replayed to stderr: opencode's logs
+  # (unfiltered — the noise rides along) AND the launcher's boot chatter.
+  local err; err="$(cat "$errfile")"
+  [[ "$err" == *"No .git found"* ]]
+  [[ "$err" == *"REAL-STDERR-DIAGNOSTIC"* ]]
+  [[ "$err" == *"project: opencode-myrepo"* ]]
+}
+
+@test "--exec does not hang when the launcher is attached to an interactive TTY" {
+  command -v python3 >/dev/null 2>&1 || skip "python3 required for the PTY harness"
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  # Reproduce the original hang: a fake `opencode run` that drains stdin, driven
+  # under a genuine, never-closing PTY on the launcher's stdin (see pty-run.py).
+  # The fix must feed opencode /dev/null for a TTY so the drain sees EOF; without
+  # it the drain blocks forever and the PTY harness times out (status 124).
+  export FAKE_DOCKER_EXEC_DRAIN_STDIN=1
+  run python3 "$REPO_ROOT/tests/pty-run.py" 20 \
+    bash "$SANDBOX/start.sh" --exec "hi" "$repo"
+  [ "$status" -ne 124 ]   # 124 == the harness timed out => the hang is back
+  [ "$status" -eq 0 ]
+  grep -qE '^exec .*-i opencode-myrepo opencode run hi$' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+# --- --status: --also mounts + MCP servers ----------------------------------
+
+@test "--status lists --also mounts from the generated overlay" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local liba; liba="$(make_repo_arg "liba")"
+  run_launcher --detach --also "${liba}:rw" "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"also: ${liba} -> /workspace-extra/liba (read-write)"* ]]
+}
+
+@test "--status shows no also: line when there is no overlay" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"also:"* ]]
+}
+
+@test "--status shows the mcps line when running and MCP servers are configured" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    FAKE_DOCKER_MCP_OUTPUT="bitbucket, jira" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mcps:    bitbucket, jira"* ]]
+}
+
+@test "--status shows '(none configured)' when running with an empty MCP list" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    FAKE_DOCKER_MCP_OUTPUT="" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mcps:    (none configured)"* ]]
+}
+
+@test "--status shows no mcps line when the stack is down" {
+  seed_env
+  local repo; repo="$(make_repo_arg)"
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="" run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"mcps:"* ]]
+}
+
+@test "--status shows no mcps line when the jq probe fails (best-effort)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-myrepo	running(3)" \
+    FAKE_DOCKER_MCP_RC=1 \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"mcps:"* ]]
+}
+
+# --- launcher self-update check ----------------------------------------------
+
+@test "boot prints the update nudge when the launcher checkout is behind origin" {
+  seed_env
+  make_sandbox_git_repo_behind 1
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"launcher update available: 1 commit(s) behind origin — git pull to update"* ]]
+}
+
+@test "boot stays silent when the launcher checkout is in sync with origin" {
+  seed_env
+  make_sandbox_git_repo_behind 0
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"launcher update available"* ]]
+}
+
+@test "boot stays silent when the launcher checkout isn't a git repo at all" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"launcher update available"* ]]
+}
+
+@test "OC_SKIP_UPDATE_CHECK=1 suppresses the boot nudge even when behind" {
+  seed_env
+  make_sandbox_git_repo_behind 1
+  OC_SKIP_UPDATE_CHECK=1 run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"launcher update available"* ]]
+}
+
+@test "--doctor: PASSes 'launcher up to date' when in sync" {
+  seed_env_doctor
+  make_sandbox_git_repo_behind 0
+  run_launcher --doctor
+  [[ "$output" == *"[PASS] launcher up to date"* ]]
+}
+
+@test "--doctor: WARNs (never FAILs) the commit count when behind" {
+  seed_env_doctor
+  make_sandbox_git_repo_behind 2
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] launcher update check"* ]]
+  [[ "$output" == *"2 commit(s) behind origin — git pull"* ]]
+}
+
+@test "--doctor: a neutral skipped WARN when the checkout isn't a git repo" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] launcher update check"* ]]
+  [[ "$output" == *"skipped (no upstream/offline)"* ]]
 }

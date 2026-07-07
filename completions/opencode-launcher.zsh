@@ -25,6 +25,8 @@ _opencode_launcher() {
     '--podman:force the Podman (keep-id userns) overlay'
     '--tui:attach the TUI (default; back-compat no-op)'
     '--open:open the web UI URL in your default browser'
+    '--also:bind-mount an extra host folder at /workspace-extra/<name> (path[:rw], repeatable)'
+    '--exec:boot, run a one-shot prompt non-interactively, tear down, exit with its rc'
     '--doctor:run environment checks and print a PASS/WARN/FAIL report'
     '--status:report on running launcher stacks'
     '--down:tear down the stack for a repo path'

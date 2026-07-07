@@ -82,6 +82,11 @@ cmd_status() {
     info "resume:  ./start.sh $repo_arg"
   fi
 
+  # --also extra mounts, parsed back out of the generated overlay (if this
+  # project was last booted with any). Shown regardless of up/down — it
+  # reports what the NEXT boot will reuse, same as the image digest below.
+  also_mount_lines "$(also_mounts_from_overlay "$slug")"
+
   # Last-recorded image digest for this project (written by a previous boot's
   # report_digest_update). Read-only — just shows what was last seen, never
   # pulls or inspects anything live.
@@ -91,11 +96,53 @@ cmd_status() {
     last_digest="$(cat "$digest_file" 2>/dev/null || true)"
     [ -n "$last_digest" ] && info "image:   $last_digest (as of last boot)"
   fi
+
+  # MCP servers the image actually wired up — entirely best-effort, and only
+  # meaningful while the container is running (a down container can't be
+  # exec'd into). Any failure (no jq, exec fails, file missing) prints
+  # nothing, never an error — see mcp_status_line.
+  #
+  # NOTE: as with write_project_env, the LAST statement of this function must
+  # never be a bare `[ cond ] && cmd` (or an `if` whose only branch ends in
+  # one) — under set -euo pipefail, cmd_status is called as a bare statement
+  # in main() (before its own `return 0`), so a false/short-circuited `&&`
+  # here would abort the whole script on the (common!) down/no-mcps case
+  # rather than just skipping the print. `if ... fi` returns 0 either way.
+  if [ -n "$running" ]; then
+    local mcps_line
+    mcps_line="$(mcp_status_line "$project_name")"
+    if [ -n "$mcps_line" ]; then
+      info "$mcps_line"
+    fi
+  fi
 }
 
-# cmd_down REPO_ARG — re-derive the same project boot would, then `compose
+# mcp_status_line PROJECT_NAME — echo "mcps:    <comma-separated names>" (or
+# "mcps:    (none configured)") read from the running PROJECT_NAME container's
+# own /home/dev/.config/opencode/opencode.json via `jq`, or nothing at all on
+# ANY failure (container gone, no jq in the image, file missing, malformed
+# JSON, etc.) — this is a best-effort convenience, never an error condition.
+# The `|| rc=$?` idiom keeps this set -e safe regardless of caller context.
+mcp_status_line() {
+  local project_name="$1" out rc=0
+  out="$(docker exec "$project_name" jq -r '(.mcp // {}) | keys | join(", ")' \
+    /home/dev/.config/opencode/opencode.json 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  if [ -n "$out" ]; then
+    printf 'mcps:    %s' "$out"
+  else
+    printf 'mcps:    (none configured)'
+  fi
+}
+
+# cmd_down REPO_ARG — reuse the recorded per-project settings, then `compose
 # down`. Never requires .env secrets to be filled in; gracefully no-ops when
-# there's no .env at all (nothing could have been started).
+# there's no .env at all (nothing could have been started). Reuses
+# .envs/<slug>.env VERBATIM when it already exists — via
+# project_env_for_management, it does NOT recompute the port; down needs the
+# exact values the stack was booted with, not a fresh guess (see
+# resolve_project_port in lib/project.sh for why re-deriving here would be
+# wrong: another process could have taken the recorded port in the meantime).
 cmd_down() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -112,9 +159,9 @@ cmd_down() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   info "tearing down $PROJECT_NAME ..."
   if "${COMPOSE[@]}" down; then
@@ -133,10 +180,13 @@ project_running() {
     | awk -F'\t' -v p="$project_name" '$1==p{found=1} END{exit !found}'
 }
 
-# cmd_logs REPO_ARG — re-derive the same project boot would, then tail its
+# cmd_logs REPO_ARG — reuse the recorded per-project settings, then tail its
 # compose logs (follow). Never requires .env secrets, never pulls an image,
 # never attaches the TUI. Gracefully no-ops (not an error) when nothing is
-# running for this project.
+# running for this project. Read-only: via project_env_for_management, this
+# never rewrites an existing .envs/<slug>.env (only generates one, once, if
+# it's missing) — a --logs call must never perturb the port a running stack
+# is actually using.
 cmd_logs() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -153,9 +203,9 @@ cmd_logs() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   if ! project_running "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to tail. Start it with ./start.sh $repo_arg"
@@ -166,10 +216,12 @@ cmd_logs() {
   "${COMPOSE[@]}" logs -f
 }
 
-# cmd_shell REPO_ARG — re-derive the same project boot would, then drop into
+# cmd_shell REPO_ARG — reuse the recorded per-project settings, then drop into
 # an interactive shell inside the running opencode container as the `dev`
 # user rooted at /workspace. Never requires .env secrets, never pulls an
 # image. Gracefully no-ops (not an error) when the container isn't running.
+# Read-only: via project_env_for_management, this never rewrites an existing
+# .envs/<slug>.env (only generates one, once, if it's missing).
 cmd_shell() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
@@ -186,9 +238,9 @@ cmd_shell() {
     return 0
   fi
 
-  local SLUG PORT PORT_OK PROJECT_ENV PROJECT_NAME
+  local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  derive_project_settings "$repo_path"
+  project_env_for_management "$repo_path"
 
   if ! project_running "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to shell into. Start it with ./start.sh $repo_arg"

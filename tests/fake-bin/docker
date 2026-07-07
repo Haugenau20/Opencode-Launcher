@@ -20,11 +20,51 @@
 #   FAKE_DOCKER_EXEC_PROBE_RC     rc for the `sh -c 'command -v bash'` probe
 #                                  --shell runs to pick bash vs sh    (default
 #                                  0 == bash is present)
+#   FAKE_DOCKER_MCP_RC            rc for the `docker exec ... jq ...` MCP-status
+#                                  probe --status runs on a running stack
+#                                  (default 0)
+#   FAKE_DOCKER_MCP_OUTPUT        stdout for that same jq probe — the
+#                                  comma-joined MCP key list, e.g. "bitbucket,
+#                                  jira" (default "" == empty/none configured,
+#                                  as long as FAKE_DOCKER_MCP_RC is 0)
+#   FAKE_DOCKER_EXEC_DRAIN_STDIN   when non-empty, an `opencode run` exec drains
+#                                  its stdin (emulating the real opencode) —
+#                                  blocks until EOF, so it hangs if handed a
+#                                  never-closing terminal (default "" == off)
+#   FAKE_DOCKER_EXEC_STDIN_LOG     file the drained `opencode run` stdin is
+#                                  written to when FAKE_DOCKER_EXEC_DRAIN_STDIN
+#                                  is on (default /dev/null == discarded)
+#   FAKE_DOCKER_EXEC_EMIT_NOISE    when non-empty, an `opencode run` exec prints
+#                                  ANSWER-MARKER to stdout and, to stderr, the
+#                                  "[project-id] No .git found ..." noise (twice)
+#                                  plus REAL-STDERR-DIAGNOSTIC — for the --exec
+#                                  stderr-noise-filter test (default "" == off)
 #   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`       (default "Docker version 99.0.0-fake")
 #   FAKE_DOCKER_IMAGE_INSPECT_RC      rc for `docker image inspect`       (default 0)
 #   FAKE_DOCKER_IMAGE_DIGEST          RepoDigests[0] stdout for `docker image
 #                                      inspect --format '{{index .RepoDigests 0}}'`
 #                                      (default: a stable fake digest)
+#   FAKE_DOCKER_IMAGE_LABEL           org.opencontainers.image.version stdout for
+#                                      `docker image inspect --format '{{index
+#                                      .Config.Labels "org.opencontainers.image.version"}}'`
+#                                      (default ""  == old image, no label)
+#   FAKE_DOCKER_PS_OUTPUT         stdout for `docker ps --format {{.Names}}`
+#                                  (default ""): one container name per line,
+#                                  used by publish_container_running (sticky
+#                                  port resolution) to decide which project's
+#                                  own oc-publish container is currently up.
+#   FAKE_DOCKER_RUN_RC            rc for `docker run --rm --entrypoint ...`
+#                                  (default 0 — set nonzero to simulate the
+#                                  entrypoint itself failing)
+#   FAKE_DOCKER_MANIFEST          stdout for `--entrypoint cat .../manifest.json`
+#                                  (default "" == old image, no manifest.json)
+#   FAKE_DOCKER_CHANGELOG         fake /etc/opencode/CHANGELOG.md content for
+#                                  `--entrypoint sed .../CHANGELOG.md` — piped
+#                                  through a REAL local `sed` with the same
+#                                  arguments the caller passed, so the caller's
+#                                  sed expression is genuinely exercised against
+#                                  this fixture rather than stubbed wholesale
+#                                  (default "" == old image, no CHANGELOG.md)
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
@@ -74,20 +114,115 @@ EOF
     ;;
   exec)
     # Distinguish --shell's `sh -c 'command -v bash'` capability probe (no -it,
-    # no -u dev) from the real interactive exec, so tests can control each
-    # independently (e.g. "container running, but no bash => falls back to sh").
+    # no -u dev) from the `jq` MCP-status probe (--status on a running stack)
+    # from the real interactive exec (TUI attach / --exec's non-interactive
+    # `opencode run`), so tests can control each independently (e.g.
+    # "container running, but no bash => falls back to sh").
     case "$*" in
       *"sh -c"*"command -v bash"*) exit "${FAKE_DOCKER_EXEC_PROBE_RC:-0}" ;;
+      *" jq "*)
+        [ "${FAKE_DOCKER_MCP_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_MCP_RC}"
+        [ -n "${FAKE_DOCKER_MCP_OUTPUT:-}" ] && printf '%s\n' "${FAKE_DOCKER_MCP_OUTPUT}"
+        exit 0 ;;
+      *"opencode run"*)
+        # Optionally emulate the real `opencode run`, which drains stdin for any
+        # piped prompt context. This is what makes --exec hang when the launcher
+        # hands it a never-closing terminal: the drain below blocks until EOF.
+        # The --exec stdin tests flip this on to prove the launcher feeds an
+        # EOF-terminated stdin (recorded to FAKE_DOCKER_EXEC_STDIN_LOG) instead.
+        if [ -n "${FAKE_DOCKER_EXEC_DRAIN_STDIN:-}" ]; then
+          cat > "${FAKE_DOCKER_EXEC_STDIN_LOG:-/dev/null}"
+        fi
+        # Optionally emulate opencode's real output split: the model's answer on
+        # stdout, and on stderr the harmless "[project-id] No .git found ..."
+        # project-id fallback (twice, like the real one) plus a genuine
+        # diagnostic. Lets the --exec noise-filter test prove the launcher drops
+        # only the noise, keeping the answer (stdout) and real stderr intact.
+        if [ -n "${FAKE_DOCKER_EXEC_EMIT_NOISE:-}" ]; then
+          printf 'ANSWER-MARKER\n'
+          printf '[project-id] No .git found at /workspace, using path hash\n' >&2
+          printf '[project-id] No .git found at /workspace, using path hash\n' >&2
+          printf 'REAL-STDERR-DIAGNOSTIC\n' >&2
+        fi
+        exit "${FAKE_DOCKER_EXEC_RC:-0}" ;;
     esac
     exit "${FAKE_DOCKER_EXEC_RC:-0}"
+    ;;
+  ps)
+    printf '%s' "${FAKE_DOCKER_PS_OUTPUT:-}"
+    [ -n "${FAKE_DOCKER_PS_OUTPUT:-}" ] && printf '\n'
+    exit 0
     ;;
   image)
     if [ "${2:-}" = inspect ]; then
       [ "${FAKE_DOCKER_IMAGE_INSPECT_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_IMAGE_INSPECT_RC}"
-      printf '%s\n' "${FAKE_DOCKER_IMAGE_DIGEST:-reg.test.local/opencode@sha256:fake0000000000000000000000000000000000000000000000000000000000}"
+      # Distinguish which --format template (if any) was requested, so one
+      # stub serves get_image_digest (RepoDigests), image_version_label
+      # (Config.Labels) and image_manifest's plain existence probe (no
+      # --format at all — image_manifest only cares about the exit code).
+      case "$*" in
+        *"Config.Labels"*)
+          printf '%s\n' "${FAKE_DOCKER_IMAGE_LABEL:-}"
+          ;;
+        *"RepoDigests"*)
+          printf '%s\n' "${FAKE_DOCKER_IMAGE_DIGEST:-reg.test.local/opencode@sha256:fake0000000000000000000000000000000000000000000000000000000000}"
+          ;;
+      esac
       exit 0
     fi
     exit 0
+    ;;
+  run)
+    # `docker run --rm --entrypoint ENTRYPOINT IMAGE ARGS...` — used by
+    # lib/manifest.sh to read /etc/opencode/manifest.json (--entrypoint cat)
+    # and to extract a CHANGELOG.md section (--entrypoint sed). Simulated
+    # locally against FAKE_DOCKER_MANIFEST / FAKE_DOCKER_CHANGELOG instead of
+    # a real container filesystem.
+    [ "${FAKE_DOCKER_RUN_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_RUN_RC}"
+    shift # drop "run"
+    _entrypoint=""
+    _rest=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rm) shift ;;
+        --entrypoint) _entrypoint="$2"; shift 2 ;;
+        *) _rest+=("$1"); shift ;;
+      esac
+    done
+    # _rest[0] is IMAGE (unused — the fixture is chosen by entrypoint/path,
+    # not by which image was named); the remainder are the entrypoint's own
+    # argv, ending in the in-container path it reads.
+    _entrypoint_args=("${_rest[@]:1}")
+    case "$_entrypoint" in
+      cat)
+        case "${_entrypoint_args[*]:-}" in
+          *manifest.json) printf '%s\n' "${FAKE_DOCKER_MANIFEST:-}" ;;
+        esac
+        exit 0
+        ;;
+      sed)
+        # Substitute a real temp file holding FAKE_DOCKER_CHANGELOG for the
+        # in-container CHANGELOG.md path (the last arg), then run the actual
+        # `sed` with the same expression the caller passed — this exercises
+        # the caller's sed script for real rather than stubbing its output.
+        _last=$(( ${#_entrypoint_args[@]} - 1 ))
+        case "${_entrypoint_args[$_last]:-}" in
+          */CHANGELOG.md)
+            _tmp="$(mktemp)"
+            printf '%s\n' "${FAKE_DOCKER_CHANGELOG:-}" > "$_tmp"
+            _entrypoint_args[$_last]="$_tmp"
+            sed "${_entrypoint_args[@]}"
+            _rc=$?
+            rm -f "$_tmp"
+            exit "$_rc"
+            ;;
+        esac
+        exit 1
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
     ;;
   --version)
     printf '%s\n' "${FAKE_DOCKER_VERSION_OUTPUT:-Docker version 99.0.0-fake}"

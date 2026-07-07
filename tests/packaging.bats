@@ -26,7 +26,7 @@ setup() {
   run cat "$REPO_ROOT/completions/opencode-launcher.bash"
   [ "$status" -eq 0 ]
   for flag in --doctor --show-allowlist --logs --shell --status --down --stop \
-              --reconfigure --continue --persist --detach --podman --open --help; do
+              --reconfigure --continue --persist --detach --podman --open --also --exec --help; do
     [[ "$output" == *"$flag"* ]]
   done
 }
@@ -56,7 +56,7 @@ setup() {
   run cat "$REPO_ROOT/completions/opencode-launcher.zsh"
   [ "$status" -eq 0 ]
   for flag in --doctor --show-allowlist --logs --shell --status --down --stop \
-              --reconfigure --continue --persist --detach --podman --open --help; do
+              --reconfigure --continue --persist --detach --podman --open --also --exec --help; do
     [[ "$output" == *"$flag"* ]]
   done
 }

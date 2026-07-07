@@ -37,6 +37,29 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    Keep them sharing the one variable so the publisher can never drift to a
    different/absent tag and silently break `localhost:4096`.
 
+## Shared env-var contracts (launcher sets, image consumes)
+
+These are behavioural contracts, not compose blocks to compare line-for-line:
+the launcher produces an env var and the image's entrypoint consumes it. Keep
+the name and semantics in sync across both repos.
+
+- **`OPENCODE_EXTRA_INSTRUCTIONS`** — a space/comma-separated list of absolute
+  *container* paths to extra instruction files. The image's entrypoint appends
+  each to `opencode.json`'s `instructions` array at boot (concatenated with
+  `AGENTS.md`); unset ⇒ no-op. The launcher sets it **only** from the `--also`
+  overlay's `environment:` block, pointing at the generated breadcrumb mounted
+  at `/etc/opencode/also-context.md` (see `lib/also.sh`; the breadcrumb is what
+  makes `--also` folders discoverable to the agent).
+
+  This var is **internal launcher→image plumbing, not a user knob.** It must
+  appear in **neither** the image's `manifest.json` **nor** this launcher's
+  `.env.example`. That symmetry is load-bearing: `manifest_missing_keys`
+  (`lib/manifest.sh`) warns when the image manifest lists an env key this
+  launcher's `.env.example` doesn't — so listing it in the manifest but not
+  `.env.example` would fire a bogus "update your launcher" drift warning, while
+  adding it to `.env.example` would wrongly advertise an internal var as a user
+  setting. Keeping it out of both is the invariant; do not add it to either.
+
 ## File location (a presentation-only delta)
 
 The launcher keeps its compose stack under **`docker/`** (`docker/docker-compose.yml`,
@@ -54,6 +77,26 @@ launcher-only delta, its `dockerfile:` was updated to `docker/Dockerfile.user-pa
 to match the new location. Nothing to mirror.)
 
 ## Intentional launcher-only deltas (not mirrored to the maintainer repo)
+
+- **`--also` extra-mount overlay** (`.envs/<slug>.also.yml` plus its breadcrumb
+  `.envs/<slug>.also-context.md`, generated at boot by `start.sh` — see
+  `lib/also.sh`, not files checked into the repo). Adds `/workspace-extra/<name>`
+  bind mounts (`:ro,z` by default, `:z` for a `--also <path>:rw`) for extra host
+  folders the launcher user wants the agent to read, alongside the main repo at
+  `/workspace`. The **mounts themselves** need nothing from the image — the
+  entrypoint only ever `chown -R`s `/workspace`, never `/workspace-extra`. The
+  repeatable `--also <path>[:rw]` flag, the sticky overlay/breadcrumb files, and
+  `--status` reporting are all launcher-only; do **not** port them back.
+
+  **One caveat vs. the old "no image-side dependency" wording:** making those
+  mounts *discoverable* to the agent does lean on a shared contract. opencode
+  runs with `/workspace` as its project root and never searches siblings, so the
+  launcher writes the breadcrumb (naming each mount and its `/workspace-extra/<name>`
+  path) and points the image at it via `OPENCODE_EXTRA_INSTRUCTIONS` (see the
+  shared-contract section above). The image stays generic — it has no `--also`
+  or `/workspace-extra` knowledge, only "load the instruction files this var
+  names." On an image too old to honor the var, the folders are still mounted
+  and readable, just not advertised.
 
 - **System-package layer** (`docker/docker-compose.user-packages.yml`,
   `docker/Dockerfile.user-packages`, `extra-packages.txt`). A build-time apt layer the
