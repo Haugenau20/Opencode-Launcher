@@ -181,7 +181,13 @@ main() {
     return 0
   fi
 
-  [ -n "$REPO_ARG" ] || { usage; die "missing <host-repo-path>"; }
+  # <host-repo-path> is required for every run EXCEPT a one-shot --exec, which
+  # can run with no repo at all — a fire-and-forget prompt against the LLM with
+  # an empty /workspace (the container gets no local code, but it still boots
+  # and answers). Every other path still requires the repo.
+  if [ -z "$REPO_ARG" ] && [ "$WANT_EXEC" -eq 0 ]; then
+    usage; die "missing <host-repo-path>"
+  fi
 
   # --exec is itself non-interactive (boots, runs one prompt via `docker exec`,
   # tears down, exits with that command's rc) — combining it with --detach
@@ -268,11 +274,24 @@ cmd_run() {
     info "detected Podman (via 'docker --version'); enabling the Podman overlay."
   fi
 
-  # Resolve the repo path to an absolute path.
-  [ -e "$REPO_ARG" ] || die "repo path does not exist: $REPO_ARG"
-  [ -d "$REPO_ARG" ] || die "repo path is not a directory: $REPO_ARG"
-  local REPO_PATH
-  REPO_PATH="$(cd -- "$REPO_ARG" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $REPO_ARG"
+  # Resolve the repo path to an absolute path — or, for a one-shot --exec with
+  # no repo argument, synthesize an empty scratch workspace instead. A NO_REPO
+  # run mounts an empty, launcher-owned directory at /workspace: the container
+  # gets no local code, but it still boots and answers a single prompt. The dir
+  # lives under $ENVS_DIR (gitignored) so it never pollutes the launcher clone,
+  # and we create it ourselves (mkdir -p) so it is owned by the user rather than
+  # created root-owned by docker's bind-mount autocreate.
+  local NO_REPO=0 REPO_PATH
+  if [ -z "$REPO_ARG" ]; then
+    NO_REPO=1
+    mkdir -p "$ENVS_DIR/norepo.workspace"
+    REPO_PATH="$(cd -- "$ENVS_DIR/norepo.workspace" >/dev/null 2>&1 && pwd)" \
+      || die "could not resolve the no-repo scratch workspace"
+  else
+    [ -e "$REPO_ARG" ] || die "repo path does not exist: $REPO_ARG"
+    [ -d "$REPO_ARG" ] || die "repo path is not a directory: $REPO_ARG"
+    REPO_PATH="$(cd -- "$REPO_ARG" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $REPO_ARG"
+  fi
 
   # --- --also: extra repo/folder mounts (read-only by default) --------------
   # Validate/resolve now (needs only REPO_PATH, not the per-project SLUG) so a
@@ -404,7 +423,13 @@ cmd_run() {
 
   # --- 5. compute per-project settings --------------------------------------
   local SLUG PORT
-  SLUG="$(derive_slug "$REPO_PATH")"
+  if [ "$NO_REPO" -eq 1 ]; then
+    # Fixed slug for no-repo runs (they all share one throwaway project) rather
+    # than deriving the scratch dir's basename.
+    SLUG="norepo"
+  else
+    SLUG="$(derive_slug "$REPO_PATH")"
+  fi
 
   # Port: sticky per project via resolve_project_port (shared with
   # derive_project_settings in lib/project.sh — see there for the full rule).
@@ -540,7 +565,11 @@ cmd_run() {
   # --- 8. report ------------------------------------------------------------
   echo
   info "project: $PROJECT_NAME"
-  info "repo:    $REPO_PATH  ->  /workspace"
+  if [ "$NO_REPO" -eq 1 ]; then
+    info "repo:    (none — empty /workspace; one-shot run, no repo mounted)"
+  else
+    info "repo:    $REPO_PATH  ->  /workspace"
+  fi
   # The web-UI lines only make sense when oc-publish is up (see SERVE_WEB_UI):
   # a one-shot --exec publishes no port, so printing a URL/workaround for it
   # would be misleading.

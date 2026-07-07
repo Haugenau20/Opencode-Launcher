@@ -12,7 +12,7 @@ usage() {
 Usage:
   ./start.sh [--continue] [--persist] [--detach] [--podman] [--open]
               [--also <path>[:rw]]... <host-repo-path>
-  ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... <host-repo-path>
+  ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... [<host-repo-path>]
   ./start.sh --doctor [<host-repo-path>]
   ./start.sh --status [<host-repo-path>]
   ./start.sh --down|--stop <host-repo-path>
@@ -50,6 +50,9 @@ Run options:
              UI, no TUI), print the answer, tear down, and exit with its code —
              for scripting/CI. Only the answer prints on success; diagnostics
              are replayed to stderr on failure. --persist keeps the stack up.
+             <host-repo-path> is OPTIONAL here: omit it to fire a one-shot prompt
+             against an empty /workspace (no repo mounted — the container gets no
+             local code, but still boots and answers).
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
