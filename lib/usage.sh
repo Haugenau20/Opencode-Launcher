@@ -53,15 +53,18 @@ Run options:
              and --exec paths; --status <repo> lists the mounts a stack was
              last booted with.
   --exec "<prompt>"
-             Boot the stack (no TUI attached), run <prompt> non-interactively
-             via `opencode run` inside the container, print its output, tear
-             the stack down (unless --persist is also given), and exit with
-             that command's own exit code — for scripting/CI. --continue
-             prepends opencode's own -c (resume most recent session) ahead of
-             the prompt. The normal boot output (pull/up progress etc.) still
-             prints to stdout alongside it; a scripting caller that wants only
-             the command's own output can rely on the exit code and/or `tail`
-             the last block of output.
+             Boot a minimal stack (just the agent + its egress proxy — no web
+             UI, no TUI attached), run <prompt> non-interactively via
+             `opencode run` inside the container, tear the stack down (unless
+             --persist is also given), and exit with that command's own exit
+             code — for scripting/CI. --continue prepends opencode's own -c
+             (resume most recent session) ahead of the prompt. On success it
+             prints EXACTLY opencode's answer — all launcher/opencode chatter
+             is buffered and dropped; on failure that buffer is replayed to
+             stderr so you can see what went wrong. While the model works, a
+             spinner on the controlling terminal confirms it's running (no
+             spinner when there's no terminal, e.g. piped/CI). --persist keeps
+             the full stack (web UI included) running afterward instead.
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):

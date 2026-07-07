@@ -2050,6 +2050,46 @@ seed_env_doctor() {
   grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
 }
 
+@test "--exec (teardown) boots only opencode — no web-UI publisher — and scopes the pull" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "hi" "$repo"
+  [ "$status" -eq 0 ]
+  # Only the agent (+ its squid dependency) comes up; NOT the whole stack, so
+  # oc-publish (the host-port web-UI publisher) is never started.
+  grep -qE 'compose .* up -d opencode$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* up -d$' "$FAKE_DOCKER_LOG"
+  # The pull is scoped to the two images actually needed, not a blanket pull.
+  grep -qE 'compose .* pull opencode squid$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* pull$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec --persist boots the FULL stack (web UI included)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "hi" --persist "$repo"
+  [ "$status" -eq 0 ]
+  # --persist keeps a resumable environment, so the whole stack comes up.
+  grep -qE 'compose .* up -d$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* up -d opencode$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec (teardown) omits the web-UI URL/note, even in the failure replay" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Force a nonzero run so the buffered boot chatter is replayed to stderr, then
+  # assert it carries the normal boot lines but NOT the web-UI URL/workaround —
+  # a one-shot --exec publishes no port, so those lines are suppressed.
+  export FAKE_DOCKER_EXEC_RC=7
+  run bash -c 'bash "$1" --exec "hi" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 7 ]
+  local err; err="$(cat "$errfile")"
+  [[ "$err" == *"project: opencode-myrepo"* ]]
+  [[ "$err" != *"web UI:"* ]]
+  [[ "$err" != *"14445"* ]]
+}
+
 # --- --status: --also mounts + MCP servers ----------------------------------
 
 @test "--status lists --also mounts from the generated overlay" {

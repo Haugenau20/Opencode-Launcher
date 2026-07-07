@@ -1501,3 +1501,38 @@ git_repo_pair() {
   [[ "$output" == *"[WARN] launcher update check"* ]]
   [[ "$output" == *"skipped (no upstream/offline)"* ]]
 }
+
+# --- exec spinner (lib/exec.sh) ---------------------------------------------
+# The spinner draws only to OC_EXEC_TTY (default /dev/tty), so it never
+# pollutes --exec's stdout/stderr contract. Point it at a temp file here to
+# drive it without a real terminal; the start/stop lifecycle is what matters.
+
+@test "exec_spinner_start/stop: runs when the target tty is writable, then clears" {
+  local tty="$BATS_TEST_TMPDIR/spin.tty"
+  : > "$tty"
+  OC_EXEC_TTY="$tty" exec_spinner_start "working"
+  # A writable target => a live background spinner recorded in the PID var.
+  [ -n "$OC_EXEC_SPINNER_PID" ]
+  kill -0 "$OC_EXEC_SPINNER_PID"
+  local pid="$OC_EXEC_SPINNER_PID"
+  OC_EXEC_TTY="$tty" exec_spinner_stop
+  # Stop reaps the process and clears the PID var; the process is gone.
+  [ -z "$OC_EXEC_SPINNER_PID" ]
+  ! kill -0 "$pid" 2>/dev/null
+  # Something was drawn to the tty target (frames and/or the clear sequence).
+  [ -s "$tty" ]
+}
+
+@test "exec_spinner_start: no-op (no process) when the tty target isn't writable" {
+  # A path under a nonexistent directory can't be opened for writing.
+  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" run exec_spinner_start "working"
+  [ "$status" -eq 0 ]
+  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" exec_spinner_start "working"
+  [ -z "$OC_EXEC_SPINNER_PID" ]
+}
+
+@test "exec_spinner_stop: safe no-op when no spinner is running" {
+  OC_EXEC_SPINNER_PID=""
+  OC_EXEC_TTY="$BATS_TEST_TMPDIR/spin.tty" run exec_spinner_stop
+  [ "$status" -eq 0 ]
+}

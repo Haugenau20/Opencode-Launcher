@@ -214,9 +214,19 @@ echo "opencode run exited $?"
 printf '%s\n' "$answer"
 ```
 
+A one-shot run only needs the agent itself, so `--exec` boots a **minimal
+stack** — just the `opencode` container and its `squid` egress proxy. The web
+UI publisher (`oc-publish`) is skipped: serving a browser UI for a single
+prompt is wasted work, and skipping it means a faster boot and no published
+port. While the model works, a small **spinner** on your terminal confirms
+something is happening (the run can take a while, and on success the launcher
+is otherwise silent); it's skipped automatically when there's no terminal to
+draw on (piped/CI).
+
 - `--continue` prepends opencode's own `-c` (resume the most recent session)
   ahead of the prompt.
-- `--persist` skips the teardown, leaving the stack running afterward.
+- `--persist` skips the teardown and boots the **full** stack (web UI
+  included), leaving a resumable environment running afterward.
 - `--also` works exactly as it does on a normal run.
 - Conflicts with `--detach` — both are already non-interactive, so combining
   them is a contradiction rather than a useful combination.
