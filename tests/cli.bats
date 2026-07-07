@@ -1933,13 +1933,15 @@ seed_env_doctor() {
   grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
 }
 
-@test "--exec --persist skips teardown" {
+@test "--exec --persist skips teardown (and stays quiet on success)" {
   seed_env
   local repo; repo="$(make_repo_arg)"
   run_launcher --exec "hi" --persist "$repo"
   [ "$status" -eq 0 ]
   ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
-  [[ "$output" == *"--persist: leaving"* ]]
+  # A successful --exec prints only opencode's answer; the launcher's own
+  # notices (this one included) are buffered and dropped, not shown.
+  [[ "$output" != *"--persist: leaving"* ]]
 }
 
 @test "--exec --persist still propagates a nonzero exit code" {
@@ -1964,17 +1966,22 @@ seed_env_doctor() {
   local liba; liba="$(make_repo_arg "liba")"
   run_launcher --exec "hi" --also "$liba" "$repo"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"also: ${liba} -> /workspace-extra/liba (read-only)"* ]]
+  # The overlay is still wired in (asserted via the compose files); the "also:"
+  # notice itself is a success-time diagnostic, so it's suppressed, not printed.
   grep -qE 'compose .*myrepo\.also\.yml.*down' "$FAKE_DOCKER_LOG"
 }
 
-@test "--exec still prints the normal boot output (not silenced)" {
+@test "--exec is quiet on success: boot chatter is suppressed" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   run_launcher --exec "hi" "$repo"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"project: opencode-myrepo"* ]]
-  [[ "$output" == *"pulling images"* ]]
+  # On success the launcher emits nothing of its own — no `2>/dev/null` needed;
+  # the boot chatter is buffered and discarded (it's replayed only on failure,
+  # covered by the failure test below).
+  [[ "$output" != *"project: opencode-myrepo"* ]]
+  [[ "$output" != *"pulling images"* ]]
+  [[ "$output" != *"exec: running"* ]]
 }
 
 @test "--exec forwards genuinely piped stdin through to opencode run" {
@@ -1991,7 +1998,7 @@ seed_env_doctor() {
   [ "$(cat "$slog")" = "PIPED-CONTEXT" ]
 }
 
-@test "--exec stdout carries ONLY opencode's stdout; all other output goes to stderr" {
+@test "--exec success: stdout is ONLY opencode's answer, and nothing hits stderr" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   local errfile="$BATS_TEST_TMPDIR/exec.err"
@@ -2001,18 +2008,29 @@ seed_env_doctor() {
   export FAKE_DOCKER_EXEC_EMIT_NOISE=1
   run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
   [ "$status" -eq 0 ]
-  # stdout is EXACTLY opencode's stdout — the answer, and nothing else: no
-  # launcher boot chatter and no opencode stderr log (whatever its wording).
+  # stdout is EXACTLY opencode's answer — no launcher chatter, no opencode log.
   [ "$output" = "ANSWER-MARKER" ]
-  [[ "$output" != *"project: opencode-myrepo"* ]]
-  [[ "$output" != *"exec: running"* ]]
-  [[ "$output" != *"No .git found"* ]]
-  # stderr keeps everything else, unfiltered: launcher chatter, opencode's own
-  # logs (the noise is separated, not scrubbed), and real diagnostics.
-  run cat "$errfile"
-  [[ "$output" == *"project: opencode-myrepo"* ]]
-  [[ "$output" == *"No .git found"* ]]
-  [[ "$output" == *"REAL-STDERR-DIAGNOSTIC"* ]]
+  # On success the buffered diagnostics are discarded: stderr is empty, so the
+  # user gets a clean answer without needing `2>/dev/null`.
+  [ ! -s "$errfile" ]
+}
+
+@test "--exec failure: answer still on stdout, buffered diagnostics replayed to stderr, rc preserved" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Same split output, but opencode exits non-zero this time.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1 FAKE_DOCKER_EXEC_RC=7
+  run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 7 ]
+  # opencode's own exit code is preserved, and whatever it wrote to stdout stays.
+  [ "$output" = "ANSWER-MARKER" ]
+  # Because the run FAILED, the buffer is replayed to stderr: opencode's logs
+  # (unfiltered — the noise rides along) AND the launcher's boot chatter.
+  local err; err="$(cat "$errfile")"
+  [[ "$err" == *"No .git found"* ]]
+  [[ "$err" == *"REAL-STDERR-DIAGNOSTIC"* ]]
+  [[ "$err" == *"project: opencode-myrepo"* ]]
 }
 
 @test "--exec does not hang when the launcher is attached to an interactive TTY" {

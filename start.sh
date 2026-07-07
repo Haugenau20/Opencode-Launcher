@@ -196,21 +196,27 @@ main() {
 
   # Everything validated; hand off to the boot flow with the parsed options.
   #
-  # --exec output contract: stdout must be EXACTLY `opencode run`'s stdout (the
-  # model's answer), so `RESULT=$(./start.sh --exec "…" repo)` captures the
-  # answer and nothing else — regardless of what the launcher or opencode print
-  # around it. opencode already splits its streams (answer -> stdout, logs ->
-  # stderr, and in piped/non-TTY mode it emits only the final text), so we don't
-  # match on message content at all; we just stop stepping on stdout. Save the
-  # real stdout as fd3, then run the whole boot flow with its stdout folded onto
-  # stderr (1>&2) so every info()/compose/teardown line lands on stderr; cmd_run
-  # sends opencode's stdout back out on fd3. opencode's own stderr stays on
-  # stderr — visible in a terminal, silence it with `2>/dev/null`. Every other
-  # run keeps the normal streams.
+  # --exec output contract: on success, print EXACTLY `opencode run`'s stdout
+  # (the model's answer) and nothing else — no `2>/dev/null` needed — while a
+  # failure still surfaces its diagnostics. opencode already splits its streams
+  # (answer -> stdout, logs -> stderr, and in piped/non-TTY mode it emits only
+  # the final text), so we never match on message content. We:
+  #   - save the real stdout as fd3 and the real stderr as fd4;
+  #   - run the whole boot flow with its stdout folded onto stderr (1>&2) and
+  #     that stderr captured to a buffer file (2>"$buf"), so every launcher
+  #     info()/warn()/err() line AND every opencode log line lands in the buffer,
+  #     never on the terminal — cmd_run sends opencode's stdout out on fd3;
+  #   - on EXIT, replay the buffer to the real stderr (fd4) ONLY if the run
+  #     failed (non-zero). Clean answer on success; boot errors and a non-zero
+  #     `opencode run` still print their diagnostics. Exit-code driven, so it
+  #     stays correct no matter what the launcher or opencode print.
+  # Every other run keeps the normal streams.
   if [ "$WANT_EXEC" -eq 1 ]; then
-    exec 3>&1
+    exec 3>&1 4>&2
+    OC_EXEC_ERRBUF="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec.$$")"
+    trap 'oc_exec_rc=$?; { [ "$oc_exec_rc" -ne 0 ] && [ -s "$OC_EXEC_ERRBUF" ] && cat "$OC_EXEC_ERRBUF" >&4; }; rm -f "$OC_EXEC_ERRBUF"' EXIT
     cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
-      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}" 1>&2
+      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}" 2>"$OC_EXEC_ERRBUF" 1>&2
   else
     cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
       "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
@@ -568,13 +574,13 @@ cmd_run() {
     # sees an immediate EOF and runs the prompt argument alone.
     #
     # Output isolation: main() has folded the launcher's own stdout onto stderr
-    # for --exec and saved the real stdout as fd3 (see the dispatch there), so
-    # here we send opencode's stdout straight to fd3 (`1>&3`) and leave its
-    # stderr alone. The net effect is that the launcher's stdout carries EXACTLY
-    # opencode's stdout — its answer — while all launcher chatter and every
-    # opencode log line (including the harmless "[project-id] No .git found at
-    # /workspace" fallback) stay on stderr. No message-content matching, so it
-    # stays correct no matter what opencode prints.
+    # for --exec, captured that stderr to a buffer, and saved the real stdout as
+    # fd3 (see the dispatch there). So here we send opencode's stdout straight to
+    # fd3 (`1>&3`) — that's the answer, and the only thing on the real stdout —
+    # and leave its stderr alone: it flows into the same buffer as the launcher
+    # chatter and (on success) is discarded, or (on failure) replayed. Every
+    # opencode log line, including the harmless "[project-id] No .git found at
+    # /workspace" fallback, rides along with it. No message-content matching.
     #
     # rc capture must survive `set -euo pipefail`: guard every step with
     # `|| ...` so a nonzero `opencode run` (or teardown) never aborts the

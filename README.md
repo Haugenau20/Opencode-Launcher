@@ -221,13 +221,25 @@ printf '%s\n' "$answer"
 - Conflicts with `--detach` — both are already non-interactive, so combining
   them is a contradiction rather than a useful combination.
 
-**stdout is exactly `opencode run`'s stdout** — the model's answer, and nothing
-else. Everything the launcher itself prints (pulling/starting the stack,
-teardown) and every line opencode writes to *its* stderr (progress, the
-harmless `No .git found at /workspace` notice when your repo isn't a git repo,
-etc.) go to **stderr**. So `answer="$(./start.sh --exec … repo)"` captures just
-the result, no scraping required; add `2>/dev/null` if you also want to silence
-the diagnostics on your terminal. The exit code is `opencode run`'s own.
+**On success, `--exec` prints exactly `opencode run`'s stdout** — the model's
+answer, and nothing else. Everything the launcher itself prints (pulling/
+starting the stack, teardown) and every line opencode writes to *its* stderr
+(progress, the harmless `No .git found at /workspace` notice when your repo
+isn't a git repo, etc.) is buffered and **discarded on success**, so you get a
+clean answer on your terminal with no `2>/dev/null` and no output scraping:
+
+```bash
+./start.sh --exec "hello" ~/code/your-repo
+# -> Hello! How can I help you today?
+```
+
+**If the run fails** (a boot error, or a non-zero `opencode run`), that buffered
+output is **replayed to stderr** so you can see what went wrong — the launcher
+never fails silently. The exit code is always `opencode run`'s own (or the boot
+error's). This is exit-code driven, not text-matching, so it stays correct no
+matter what the launcher or opencode print. (Successful diagnostics are dropped
+by design; if you need them, capture stdout with `answer="$(…)"` and let the
+launcher's own stderr through, or re-run the boot without `--exec`.)
 
 ## Running more than one repo
 
