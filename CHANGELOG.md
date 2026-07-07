@@ -67,13 +67,18 @@ _Changes to the launcher itself._
   is likewise scoped to the images actually needed, and the web-UI URL/
   workaround notice is suppressed for a one-shot run (there is no web UI to
   point at).
-- `--exec` shows a small **spinner** on the controlling terminal while
-  `opencode run` works. Because a successful `--exec` is otherwise silent
-  (all chatter is buffered away — see 0.10.0), a slow prompt used to look
-  indistinguishable from a hang; the spinner confirms progress. It draws only
-  to the terminal (`/dev/tty`), never to stdout or the captured stderr, so the
-  "answer only on success" contract is untouched, and it's skipped entirely
-  when there's no terminal (piped/CI).
+- `--exec` shows a small **spinner** while it works, so a slow one-shot run
+  no longer looks like a hang (a successful `--exec` is otherwise silent — all
+  chatter is buffered away, see 0.10.0). It starts the instant you hit Enter
+  and animates through the whole boot (pull/up) and the model call, then
+  erases itself and drops the answer a couple of lines below for a clean
+  separation. It's drawn **only to the terminal** (never stdout or the
+  captured stderr) and **only when the launcher is interactive** (a real
+  terminal on stderr) — so a piped/CI run gets no spinner and byte-exact
+  output, and the answer is captured/streamed exactly as before. The answer is
+  briefly buffered so the spinner is guaranteed to clear before the first
+  answer byte prints (`opencode run` emits its text as a final burst, so
+  nothing is lost).
 - `--exec` no longer runs the best-effort launcher self-update check
   (`git fetch`): its output is machine-consumed and the nudge was buffered
   away on success anyway, so the extra network round-trip was pure startup

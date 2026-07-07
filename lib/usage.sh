@@ -61,10 +61,13 @@ Run options:
              (resume most recent session) ahead of the prompt. On success it
              prints EXACTLY opencode's answer — all launcher/opencode chatter
              is buffered and dropped; on failure that buffer is replayed to
-             stderr so you can see what went wrong. While the model works, a
-             spinner on the controlling terminal confirms it's running (no
-             spinner when there's no terminal, e.g. piped/CI). --persist keeps
-             the full stack (web UI included) running afterward instead.
+             stderr so you can see what went wrong. When run interactively a
+             spinner confirms progress from the moment you hit Enter through
+             the whole boot, then erases itself before the answer prints; it is
+             drawn only to the terminal (never stdout/stderr) and only when a
+             terminal is present, so piped/CI output is byte-exact with no
+             spinner at all. --persist keeps the full stack (web UI included)
+             running afterward instead.
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):

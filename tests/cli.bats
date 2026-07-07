@@ -2050,6 +2050,25 @@ seed_env_doctor() {
   grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
 }
 
+@test "--exec on an interactive terminal: spinner draws, answer lands cleanly on its own line" {
+  command -v python3 >/dev/null 2>&1 || skip "python3 required for the PTY harness"
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  # Fake opencode emits the answer on stdout (+ noise on stderr). Under a full
+  # PTY the launcher is interactive, so the spinner runs; capture what the
+  # terminal actually received.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1
+  run python3 "$REPO_ROOT/tests/pty-capture.py" 20 \
+    bash "$SANDBOX/start.sh" --exec "hello" "$repo"
+  [ "$status" -eq 0 ]
+  # A braille spinner glyph (U+28xx -> UTF-8 lead bytes E2 A0..) was drawn.
+  [[ "$output" == *$'\xe2\xa0'* ]]
+  # The answer is present AND starts on its own line — the regression was the
+  # spinner text and the answer ending up smooshed on a single line.
+  [[ "$output" == *"ANSWER-MARKER"* ]]
+  [[ "$output" == *$'\nANSWER-MARKER'* ]]
+}
+
 @test "--exec (teardown) boots only opencode — no web-UI publisher — and scopes the pull" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"

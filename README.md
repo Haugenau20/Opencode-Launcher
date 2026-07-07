@@ -218,10 +218,16 @@ A one-shot run only needs the agent itself, so `--exec` boots a **minimal
 stack** — just the `opencode` container and its `squid` egress proxy. The web
 UI publisher (`oc-publish`) is skipped: serving a browser UI for a single
 prompt is wasted work, and skipping it means a faster boot and no published
-port. While the model works, a small **spinner** on your terminal confirms
-something is happening (the run can take a while, and on success the launcher
-is otherwise silent); it's skipped automatically when there's no terminal to
-draw on (piped/CI).
+port.
+
+When you run `--exec` **interactively**, a small **spinner** appears from the
+moment you hit Enter and animates through the whole (otherwise-silent) boot and
+model call, so a slow prompt never looks like a hang. It erases itself before
+the answer prints, and the answer starts a couple of lines below for a clean
+separation. The spinner is drawn **only to the terminal** — never to stdout or
+stderr — and only when a terminal is actually present, so a **piped or CI run
+gets no spinner and byte-exact output** (this is the common case: interactively
+you'd usually just open the TUI).
 
 - `--continue` prepends opencode's own `-c` (resume the most recent session)
   ahead of the prompt.

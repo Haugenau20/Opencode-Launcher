@@ -10,23 +10,23 @@
 # this module owns everything that is --exec-specific.
 
 # --- loading spinner --------------------------------------------------------
-# --exec suppresses ALL launcher/opencode chatter on success (see cmd_exec
-# below), so without this the terminal would sit silent for however long the
-# model takes to answer — the user can't tell the difference between "working"
-# and "hung". These draw a small animated spinner to the CONTROLLING TERMINAL
-# ONLY (/dev/tty, overridable via OC_EXEC_TTY for tests) so it never pollutes
-# stdout (the model's answer, on fd3) or the captured stderr buffer: a
-# piped/CI run with no controlling terminal simply gets no spinner. Start
-# returns immediately with the spinner animating in the background; stop kills
-# it and erases the line. Both are no-ops (never errors) when there's no tty.
+# --exec suppresses ALL launcher/opencode chatter (see cmd_exec below) — even
+# the pull/up progress — so without this the terminal would sit silent from the
+# moment you hit Enter until the answer lands, indistinguishable from a hang.
+# These draw a bare animated glyph to the CONTROLLING TERMINAL ONLY (/dev/tty,
+# overridable via OC_EXEC_TTY for tests) so it never pollutes stdout (the
+# answer, on fd3) or the captured stderr — the spinner is drawn only when the
+# launcher is genuinely interactive (a human at a terminal; see cmd_exec's
+# `[ -t 4 ]` gate), so a piped/CI run gets no spinner and byte-exact output.
+# Start returns immediately with the glyph animating in the background; stop
+# kills it and erases the line. Both are no-ops (never errors) with no tty.
 OC_EXEC_SPINNER_PID=""
 
-# exec_spinner_start [LABEL] — begin animating a spinner (background job) on the
-# controlling terminal. Records its PID in OC_EXEC_SPINNER_PID (empty when no
-# terminal is available, so exec_spinner_stop becomes a no-op). Never writes to
-# stdout/stderr — only to OC_EXEC_TTY (default /dev/tty).
+# exec_spinner_start — begin animating a spinner (background job) on the
+# terminal. No label — just the glyph. Records its PID in OC_EXEC_SPINNER_PID
+# (empty when the target isn't writable, so exec_spinner_stop becomes a no-op).
+# Never writes to stdout/stderr — only to OC_EXEC_TTY (default /dev/tty).
 exec_spinner_start() {
-  local label="${1:-working}"
   local tty="${OC_EXEC_TTY:-/dev/tty}"
   OC_EXEC_SPINNER_PID=""
   # Only spin when the target terminal is genuinely openable for writing. A
@@ -34,9 +34,12 @@ exec_spinner_start() {
   # even with no controlling terminal — so probe with a real open.
   { : >"$tty"; } 2>/dev/null || return 0
   {
-    local frames='|/-\' i=0
+    # Braille glyphs held in an array (indexed per-frame) so the write is
+    # byte-safe regardless of locale — a substring like ${s:i:1} would slice a
+    # multibyte glyph mid-sequence under a non-UTF-8 LC_CTYPE.
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏') i=0
     while :; do
-      printf '\r\033[36m%s\033[0m %s...\033[K' "${frames:i++%4:1}" "$label" >"$tty" 2>/dev/null || exit 0
+      printf '\r\033[36m%s\033[0m\033[K' "${frames[i++ % ${#frames[@]}]}" >"$tty" 2>/dev/null || exit 0
       sleep 0.1
     done
   } &
@@ -90,6 +93,15 @@ cmd_exec() {
   OC_EXEC_ERRBUF="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec.$$")"
   trap 'oc_exec_rc=$?; exec_spinner_stop; { [ "$oc_exec_rc" -ne 0 ] && [ -s "$OC_EXEC_ERRBUF" ] && cat "$OC_EXEC_ERRBUF" >&4; }; rm -f "$OC_EXEC_ERRBUF"' EXIT
 
+  # Start the spinner NOW, before the boot, so it covers the whole otherwise-
+  # silent pull/up too — not just the model call — giving feedback the instant
+  # you hit Enter. Interactive only: `[ -t 4 ]` (the real stderr, saved above
+  # as fd4, is a terminal) means a human is watching; a piped/CI run has no tty
+  # here, gets no spinner at all, and so keeps byte-exact output. exec_run
+  # stops it just before printing the answer; the EXIT trap is the safety net
+  # for a boot that fails or is interrupted first.
+  [ -t 4 ] && exec_spinner_start
+
   cmd_run "$repo_arg" "$attach_tui" "$persist" "$use_podman" "$continue_flag" "$want_open" \
     1 "$exec_prompt" ${also_args[@]+"${also_args[@]}"} 2>"$OC_EXEC_ERRBUF" 1>&2
 }
@@ -115,11 +127,18 @@ cmd_exec() {
 # /dev/null instead so it sees an immediate EOF and runs the prompt alone.
 #
 # Output isolation: cmd_exec has folded the launcher's own stdout onto stderr,
-# captured that stderr to a buffer, and saved the real stdout as fd3. So here we
-# send opencode's stdout straight to fd3 (`1>&3`) — that's the answer, and the
-# only thing on the real stdout — and leave its stderr alone: it flows into the
-# same buffer as the launcher chatter and (on success) is discarded, or (on
-# failure) replayed. No message-content matching.
+# captured that stderr to a buffer, and saved the real stdout as fd3. opencode's
+# answer must end up on fd3 — the only thing on the real stdout — while its
+# stderr flows into the same buffer as the launcher chatter and (on success) is
+# discarded, or (on failure) replayed. No message-content matching.
+#
+# We CAPTURE opencode's stdout to a temp file rather than streaming it straight
+# to fd3, for one reason: the spinner (started in cmd_exec) has been drawing to
+# the terminal, and we must stop+erase it BEFORE the first answer byte reaches
+# that same terminal — otherwise the answer lands on the spinner's line and the
+# erase misses it. `opencode run` in non-TTY mode emits only the final text (a
+# burst, not a live stream), so buffering loses nothing. Once the spinner is
+# down we replay the file to fd3.
 #
 # rc capture must survive `set -euo pipefail`: guard every step with `|| ...`
 # so a nonzero `opencode run` (or teardown) never aborts the script before we
@@ -133,7 +152,8 @@ exec_run() {
   [ "$continue_flag" -eq 1 ] && oc_args+=(-c)
 
   info "exec: running one-shot prompt in $project_name ..."
-  local rc=0
+  local rc=0 answer_file
+  answer_file="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec-answer.$$")"
   local exec_cmd=(docker exec -u dev
     -e HOME=/home/dev
     -e XDG_CONFIG_HOME=/home/dev/.config
@@ -141,13 +161,23 @@ exec_run() {
     -w /workspace
     -i "$project_name" opencode run ${oc_args[@]+"${oc_args[@]}"} "$prompt")
 
-  exec_spinner_start "running your prompt in $project_name (this can take a bit)"
   if [ -t 0 ]; then
-    "${exec_cmd[@]}" </dev/null 1>&3 || rc=$?
+    "${exec_cmd[@]}" </dev/null >"$answer_file" || rc=$?
   else
-    "${exec_cmd[@]}" 1>&3 || rc=$?
+    "${exec_cmd[@]}" >"$answer_file" || rc=$?
   fi
+
+  # Spinner down and erased before anything reaches fd3.
   exec_spinner_stop
+  # When we've been animating a spinner on the terminal (interactive, `[ -t 4 ]`)
+  # AND the answer is going to that same terminal (`[ -t 3 ]`, not a capture or
+  # pipe), drop it two lines below the erased spinner so it's clearly separated.
+  # A captured/piped answer gets no added newlines — it stays byte-exact.
+  if [ -t 4 ] && [ -t 3 ]; then
+    printf '\n\n' >&3
+  fi
+  cat "$answer_file" >&3 || true
+  rm -f "$answer_file"
 
   if [ "$persist" -eq 1 ]; then
     info "exec finished (rc=$rc) — --persist: leaving $project_name running."

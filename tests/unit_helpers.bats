@@ -1510,7 +1510,7 @@ git_repo_pair() {
 @test "exec_spinner_start/stop: runs when the target tty is writable, then clears" {
   local tty="$BATS_TEST_TMPDIR/spin.tty"
   : > "$tty"
-  OC_EXEC_TTY="$tty" exec_spinner_start "working"
+  OC_EXEC_TTY="$tty" exec_spinner_start
   # A writable target => a live background spinner recorded in the PID var.
   [ -n "$OC_EXEC_SPINNER_PID" ]
   kill -0 "$OC_EXEC_SPINNER_PID"
@@ -1525,9 +1525,9 @@ git_repo_pair() {
 
 @test "exec_spinner_start: no-op (no process) when the tty target isn't writable" {
   # A path under a nonexistent directory can't be opened for writing.
-  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" run exec_spinner_start "working"
+  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" run exec_spinner_start
   [ "$status" -eq 0 ]
-  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" exec_spinner_start "working"
+  OC_EXEC_TTY="$BATS_TEST_TMPDIR/nope/spin.tty" exec_spinner_start
   [ -z "$OC_EXEC_SPINNER_PID" ]
 }
 
