@@ -1991,7 +1991,7 @@ seed_env_doctor() {
   [ "$(cat "$slog")" = "PIPED-CONTEXT" ]
 }
 
-@test "--exec drops opencode's 'No .git found' stderr noise but keeps the answer + real diagnostics" {
+@test "--exec stdout carries ONLY opencode's stdout; all other output goes to stderr" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   local errfile="$BATS_TEST_TMPDIR/exec.err"
@@ -2001,12 +2001,17 @@ seed_env_doctor() {
   export FAKE_DOCKER_EXEC_EMIT_NOISE=1
   run bash -c 'bash "$1" --exec "hello" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
   [ "$status" -eq 0 ]
-  # stdout: the model's answer survives, and the noise never leaks onto it.
-  [[ "$output" == *"ANSWER-MARKER"* ]]
+  # stdout is EXACTLY opencode's stdout — the answer, and nothing else: no
+  # launcher boot chatter and no opencode stderr log (whatever its wording).
+  [ "$output" = "ANSWER-MARKER" ]
+  [[ "$output" != *"project: opencode-myrepo"* ]]
+  [[ "$output" != *"exec: running"* ]]
   [[ "$output" != *"No .git found"* ]]
-  # stderr: the noise is gone, but a genuine opencode diagnostic is preserved.
+  # stderr keeps everything else, unfiltered: launcher chatter, opencode's own
+  # logs (the noise is separated, not scrubbed), and real diagnostics.
   run cat "$errfile"
-  [[ "$output" != *"No .git found"* ]]
+  [[ "$output" == *"project: opencode-myrepo"* ]]
+  [[ "$output" == *"No .git found"* ]]
   [[ "$output" == *"REAL-STDERR-DIAGNOSTIC"* ]]
 }
 

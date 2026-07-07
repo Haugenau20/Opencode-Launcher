@@ -195,25 +195,26 @@ main() {
   fi
 
   # Everything validated; hand off to the boot flow with the parsed options.
-  cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
-    "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
-}
-
-# run_exec_filtered CMD [ARGS...] — run CMD (the --exec `docker exec ... opencode
-# run`), passing its stdout through untouched but dropping opencode's harmless
-# "No .git found at /workspace" project-id fallback log from stderr. opencode
-# writes logs to stderr, so filtering there leaves the model's answer (stdout)
-# pristine and keeps every other stderr line (real warnings/errors). The exit
-# code returned is CMD's own (via PIPESTATUS[0]), not grep's. MUST be called in
-# a `set -e`-ignored context (e.g. `run_exec_filtered … || rc=$?`) so the
-# `return` runs even when CMD exits non-zero. stdin passes straight through, so
-# the caller's `</dev/null` (TTY) or piped input still reaches opencode.
-run_exec_filtered() {
-  # fd3 = our stdout. `2>&1` sends CMD's stderr to the pipe (currently fd1);
-  # `1>&3` then restores CMD's stdout to fd3 (our real stdout), so only stderr
-  # reaches grep. grep's kept lines go back out on stderr (1>&2).
-  { "$@" 2>&1 1>&3 | grep --line-buffered -vF -e 'No .git found at /workspace' 1>&2; } 3>&1
-  return "${PIPESTATUS[0]}"
+  #
+  # --exec output contract: stdout must be EXACTLY `opencode run`'s stdout (the
+  # model's answer), so `RESULT=$(./start.sh --exec "…" repo)` captures the
+  # answer and nothing else — regardless of what the launcher or opencode print
+  # around it. opencode already splits its streams (answer -> stdout, logs ->
+  # stderr, and in piped/non-TTY mode it emits only the final text), so we don't
+  # match on message content at all; we just stop stepping on stdout. Save the
+  # real stdout as fd3, then run the whole boot flow with its stdout folded onto
+  # stderr (1>&2) so every info()/compose/teardown line lands on stderr; cmd_run
+  # sends opencode's stdout back out on fd3. opencode's own stderr stays on
+  # stderr — visible in a terminal, silence it with `2>/dev/null`. Every other
+  # run keeps the normal streams.
+  if [ "$WANT_EXEC" -eq 1 ]; then
+    exec 3>&1
+    cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
+      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}" 1>&2
+  else
+    cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
+      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
+  fi
 }
 
 # --- boot flow --------------------------------------------------------------
@@ -566,19 +567,18 @@ cmd_run() {
     # still reaches opencode); on a TTY, hand opencode /dev/null instead so it
     # sees an immediate EOF and runs the prompt argument alone.
     #
-    # Output noise: opencode logs to stderr, and on a /workspace with no `.git`
-    # it emits a harmless "[project-id] No .git found at /workspace, using path
-    # hash" line (often twice) as it falls back to a path-hashed project id —
-    # pure noise for a scripted one-shot. `run_exec_filtered` drops exactly that
-    # line from opencode's stderr while leaving stdout (the actual answer) and
-    # every other stderr line (real warnings/errors) untouched, and preserves
-    # opencode's own exit code.
+    # Output isolation: main() has folded the launcher's own stdout onto stderr
+    # for --exec and saved the real stdout as fd3 (see the dispatch there), so
+    # here we send opencode's stdout straight to fd3 (`1>&3`) and leave its
+    # stderr alone. The net effect is that the launcher's stdout carries EXACTLY
+    # opencode's stdout — its answer — while all launcher chatter and every
+    # opencode log line (including the harmless "[project-id] No .git found at
+    # /workspace" fallback) stay on stderr. No message-content matching, so it
+    # stays correct no matter what opencode prints.
     #
     # rc capture must survive `set -euo pipefail`: guard every step with
     # `|| ...` so a nonzero `opencode run` (or teardown) never aborts the
-    # script before we can exit with the RIGHT code. Because run_exec_filtered
-    # is called as the left side of `|| rc=$?`, `set -e` is ignored inside it,
-    # so its `return "${PIPESTATUS[0]}"` (opencode's real rc) always runs.
+    # script before we can exit with the RIGHT code.
     info "exec: running one-shot prompt in $PROJECT_NAME ..."
     local rc=0
     local exec_cmd=(docker exec -u dev
@@ -588,9 +588,9 @@ cmd_run() {
       -w /workspace
       -i "opencode-${SLUG}" opencode run ${OC_ARGS[@]+"${OC_ARGS[@]}"} "$EXEC_PROMPT")
     if [ -t 0 ]; then
-      run_exec_filtered "${exec_cmd[@]}" </dev/null || rc=$?
+      "${exec_cmd[@]}" </dev/null 1>&3 || rc=$?
     else
-      run_exec_filtered "${exec_cmd[@]}" || rc=$?
+      "${exec_cmd[@]}" 1>&3 || rc=$?
     fi
     if [ "$PERSIST" -eq 1 ]; then
       info "exec finished (rc=$rc) — --persist: leaving $PROJECT_NAME running."

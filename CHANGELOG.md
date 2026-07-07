@@ -105,13 +105,17 @@ _Changes to the launcher itself._
   startup lines, then hung). The launcher now feeds `opencode run` `/dev/null`
   when its own stdin is a TTY, while still forwarding stdin that is genuinely
   piped/redirected in (`data | ./start.sh --exec …`).
-- `--exec` now suppresses opencode's harmless `[project-id] No .git found at
-  /workspace, using path hash` stderr line (emitted, often twice, when the
-  mounted repo has no `.git` and opencode falls back to a path-hashed project
-  id) — pure noise for a scripted one-shot. Only that exact line is dropped
-  from opencode's stderr; stdout (the model's answer) and every other stderr
-  line (real warnings/errors) pass through untouched, and opencode's exit code
-  is preserved.
+- `--exec` now isolates its stdout to **exactly `opencode run`'s stdout** (the
+  model's answer). opencode already splits its streams — answer on stdout, logs
+  on stderr, and only the final text when its output isn't a TTY — so the
+  launcher reserves stdout for it (saving the real stdout as fd 3) and folds all
+  of its *own* boot/teardown chatter onto stderr, alongside opencode's stderr.
+  A scripted `answer="$(./start.sh --exec "…" repo)"` now captures just the
+  result, with no output scraping. This also makes opencode's harmless
+  `No .git found at /workspace` notice (and anything else opencode logs) a
+  stderr-only concern — no message-content matching, so it stays correct
+  whatever opencode prints. Silence the diagnostics on a terminal with
+  `2>/dev/null`; the exit code is still `opencode run`'s own.
 
 ## [0.9.0] — 2026-07-03
 

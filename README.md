@@ -209,8 +209,9 @@ through `opencode run` inside the container with no TUI attached, tears the
 stack down again, and exits with that command's own exit code:
 
 ```bash
-./start.sh --exec "summarize the TODOs in this repo" ~/code/your-repo
+answer="$(./start.sh --exec "summarize the TODOs in this repo" ~/code/your-repo)"
 echo "opencode run exited $?"
+printf '%s\n' "$answer"
 ```
 
 - `--continue` prepends opencode's own `-c` (resume the most recent session)
@@ -220,9 +221,13 @@ echo "opencode run exited $?"
 - Conflicts with `--detach` — both are already non-interactive, so combining
   them is a contradiction rather than a useful combination.
 
-The normal boot output (pulling/starting the stack, etc.) still prints to
-stdout alongside the command's own output; a caller that wants just the
-result can rely on the exit code and/or `tail` the last block of output.
+**stdout is exactly `opencode run`'s stdout** — the model's answer, and nothing
+else. Everything the launcher itself prints (pulling/starting the stack,
+teardown) and every line opencode writes to *its* stderr (progress, the
+harmless `No .git found at /workspace` notice when your repo isn't a git repo,
+etc.) go to **stderr**. So `answer="$(./start.sh --exec … repo)"` captures just
+the result, no scraping required; add `2>/dev/null` if you also want to silence
+the diagnostics on your terminal. The exit code is `opencode run`'s own.
 
 ## Running more than one repo
 
