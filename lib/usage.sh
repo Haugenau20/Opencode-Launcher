@@ -42,32 +42,14 @@ Run options:
   --open     Open the web UI URL in your browser via xdg-open once it's known.
              Non-fatal if xdg-open is missing.
   --also <path>[:rw]
-             Bind-mount an extra host folder into the container at
-             /workspace-extra/<name> (<name> is derived from the folder's own
-             basename, like the project slug; -2/-3/... on a name collision
-             between two --also paths), alongside your main repo at
-             /workspace. Read-only by default; append :rw to mount that one
-             path read-write. Repeatable. A path containing ':' beyond the
-             optional trailing ':rw' isn't supported (matches Docker's own
-             short bind-mount syntax) — avoid such paths. Applies to the run
-             and --exec paths; --status <repo> lists the mounts a stack was
-             last booted with.
+             Also bind-mount an extra host folder at /workspace-extra/<name>
+             (its basename), read-only unless you append :rw. Repeatable — e.g.
+             a library repo the agent should read alongside your main one.
   --exec "<prompt>"
-             Boot a minimal stack (just the agent + its egress proxy — no web
-             UI, no TUI attached), run <prompt> non-interactively via
-             `opencode run` inside the container, tear the stack down (unless
-             --persist is also given), and exit with that command's own exit
-             code — for scripting/CI. --continue prepends opencode's own -c
-             (resume most recent session) ahead of the prompt. On success it
-             prints EXACTLY opencode's answer — all launcher/opencode chatter
-             is buffered and dropped; on failure that buffer is replayed to
-             stderr so you can see what went wrong. When run interactively a
-             spinner confirms progress from the moment you hit Enter through
-             the whole boot, then erases itself before the answer prints; it is
-             drawn only to the terminal (never stdout/stderr) and only when a
-             terminal is present, so piped/CI output is byte-exact with no
-             spinner at all. --persist keeps the full stack (web UI included)
-             running afterward instead.
+             Run <prompt> once via `opencode run` in a minimal stack (no web
+             UI, no TUI), print the answer, tear down, and exit with its code —
+             for scripting/CI. Only the answer prints on success; diagnostics
+             are replayed to stderr on failure. --persist keeps the stack up.
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
@@ -100,18 +82,14 @@ needed):
   --version  Print the launcher version (from the VERSION file). Alias: -V.
   --help     Show this help.
 
-The image tag comes from IMAGE_TAG in .env (default 'latest'; pin e.g. 0.0.2).
-The TUI is the default frontend — zero setup and always rooted at /workspace. The
-web/desktop UI also works; a new session just defaults its working directory to /,
-so click 'New session' and type /workspace to root that session at your repo.
-
-First run creates .env from .env.example and prompts for your secrets; later
-runs reuse it (edit by hand any time).
-
-On every boot, a best-effort check reports if this launcher checkout is behind
-its git upstream ("launcher update available: N commit(s) behind origin — git
-pull to update"); silent when up to date, offline, or not a git checkout. Set
-OC_SKIP_UPDATE_CHECK=1 to skip the check entirely (e.g. scripted/CI runs).
---doctor reports the same check as its own PASS/WARN line.
+Notes:
+  * Image: IMAGE_TAG in .env picks the version (default 'latest'; pin e.g.
+    IMAGE_TAG=0.0.2).
+  * First run creates .env from .env.example and prompts for secrets; later
+    runs reuse it.
+  * Web/desktop UI: give a new session the working directory /workspace (the
+    default TUI is always rooted there).
+  * Each boot flags a launcher git update when one is due; set
+    OC_SKIP_UPDATE_CHECK=1 to skip that check.
 EOF
 }
