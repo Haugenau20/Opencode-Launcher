@@ -12,7 +12,7 @@ usage() {
 Usage:
   ./start.sh [--continue] [--persist] [--detach] [--podman] [--open]
               [--also <path>[:rw]]... <host-repo-path>
-  ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... <host-repo-path>
+  ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... [<host-repo-path>]
   ./start.sh --doctor [<host-repo-path>]
   ./start.sh --status [<host-repo-path>]
   ./start.sh --down|--stop <host-repo-path>
@@ -42,14 +42,11 @@ Run options:
   --open     Open the web UI URL in your browser via xdg-open once it's known.
              Non-fatal if xdg-open is missing.
   --also <path>[:rw]
-             Also bind-mount an extra host folder at /workspace-extra/<name>
-             (its basename), read-only unless you append :rw. Repeatable — e.g.
-             a library repo the agent should read alongside your main one.
+             Also bind-mount an extra host folder at /workspace-extra/<name>,
+             read-only unless you append :rw. Repeatable.
   --exec "<prompt>"
-             Run <prompt> once via `opencode run` in a minimal stack (no web
-             UI, no TUI), print the answer, tear down, and exit with its code —
-             for scripting/CI. Only the answer prints on success; diagnostics
-             are replayed to stderr on failure. --persist keeps the stack up.
+             Run <prompt> once via `opencode run` and exit with its code.
+             <host-repo-path> is optional; omit it for an empty /workspace.
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):

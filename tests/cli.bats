@@ -2109,6 +2109,35 @@ seed_env_doctor() {
   [[ "$err" != *"14445"* ]]
 }
 
+@test "--exec with no repo path boots the norepo project against an empty workspace" {
+  seed_env
+  run_launcher --exec "explain the CAP theorem"
+  [ "$status" -eq 0 ]
+  # No repo arg: the run uses the fixed 'norepo' slug/project and still runs the
+  # one-shot prompt non-interactively, then tears down.
+  grep -qE '^exec .*-i opencode-norepo opencode run explain the CAP theorem$' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .*-it .*opencode run' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec with no repo path still boots only the minimal stack" {
+  seed_env
+  run_launcher --exec "hi"
+  [ "$status" -eq 0 ]
+  # Same minimal-stack scoping as a repo-backed --exec: only opencode comes up,
+  # and the pull is scoped (no web-UI publisher).
+  grep -qE 'compose .* up -d opencode$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* up -d$' "$FAKE_DOCKER_LOG"
+  grep -qE 'compose .* pull opencode squid$' "$FAKE_DOCKER_LOG"
+}
+
+@test "a bare run with no repo path and no --exec still errors" {
+  seed_env
+  run_launcher
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
 # --- --status: --also mounts + MCP servers ----------------------------------
 
 @test "--status lists --also mounts from the generated overlay" {

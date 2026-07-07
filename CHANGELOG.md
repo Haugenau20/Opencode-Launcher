@@ -84,6 +84,9 @@ _Changes to the launcher itself._
   away on success anyway, so the extra network round-trip was pure startup
   latency. Normal runs still perform the check; `OC_SKIP_UPDATE_CHECK=1` still
   disables it everywhere.
+- `--exec` now accepts no `<host-repo-path>`: run a one-shot prompt against an
+  empty `/workspace` (no repo mounted). Every other run still requires the
+  repo path.
 
 ### Internal
 - The `--exec` path moved out of `start.sh` into its own `lib/exec.sh`

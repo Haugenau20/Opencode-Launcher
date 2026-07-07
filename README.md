@@ -196,6 +196,14 @@ echo "opencode run exited $?"
 printf '%s\n' "$answer"
 ```
 
+`<host-repo-path>` is optional. Omit it to fire a one-shot prompt with an empty
+`/workspace` — the container gets no local code, but it still boots and answers,
+which is handy for a quick throwaway question against the sandboxed agent:
+
+```bash
+answer="$(./start.sh --exec "explain the CAP theorem in two sentences")"
+```
+
 A one-shot run only needs the agent, so `--exec` boots a **minimal stack** —
 just the `opencode` container and its `squid` egress proxy, skipping the web-UI
 publisher for a faster boot.
