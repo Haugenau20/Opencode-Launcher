@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config usage project also packages allowlist digest manifest update doctor commands; do
+for __lib in core config usage project also packages allowlist digest manifest update doctor commands exec; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -196,27 +196,14 @@ main() {
 
   # Everything validated; hand off to the boot flow with the parsed options.
   #
-  # --exec output contract: on success, print EXACTLY `opencode run`'s stdout
-  # (the model's answer) and nothing else — no `2>/dev/null` needed — while a
-  # failure still surfaces its diagnostics. opencode already splits its streams
-  # (answer -> stdout, logs -> stderr, and in piped/non-TTY mode it emits only
-  # the final text), so we never match on message content. We:
-  #   - save the real stdout as fd3 and the real stderr as fd4;
-  #   - run the whole boot flow with its stdout folded onto stderr (1>&2) and
-  #     that stderr captured to a buffer file (2>"$buf"), so every launcher
-  #     info()/warn()/err() line AND every opencode log line lands in the buffer,
-  #     never on the terminal — cmd_run sends opencode's stdout out on fd3;
-  #   - on EXIT, replay the buffer to the real stderr (fd4) ONLY if the run
-  #     failed (non-zero). Clean answer on success; boot errors and a non-zero
-  #     `opencode run` still print their diagnostics. Exit-code driven, so it
-  #     stays correct no matter what the launcher or opencode print.
-  # Every other run keeps the normal streams.
+  # --exec has its own entry point (cmd_exec, lib/exec.sh): it wraps the shared
+  # boot flow in the stdout/stderr isolation that makes a one-shot run print
+  # EXACTLY `opencode run`'s answer on success and replay diagnostics only on
+  # failure (see the full contract there). Every other run goes straight to
+  # cmd_run with the normal streams.
   if [ "$WANT_EXEC" -eq 1 ]; then
-    exec 3>&1 4>&2
-    OC_EXEC_ERRBUF="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec.$$")"
-    trap 'oc_exec_rc=$?; { [ "$oc_exec_rc" -ne 0 ] && [ -s "$OC_EXEC_ERRBUF" ] && cat "$OC_EXEC_ERRBUF" >&4; }; rm -f "$OC_EXEC_ERRBUF"' EXIT
-    cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
-      "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}" 2>"$OC_EXEC_ERRBUF" 1>&2
+    cmd_exec "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
+      "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
   else
     cmd_run "$REPO_ARG" "$ATTACH_TUI" "$PERSIST" "$USE_PODMAN" "$CONTINUE" "$WANT_OPEN" \
       "$WANT_EXEC" "$EXEC_PROMPT" "${ALSO_ARGS[@]}"
@@ -239,6 +226,19 @@ cmd_run() {
 
   if [ "$CONTINUE" -eq 1 ] && [ "$ATTACH_TUI" -eq 0 ]; then
     warn "--continue has no effect with --detach (no TUI is attached)."
+  fi
+
+  # The web UI (the oc-publish service — a host-port publisher for the browser/
+  # desktop UI) is only worth running when something will actually use it. A
+  # one-shot `--exec` that tears the stack down afterwards never does: it just
+  # `docker exec`s a single prompt into the container. So skip oc-publish there
+  # — booting only opencode (+ its squid egress proxy, pulled in via depends_on)
+  # is faster and publishes no port. `--persist` keeps a resumable environment,
+  # so it still gets the full stack; every TUI/web run always does. Used below
+  # to scope the pull/up and to suppress the web-UI report lines.
+  local SERVE_WEB_UI=1
+  if [ "$WANT_EXEC" -eq 1 ] && [ "$PERSIST" -eq 0 ]; then
+    SERVE_WEB_UI=0
   fi
 
   # --- 2. preflight checks --------------------------------------------------
@@ -464,17 +464,35 @@ cmd_run() {
   # registry-backed services, then build opencode (which auto-pulls its FROM
   # base). Without the layer, behaviour is byte-for-byte unchanged.
   if [ "$PKG_LAYER_ACTIVE" -eq 1 ]; then
-    info "pulling registry images (squid, oc-publish) for $PROJECT_NAME ..."
-    "${COMPOSE[@]}" pull squid oc-publish
+    if [ "$SERVE_WEB_UI" -eq 1 ]; then
+      info "pulling registry images (squid, oc-publish) for $PROJECT_NAME ..."
+      "${COMPOSE[@]}" pull squid oc-publish
+    else
+      info "pulling registry image (squid) for $PROJECT_NAME ..."
+      "${COMPOSE[@]}" pull squid
+    fi
     info "building local opencode package layer for $PROJECT_NAME ..."
     "${COMPOSE[@]}" build opencode
   else
-    info "pulling images for $PROJECT_NAME ..."
-    "${COMPOSE[@]}" pull
+    if [ "$SERVE_WEB_UI" -eq 1 ]; then
+      info "pulling images for $PROJECT_NAME ..."
+      "${COMPOSE[@]}" pull
+    else
+      info "pulling images (opencode, squid) for $PROJECT_NAME ..."
+      "${COMPOSE[@]}" pull opencode squid
+    fi
   fi
 
-  info "starting $PROJECT_NAME ..."
-  "${COMPOSE[@]}" up -d
+  # With the web UI, bring the whole stack up. Without it (one-shot --exec),
+  # bring up only opencode; compose starts its squid dependency (depends_on)
+  # but not oc-publish (a dependent, not a dependency), so no port is published.
+  if [ "$SERVE_WEB_UI" -eq 1 ]; then
+    info "starting $PROJECT_NAME ..."
+    "${COMPOSE[@]}" up -d
+  else
+    info "starting $PROJECT_NAME (opencode + egress proxy; no web UI) ..."
+    "${COMPOSE[@]}" up -d opencode
+  fi
 
   # --- image digest (reproducibility / tamper-check anchor) ------------------
   # Print the resolved sha256 digest of the image actually in use — the tag
@@ -523,22 +541,31 @@ cmd_run() {
   echo
   info "project: $PROJECT_NAME"
   info "repo:    $REPO_PATH  ->  /workspace"
-  local WEB_UI_URL="http://localhost:${PORT}"
-  info "web UI:  ${WEB_UI_URL}"
-  [ "$WANT_OPEN" -eq 1 ] && open_url "$WEB_UI_URL"
-  # Web-UI note — keep this visible on every boot. Remove once a newer image
-  # defaults a new web-UI session to /workspace (upstream anomalyco/opencode#14445).
-  warn "web/desktop UI note: a NEW session defaults its working directory to /"
-  warn "  instead of /workspace. WORKAROUND: in the web UI click 'New session' and,"
-  warn "  when prompted for the working directory, type /workspace — that session"
-  warn "  then runs inside your repo. The default TUI is unaffected (always"
-  warn "  /workspace). Tracking: anomalyco/opencode#14445."
+  # The web-UI lines only make sense when oc-publish is up (see SERVE_WEB_UI):
+  # a one-shot --exec publishes no port, so printing a URL/workaround for it
+  # would be misleading.
+  if [ "$SERVE_WEB_UI" -eq 1 ]; then
+    local WEB_UI_URL="http://localhost:${PORT}"
+    info "web UI:  ${WEB_UI_URL}"
+    [ "$WANT_OPEN" -eq 1 ] && open_url "$WEB_UI_URL"
+    # Web-UI note — keep this visible on every web-UI boot. Remove once a newer
+    # image defaults a new web-UI session to /workspace (upstream
+    # anomalyco/opencode#14445).
+    warn "web/desktop UI note: a NEW session defaults its working directory to /"
+    warn "  instead of /workspace. WORKAROUND: in the web UI click 'New session' and,"
+    warn "  when prompted for the working directory, type /workspace — that session"
+    warn "  then runs inside your repo. The default TUI is unaffected (always"
+    warn "  /workspace). Tracking: anomalyco/opencode#14445."
+  fi
 
   # Launcher self-update nudge: best-effort (see lib/update.sh), silent on any
   # failure (offline, no upstream, not a git checkout, etc.) and skippable
   # entirely via OC_SKIP_UPDATE_CHECK=1 (e.g. for CI/scripted runs that don't
-  # want the extra `git fetch`).
-  if [ "${OC_SKIP_UPDATE_CHECK:-0}" != "1" ]; then
+  # want the extra `git fetch`). Skipped for --exec too: its output is
+  # machine-consumed (the nudge is buffered away on success anyway), and a
+  # `git fetch` on every one-shot run is exactly the startup latency --exec
+  # wants to avoid.
+  if [ "${OC_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ "$WANT_EXEC" -eq 0 ]; then
     local behind_count
     behind_count="$(launcher_behind_count "$__OCL_DIR")"
     case "$behind_count" in
@@ -559,52 +586,10 @@ cmd_run() {
   local OC_ARGS=()
   [ "$CONTINUE" -eq 1 ] && OC_ARGS+=(-c)
   if [ "$WANT_EXEC" -eq 1 ]; then
-    # --exec: non-interactive one-shot run. `-i` but deliberately NOT `-t` —
-    # output must pipe cleanly for scripting. `--continue` (OC_ARGS) prepends
-    # opencode's own `-c` (resume most recent session) ahead of the prompt.
-    #
-    # stdin needs care. `docker exec -i` binds opencode's stdin to whatever the
-    # launcher was started with, and `opencode run` drains stdin for any piped
-    # prompt context. When the launcher is attached to an interactive terminal
-    # that pipe never closes, so the run blocks forever waiting for an EOF that
-    # can't come — opencode prints its startup lines and then hangs (the exact
-    # symptom this branch used to produce). So only forward stdin when it's
-    # genuinely piped/redirected into the launcher (`data | ./start.sh --exec …`
-    # still reaches opencode); on a TTY, hand opencode /dev/null instead so it
-    # sees an immediate EOF and runs the prompt argument alone.
-    #
-    # Output isolation: main() has folded the launcher's own stdout onto stderr
-    # for --exec, captured that stderr to a buffer, and saved the real stdout as
-    # fd3 (see the dispatch there). So here we send opencode's stdout straight to
-    # fd3 (`1>&3`) — that's the answer, and the only thing on the real stdout —
-    # and leave its stderr alone: it flows into the same buffer as the launcher
-    # chatter and (on success) is discarded, or (on failure) replayed. Every
-    # opencode log line, including the harmless "[project-id] No .git found at
-    # /workspace" fallback, rides along with it. No message-content matching.
-    #
-    # rc capture must survive `set -euo pipefail`: guard every step with
-    # `|| ...` so a nonzero `opencode run` (or teardown) never aborts the
-    # script before we can exit with the RIGHT code.
-    info "exec: running one-shot prompt in $PROJECT_NAME ..."
-    local rc=0
-    local exec_cmd=(docker exec -u dev
-      -e HOME=/home/dev
-      -e XDG_CONFIG_HOME=/home/dev/.config
-      -e XDG_DATA_HOME=/home/dev/.local/share
-      -w /workspace
-      -i "opencode-${SLUG}" opencode run ${OC_ARGS[@]+"${OC_ARGS[@]}"} "$EXEC_PROMPT")
-    if [ -t 0 ]; then
-      "${exec_cmd[@]}" </dev/null 1>&3 || rc=$?
-    else
-      "${exec_cmd[@]}" 1>&3 || rc=$?
-    fi
-    if [ "$PERSIST" -eq 1 ]; then
-      info "exec finished (rc=$rc) — --persist: leaving $PROJECT_NAME running."
-    else
-      info "exec finished (rc=$rc) — tearing down $PROJECT_NAME (pass --persist to keep it running) ..."
-      "${COMPOSE[@]}" down || true
-    fi
-    exit "$rc"
+    # --exec: non-interactive one-shot run — the whole path (spinner, stdin
+    # handling, stdout isolation on fd3, teardown, exit code) lives in
+    # exec_run (lib/exec.sh). It exits with opencode run's own rc.
+    exec_run "$PROJECT_NAME" "$EXEC_PROMPT" "$CONTINUE" "$PERSIST" "${COMPOSE[@]}"
   elif [ "$ATTACH_TUI" -eq 1 ]; then
     if [ "$PERSIST" -eq 1 ]; then
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal

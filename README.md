@@ -5,8 +5,7 @@ against your own repo. It pulls two images from Artifactory and wires them
 together with `docker compose`: the agent runs sandboxed behind a Squid proxy
 whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, GitLab,
 JFrog, and Confluence. Everything locked down (agent bundle, policy, allowlist,
-CA) lives in
-the images; this repo is just the glue.
+CA) lives in the images; this repo is just the glue.
 
 > **What's new:** see the [CHANGELOG](CHANGELOG.md) — it tracks both launcher
 > releases and the OpenCode Workplace image versions you can run (each with an
@@ -95,15 +94,12 @@ cd opencode-launcher
 ```
 
 On the **first run**, `start.sh` copies `.env.example` → `.env` and prompts for
-your LLM endpoint/key and Artifactory path — the only required fields. At a real
-terminal with `whiptail` or `dialog` it's a small ncurses editor that refuses to
-finish until those are set (unmet ones marked `(REQUIRED)`); otherwise (piped
-input, CI, or `OC_CONFIG_TUI=0`) it's a plain-text wizard. The service
-integrations — Bitbucket, Jira, GitLab, JFrog, Confluence, and git identity —
-are all optional;
-press Enter to skip. It then auto-fills `HOST_UID`/`HOST_GID`, pulls the images,
-and boots the stack. Later runs reuse `.env` (edit it by hand any time; it's
-gitignored).
+the only required fields — your LLM endpoint/key and Artifactory path. At a real
+terminal it's a small ncurses editor (`whiptail`/`dialog`); piped input or CI
+gets a plain-text wizard. The service integrations (Bitbucket, Jira, GitLab,
+JFrog, Confluence, git identity) are optional — press Enter to skip. It then
+fills in `HOST_UID`/`HOST_GID`, pulls the images, and boots. Later runs reuse
+`.env` (edit it by hand any time; it's gitignored).
 
 The stack comes up with the **OpenCode TUI attached**, rooted at `/workspace`
 (your repo). **Exiting the TUI (or Ctrl-C) tears the stack down** — one command
@@ -160,47 +156,33 @@ needs a one-step working-directory action (see
 
 **Read-only by default.** `--also <path>` bind-mounts an extra host folder into
 the container so the agent can read it for context — a library repo, a shared
-docs tree, whatever it needs to see but isn't the thing it's editing — without
-giving it write access. Append `:rw` to opt one mount into read-write when the
-agent genuinely needs to write there too. Repeatable:
+docs tree, whatever it needs to see but isn't editing. Append `:rw` to make one
+mount writable. Repeatable:
 
 ```bash
 ./start.sh --also ~/code/libA --also ~/code/libB:rw ~/code/mainrepo
 ```
 
-Each mount lands at `/workspace-extra/<name>` (alongside your main repo at
-`/workspace`), where `<name>` is derived from the folder's own basename the
-same way the project slug is — with `-2`/`-3`/... suffixing if two `--also`
-paths happen to share a basename. Boot prints one line per mount:
+Each mount lands at `/workspace-extra/<name>` (its basename; `-2`/`-3`/… if two
+paths share one), alongside your main repo at `/workspace`. Boot prints one line
+per mount:
 
 ```
 ==> also: /home/you/code/libA -> /workspace-extra/liba (read-only)
 ==> also: /home/you/code/libB -> /workspace-extra/libb (read-write)
 ```
 
-A path containing `:` beyond the optional trailing `:rw` isn't supported
-(matches Docker's own short bind-mount syntax) — avoid such paths. A `--also`
-path must exist and be a directory, and can't be the main repo path itself
-(that's already `/workspace`).
+A `--also` path must be an existing directory other than the main repo, and
+can't contain `:` (beyond the trailing `:rw`).
 
-**The agent is told these folders exist.** opencode runs with `/workspace` as
-its project root, so an open-ended file search never leaves `/workspace` and
-wouldn't find the siblings on its own. The launcher fixes that: it writes a
-short breadcrumb listing each `--also` folder and its `/workspace-extra/<name>`
-path, mounts it read-only, and points the image at it via the
-`OPENCODE_EXTRA_INSTRUCTIONS` env var (a generic "load these instruction files"
-hook — the image knows nothing about `--also`). So asking the agent to "look at
-the libA folder" just works. Needs an image new enough to honor that var; on an
-older image the folders are still mounted and readable, just not advertised.
+**The agent is told these folders exist.** opencode's file tools are rooted at
+`/workspace`, so it wouldn't find the siblings on its own; the launcher points
+the image at a breadcrumb listing them (via `OPENCODE_EXTRA_INSTRUCTIONS`), so
+"look at the libA folder" just works. Needs an image new enough to honor that
+var — on an older one the folders are still mounted, just not advertised.
 
-Mechanically this is a small generated per-project compose overlay
-(`.envs/<slug>.also.yml`) applied on top of the base stack; a boot with no
-`--also` flags removes any stale overlay from a previous run, so mounts never
-linger. `--down`/`--logs`/`--shell` pick the overlay up automatically when
-present, and `./start.sh --status <repo>` lists the mounts a stack was last
-booted with. Read-only mounts need no ownership setup; a `:rw` mount follows
-the same host-UID story as `/workspace` itself (the container's entrypoint
-only ever adjusts ownership under `/workspace`, never `/workspace-extra`).
+`--down`/`--logs`/`--shell` reuse the mounts automatically, and
+`./start.sh --status <repo>` lists what a stack was last booted with.
 
 ## Non-interactive one-shot runs (--exec)
 
@@ -214,32 +196,22 @@ echo "opencode run exited $?"
 printf '%s\n' "$answer"
 ```
 
-- `--continue` prepends opencode's own `-c` (resume the most recent session)
-  ahead of the prompt.
-- `--persist` skips the teardown, leaving the stack running afterward.
-- `--also` works exactly as it does on a normal run.
-- Conflicts with `--detach` — both are already non-interactive, so combining
-  them is a contradiction rather than a useful combination.
+A one-shot run only needs the agent, so `--exec` boots a **minimal stack** —
+just the `opencode` container and its `squid` egress proxy, skipping the web-UI
+publisher for a faster boot.
 
-**On success, `--exec` prints exactly `opencode run`'s stdout** — the model's
-answer, and nothing else. Everything the launcher itself prints (pulling/
-starting the stack, teardown) and every line opencode writes to *its* stderr
-(progress, the harmless `No .git found at /workspace` notice when your repo
-isn't a git repo, etc.) is buffered and **discarded on success**, so you get a
-clean answer on your terminal with no `2>/dev/null` and no output scraping:
+- `--continue` resumes your most recent session (opencode's own `-c`).
+- `--persist` skips the teardown and boots the full stack (web UI included),
+  leaving a resumable environment running.
+- `--also` works as it does on a normal run.
+- Conflicts with `--detach` — both are non-interactive.
 
-```bash
-./start.sh --exec "hello" ~/code/your-repo
-# -> Hello! How can I help you today?
-```
-
-**If the run fails** (a boot error, or a non-zero `opencode run`), that buffered
-output is **replayed to stderr** so you can see what went wrong — the launcher
-never fails silently. The exit code is always `opencode run`'s own (or the boot
-error's). This is exit-code driven, not text-matching, so it stays correct no
-matter what the launcher or opencode print. (Successful diagnostics are dropped
-by design; if you need them, capture stdout with `answer="$(…)"` and let the
-launcher's own stderr through, or re-run the boot without `--exec`.)
+**On success `--exec` prints exactly the model's answer**, nothing else — all
+launcher and opencode chatter (boot progress, teardown, the harmless
+`No .git found at /workspace` notice) is buffered and dropped, so you get a clean
+answer with no `2>/dev/null`. **On failure** (a boot error or a non-zero
+`opencode run`) that buffer is replayed to stderr instead, and the exit code is
+always `opencode run`'s own — so it never fails silently.
 
 ## Running more than one repo
 
@@ -305,16 +277,12 @@ A value starting with `sha256:` or `@sha256:` is joined with `@` (Docker's
 digest-reference syntax, `registry/image@sha256:…`), guaranteeing byte-identical
 pulls — the moving-tag concern no longer applies once pinned this way.
 
-**Newer images self-describe.** Alongside the digest, a newer image also
-carries its own version, a changelog, and a manifest of every env key it
-reads. When the digest changes on a boot, `start.sh` surfaces what's new:
-the image version, that version's changelog section, and — if the image now
-reads an env key this launcher version doesn't know about — a warning
-telling you to `git pull` the launcher. An older image with none of this
-self-description just gets the plain `image updated:` nudge, as before.
-`./start.sh --doctor` checks the same manifest independently (`image
-manifest: ...`), so you can spot launcher/image drift without waiting for
-the next digest change.
+**Newer images self-describe.** A newer image also carries its own version, a
+changelog, and a manifest of the env keys it reads. When the digest changes,
+`start.sh` prints the new version and its changelog section, and warns if the
+image reads an env key this launcher doesn't know (time to `git pull`). Older
+images just get the plain `image updated:` nudge. `--doctor` checks the same
+manifest independently, so you can spot launcher/image drift any time.
 
 ## Customizing the environment
 
@@ -371,13 +339,11 @@ Images are pulled fresh on every `./start.sh`:
 - Pin a version — set `IMAGE_TAG` in `.env` to e.g. `0.0.2`.
 - `git pull` this repo occasionally to pick up topology changes.
 
-**The launcher checks itself, too.** Every boot runs a best-effort check of
-whether this launcher checkout is behind its git upstream, and prints
-`launcher update available: N commit(s) behind origin — git pull to update`
-when it is (silent when up to date, offline, or not a git checkout — never a
-failure). `./start.sh --doctor` reports the same thing as its own PASS/WARN
-line. Set `OC_SKIP_UPDATE_CHECK=1` to skip the boot-time check entirely (e.g.
-scripted/CI runs that don't want the extra `git fetch`).
+**The launcher checks itself, too.** Every boot does a best-effort check of
+whether this checkout is behind its git upstream and prints `launcher update
+available: N commit(s) behind origin — git pull to update` when it is (silent
+when up to date, offline, or not a git checkout). `--doctor` reports the same.
+Set `OC_SKIP_UPDATE_CHECK=1` to skip it (e.g. in CI).
 
 ## Troubleshooting
 
@@ -399,8 +365,8 @@ scripted/CI runs that don't want the extra `git fetch`).
 - **Lost track of what's running?** `./start.sh --status` (all stacks) or
   `--status <repo>` (one); `--logs <repo>` follows logs, `--shell <repo>` drops
   you inside the container.
-- **Seeing `launcher update available: ...` on every boot and don't want the
-  check?** Set `OC_SKIP_UPDATE_CHECK=1` (e.g. in CI) to skip it entirely — see
-  [Updating to a new image](#updating-to-a-new-image). It's always best-effort
-  and silent on failure, so this is purely about the noise, not an error.
+- **`launcher update available: ...` on every boot?** Set
+  `OC_SKIP_UPDATE_CHECK=1` to skip the check (e.g. in CI) — see
+  [Updating to a new image](#updating-to-a-new-image). It's best-effort and
+  silent on failure, so this is just about noise, not an error.
 - **Linux only** — matches the parent system's supported scope.

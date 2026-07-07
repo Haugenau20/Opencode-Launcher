@@ -2050,6 +2050,65 @@ seed_env_doctor() {
   grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
 }
 
+@test "--exec on an interactive terminal: spinner draws, answer lands cleanly on its own line" {
+  command -v python3 >/dev/null 2>&1 || skip "python3 required for the PTY harness"
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  # Fake opencode emits the answer on stdout (+ noise on stderr). Under a full
+  # PTY the launcher is interactive, so the spinner runs; capture what the
+  # terminal actually received.
+  export FAKE_DOCKER_EXEC_EMIT_NOISE=1
+  run python3 "$REPO_ROOT/tests/pty-capture.py" 20 \
+    bash "$SANDBOX/start.sh" --exec "hello" "$repo"
+  [ "$status" -eq 0 ]
+  # A braille spinner glyph (U+28xx -> UTF-8 lead bytes E2 A0..) was drawn.
+  [[ "$output" == *$'\xe2\xa0'* ]]
+  # The answer is present AND starts on its own line — the regression was the
+  # spinner text and the answer ending up smooshed on a single line.
+  [[ "$output" == *"ANSWER-MARKER"* ]]
+  [[ "$output" == *$'\nANSWER-MARKER'* ]]
+}
+
+@test "--exec (teardown) boots only opencode — no web-UI publisher — and scopes the pull" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "hi" "$repo"
+  [ "$status" -eq 0 ]
+  # Only the agent (+ its squid dependency) comes up; NOT the whole stack, so
+  # oc-publish (the host-port web-UI publisher) is never started.
+  grep -qE 'compose .* up -d opencode$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* up -d$' "$FAKE_DOCKER_LOG"
+  # The pull is scoped to the two images actually needed, not a blanket pull.
+  grep -qE 'compose .* pull opencode squid$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* pull$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec --persist boots the FULL stack (web UI included)" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  run_launcher --exec "hi" --persist "$repo"
+  [ "$status" -eq 0 ]
+  # --persist keeps a resumable environment, so the whole stack comes up.
+  grep -qE 'compose .* up -d$' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'compose .* up -d opencode$' "$FAKE_DOCKER_LOG"
+}
+
+@test "--exec (teardown) omits the web-UI URL/note, even in the failure replay" {
+  seed_env
+  local repo; repo="$(make_repo_arg "myrepo")"
+  local errfile="$BATS_TEST_TMPDIR/exec.err"
+  # Force a nonzero run so the buffered boot chatter is replayed to stderr, then
+  # assert it carries the normal boot lines but NOT the web-UI URL/workaround —
+  # a one-shot --exec publishes no port, so those lines are suppressed.
+  export FAKE_DOCKER_EXEC_RC=7
+  run bash -c 'bash "$1" --exec "hi" "$2" 2>"$3"' _ "$SANDBOX/start.sh" "$repo" "$errfile"
+  [ "$status" -eq 7 ]
+  local err; err="$(cat "$errfile")"
+  [[ "$err" == *"project: opencode-myrepo"* ]]
+  [[ "$err" != *"web UI:"* ]]
+  [[ "$err" != *"14445"* ]]
+}
+
 # --- --status: --also mounts + MCP servers ----------------------------------
 
 @test "--status lists --also mounts from the generated overlay" {
