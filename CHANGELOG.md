@@ -308,6 +308,36 @@ _Changes to the launcher itself._
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
 
+## [0.0.7] — 2026-07-07
+
+**Action required:** none — just re-run `./start.sh`
+
+- The launcher's **`--also`** extra folders are now **discoverable** to the
+  agent. opencode's file tools are anchored to `/workspace`, so on an older
+  image those sibling folders are mounted but the agent won't find them on its
+  own; this image lets a launcher (≥ 0.10.0) advertise them. Nothing to
+  configure — see the launcher 0.10.0 entry for the `--also` side.
+- **Squid now logs *denied* requests** — a blocked destination, a disallowed
+  `CONNECT` port, an unsafe port — to `docker compose logs squid`, so you can
+  debug allowlist misses yourself. Allowed traffic, including all
+  LLM/conversation data, is still **never** logged; the no-retention stance is
+  unchanged.
+- **Security hardening:** removed passwordless `sudo` (and dropped the `sudo`
+  package) — it let the container re-own the host workspace bind mount and
+  nothing legitimate used it; the git credential helper now matches hosts
+  **exactly** (a lookalike host could previously be handed real credentials);
+  and the git safety gate no longer lets `git -C …`, `git -c k=v …`, or
+  `git --git-dir=… …` forms slip past its remote gate (`ls-remote` is gated
+  too).
+- The image now ships a machine-readable **manifest**
+  (`/etc/opencode/manifest.json`) and its own **`CHANGELOG.md`** — the source
+  the launcher reads to show a new image's version and notes on update, and to
+  warn about env keys it doesn't yet know (see launcher 0.9.0).
+- **Removed the `ENABLE_SESSION_LOGS` knob** — it never worked (the tmpfs swap
+  it relied on needs a capability compose never grants, so session state was
+  always persisted anyway) and is now ignored. Already dropped launcher-side in
+  0.8.0; if it still lingers in your `.env`, delete it.
+
 ## [0.0.6] — 2026-06-26
 
 **Action required:** edit `.env` (new MCP credentials) + update launcher (≥ 0.7.0)

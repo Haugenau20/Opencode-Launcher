@@ -174,7 +174,7 @@ exec_run() {
   # pipe), drop it two lines below the erased spinner so it's clearly separated.
   # A captured/piped answer gets no added newlines — it stays byte-exact.
   if [ -t 4 ] && [ -t 3 ]; then
-    printf '\n\n' >&3
+    printf '\n' >&3
   fi
   cat "$answer_file" >&3 || true
   rm -f "$answer_file"
