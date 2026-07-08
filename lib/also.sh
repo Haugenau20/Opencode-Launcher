@@ -150,6 +150,13 @@ write_also_overlay() {
     echo "      # folders. The image honors this generic var; it has no --also"
     echo "      # or /workspace-extra knowledge of its own."
     echo "      OPENCODE_EXTRA_INSTRUCTIONS: ${ALSO_CONTEXT_CONTAINER_PATH}"
+    echo "      # Pre-approve access to the mounts so opencode does not prompt"
+    echo "      # ('Access external directory') on every read/edit under them —"
+    echo "      # its external_directory permission defaults to 'ask'. Same"
+    echo "      # generic contract as the var above: the image folds this glob"
+    echo "      # into permission.external_directory as 'allow' and has no"
+    echo "      # /workspace-extra knowledge of its own."
+    echo "      OPENCODE_EXTRA_ALLOWED_DIRS: /workspace-extra/**"
     echo "    volumes:"
     while IFS=$'\t' read -r abs mode name; do
       [ -n "$abs" ] || continue
