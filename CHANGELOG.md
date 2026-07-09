@@ -55,6 +55,18 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.12.0] — 2026-07-09
+
+### Added
+- Support for the new **`opencode-pty`** plugin (image `0.0.8`): opt in via
+  `ENABLED_PLUGINS` as usual, then start its web viewer from the TUI with
+  `/pty-open-background-spy`. The launcher publishes the viewer on a derived
+  port — the base port with a literal `1` prepended (`4096` → `14096`) — and
+  prints its URL alongside the main web UI on boot, `--status`, and `--open`
+  whenever the plugin is enabled for that project. Fresh port assignment now
+  also checks that a candidate's derived viewer port is free, not just the
+  candidate itself, so multiple instances' viewers never collide either.
+
 ## [0.11.0] — 2026-07-07
 
 ### Changed
@@ -307,6 +319,24 @@ _Changes to the launcher itself._
 
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
+
+## [0.0.8] — 2026-07-09
+
+**Action required:** re-pull image. Opt in to `opencode-pty` via
+`ENABLED_PLUGINS`; if you want its web viewer, also update launcher (≥ 0.12.0).
+
+- New **`opencode-pty`** plugin (opt-in via `ENABLED_PLUGINS`, off by default):
+  interactive PTY management tools for driving background processes, plus a
+  live web viewer you start from the TUI with `/pty-open-background-spy`. The
+  viewer is served on a port derived from the main one (see the launcher
+  0.12.0 entry for the host-side wiring).
+- New **`pty-sessions`** skill teaching the agent to use those PTY tools
+  instead of the blocking one-shot `bash` tool; only present when
+  `opencode-pty` is enabled.
+- The `*-fetch` skills (Bitbucket, Jira, GitLab, JFrog, Confluence) now only
+  appear when their matching MCP server is actually up, instead of always
+  showing regardless of whether credentials are configured.
+- Bumped the bundled OpenCode CLI to `1.17.15`.
 
 ## [0.0.7] — 2026-07-07
 
