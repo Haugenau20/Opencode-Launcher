@@ -76,6 +76,12 @@ cmd_status() {
   if [ -n "$running" ]; then
     info "status:  up ($running)"
     info "web UI:  http://localhost:${port}"
+    # opencode-pty viewer — same condition as the boot report (see pty_enabled,
+    # lib/project.sh): only worth reporting when this project has the plugin
+    # enabled; nothing is listening on it until it's started in the TUI.
+    if pty_enabled "$penv"; then
+      info "viewer:  http://localhost:1${port}  (start it in the TUI with /pty-open-background-spy)"
+    fi
     info "resume:  ./start.sh --continue $repo_arg"
   else
     info "status:  down"

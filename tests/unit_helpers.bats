@@ -104,6 +104,43 @@ setup() {
   [ "$output" = "4100" ]
 }
 
+# --- viewer_port_for / port_pair_free (opencode-pty viewer-port coupling) ---
+# Fresh port assignment must never hand out a base port whose derived
+# opencode-pty viewer port (1<base>) is already taken by something else —
+# oc-publish's second socat leg would then fail to bind, breaking
+# `docker compose up`. See lib/project.sh.
+
+@test "viewer_port_for: prepends a literal '1' to the base port" {
+  run viewer_port_for 4096
+  [ "$output" = "14096" ]
+}
+
+@test "port_pair_free: true when neither the base nor its viewer port is busy" {
+  port_in_use() { return 1; }   # nothing busy
+  run port_pair_free 4096
+  [ "$status" -eq 0 ]
+}
+
+@test "port_pair_free: false when only the base port is busy" {
+  port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
+  run port_pair_free 4096
+  [ "$status" -ne 0 ]
+}
+
+@test "port_pair_free: false when only the viewer port is busy" {
+  port_in_use() { [ "$1" = 14096 ] && return 0 || return 1; }
+  run port_pair_free 4096
+  [ "$status" -ne 0 ]
+}
+
+@test "find_free_port: skips a candidate whose viewer port is busy, even though the base port itself is free" {
+  # 4097's base port is free, but its viewer port 14097 is busy — must be
+  # skipped in favor of 4098 (whose base AND viewer port are both free).
+  port_in_use() { [ "$1" = 14097 ] && return 0 || return 1; }
+  run find_free_port 4097 4196
+  [ "$output" = "4098" ]
+}
+
 # --- resolve_project_port / publish_container_running (sticky ports) --------
 # lib/project.sh — the fix for the "management commands clobber the recorded
 # port" bug: ports must be sticky per project rather than recomputed on every
@@ -121,6 +158,48 @@ setup() {
   printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/x\n' > "$ENVS_DIR/demo.env"
   run recorded_port demo
   [ "$output" = "5555" ]
+}
+
+# --- pty_enabled (opencode-pty viewer-URL gating) ---------------------------
+
+@test "pty_enabled: false when the file does not exist" {
+  run pty_enabled "$BATS_TEST_TMPDIR/no-such.env"
+  [ "$status" -ne 0 ]
+}
+
+@test "pty_enabled: false when ENABLED_PLUGINS is empty" {
+  local f="$BATS_TEST_TMPDIR/empty.env"
+  printf 'ENABLED_PLUGINS=\n' > "$f"
+  run pty_enabled "$f"
+  [ "$status" -ne 0 ]
+}
+
+@test "pty_enabled: false when ENABLED_PLUGINS lists other plugins only" {
+  local f="$BATS_TEST_TMPDIR/other.env"
+  printf 'ENABLED_PLUGINS=superpowers dcp\n' > "$f"
+  run pty_enabled "$f"
+  [ "$status" -ne 0 ]
+}
+
+@test "pty_enabled: true when opencode-pty is among space-separated plugins" {
+  local f="$BATS_TEST_TMPDIR/space.env"
+  printf 'ENABLED_PLUGINS=superpowers opencode-pty dcp\n' > "$f"
+  run pty_enabled "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "pty_enabled: true when opencode-pty is comma-separated" {
+  local f="$BATS_TEST_TMPDIR/comma.env"
+  printf 'ENABLED_PLUGINS=superpowers,opencode-pty\n' > "$f"
+  run pty_enabled "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "pty_enabled: false on a mere substring match (opencode-pty-fake)" {
+  local f="$BATS_TEST_TMPDIR/substr.env"
+  printf 'ENABLED_PLUGINS=opencode-pty-fake\n' > "$f"
+  run pty_enabled "$f"
+  [ "$status" -ne 0 ]
 }
 
 @test "publish_container_running: true when docker ps lists this project's oc-publish container" {
@@ -190,6 +269,17 @@ setup() {
 @test "resolve_project_port: no recorded port, 4096 busy -> first free port from 4097" {
   docker() { [ "$1" = ps ] && printf ''; }
   port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
+  run resolve_project_port demo
+  [ "$output" = "4097" ]
+}
+
+@test "resolve_project_port: fresh assignment skips 4096 when only its viewer port (14096) is busy" {
+  # Regression for the opencode-pty viewer-port coupling: 4096 itself is
+  # free, but something else is already listening on 14096 (its derived
+  # viewer port) — resolve_project_port must not hand out 4096 anyway, since
+  # oc-publish's second socat leg would then fail to bind it.
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { [ "$1" = 14096 ] && return 0 || return 1; }
   run resolve_project_port demo
   [ "$output" = "4097" ]
 }

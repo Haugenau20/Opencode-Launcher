@@ -22,6 +22,13 @@ services:
       no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
       OPENCODE_INTERNAL_PORT: "4096"
       PROJECT_SLUG: ${PROJECT_SLUG:-default}
+      # opencode-pty viewer: must bind non-loopback (0.0.0.0) so oc-publish's
+      # second socat leg below can reach it from its own container. Port is
+      # derived from OPENCODE_PORT by prepending '1' (assumes OPENCODE_PORT
+      # stays a 4-digit port — same assumption oc-publish's ports: mapping
+      # below makes).
+      PTY_WEB_HOSTNAME: "0.0.0.0"
+      PTY_WEB_PORT: "1${OPENCODE_PORT:-4096}"
     volumes:
       # :z relabels the host repo for SELinux (shared, not :Z) so an enforcing
       # host doesn't deny the container access. Named volumes are auto-labelled.
@@ -46,10 +53,21 @@ services:
     hostname: oc-publish
     depends_on:
       - opencode
-    entrypoint: ["socat"]
-    command: ["TCP-LISTEN:4096,fork,reuseaddr", "TCP:opencode:4096"]
+    # Two socat legs: the main web UI (4096) and, second, the opencode-pty
+    # viewer on the derived 1<OPENCODE_PORT> port — only live once the plugin
+    # is enabled and its server is started in the TUI (/pty-open-background-spy).
+    # `trap ... wait` ties both listeners to this shell's lifetime so
+    # `docker stop`/compose down still terminate it cleanly.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap 'kill 0' TERM INT
+        socat TCP-LISTEN:4096,fork,reuseaddr TCP:opencode:4096 &
+        socat TCP-LISTEN:1${OPENCODE_PORT:-4096},fork,reuseaddr TCP:opencode:1${OPENCODE_PORT:-4096} &
+        wait
     ports:
       - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+      - "127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"
     networks:
       - oc_proxy
       - oc_publish

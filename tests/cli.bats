@@ -400,6 +400,66 @@ setup() {
   grep -q '^ENABLED_PLUGINS=$' "$SANDBOX/.envs/myrepo.env"
 }
 
+# --- opencode-pty viewer URL -------------------------------------------------
+# The viewer (a second oc-publish socat leg on 1<port>) is only worth
+# reporting when opencode-pty is actually enabled for this project — see
+# pty_enabled in lib/project.sh.
+
+@test "boot report prints the opencode-pty viewer URL when the plugin is enabled" {
+  seed_env
+  sed -i 's|^ENABLED_PLUGINS=.*|ENABLED_PLUGINS=superpowers opencode-pty|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"web UI:  http://localhost:4096"* ]]
+  [[ "$output" == *"viewer:  http://localhost:14096"* ]]
+  [[ "$output" == *"/pty-open-background-spy"* ]]
+}
+
+@test "boot report does not print a viewer URL when opencode-pty is not enabled" {
+  seed_env
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"web UI:  http://localhost:4096"* ]]
+  [[ "$output" != *"viewer:"* ]]
+}
+
+@test "--open also opens the opencode-pty viewer URL when the plugin is enabled" {
+  seed_env
+  sed -i 's|^ENABLED_PLUGINS=.*|ENABLED_PLUGINS=opencode-pty|' "$SANDBOX/.env"
+  run_launcher --detach --open "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  grep -qE 'http://localhost:4096' "$FAKE_XDG_OPEN_LOG"
+  grep -qE 'http://localhost:14096' "$FAKE_XDG_OPEN_LOG"
+}
+
+@test "--status prints the opencode-pty viewer URL for an up stack when the plugin is enabled" {
+  seed_env
+  sed -i 's|^ENABLED_PLUGINS=.*|ENABLED_PLUGINS=opencode-pty|' "$SANDBOX/.env"
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"web UI:  http://localhost:"* ]]
+  [[ "$output" == *"viewer:  http://localhost:1"* ]]
+  [[ "$output" == *"/pty-open-background-spy"* ]]
+}
+
+@test "--status prints no viewer URL for an up stack when opencode-pty is not enabled" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+
+  FAKE_DOCKER_COMPOSE_LS_OUTPUT="opencode-my-service	running(3)" \
+    run_launcher --status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"web UI:  http://localhost:"* ]]
+  [[ "$output" != *"viewer:"* ]]
+}
+
 # --- first-run secrets flow -------------------------------------------------
 
 @test "first run creates .env from the template and stores fed secrets" {

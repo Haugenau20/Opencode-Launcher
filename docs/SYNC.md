@@ -37,6 +37,23 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    Keep them sharing the one variable so the publisher can never drift to a
    different/absent tag and silently break `localhost:4096`.
 
+3. **`oc-publish` viewer-port block (opencode-pty).** The dual-socat
+   `entrypoint`/`command` shell wrapper, its second `ports:` line, and the
+   `opencode` service's `PTY_WEB_HOSTNAME`/`PTY_WEB_PORT` environment lines
+   must stay **byte-for-byte identical** to the maintainer repo:
+   - `docker/docker-compose.yml` (`opencode` `environment:`):
+     `PTY_WEB_HOSTNAME: "0.0.0.0"` and `PTY_WEB_PORT: "1${OPENCODE_PORT:-4096}"`
+   - `docker/docker-compose.yml` (`oc-publish`): the `entrypoint: ["/bin/sh", "-c"]`
+     + `trap 'kill 0' TERM INT` / dual-`socat` / `wait` `command:` block, and
+     the second `ports:` entry `"127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"`
+
+   The second socat leg and the `PTY_WEB_*` env vars are what let the
+   opencode-pty viewer (started in the TUI via `/pty-open-background-spy`) be
+   reached from the host at `1<OPENCODE_PORT>`. A drift here breaks the viewer
+   the same way an `oc-publish` tag drift breaks the main web UI (see #2) —
+   `oc-publish` would either fail to bind the second port or forward it to a
+   host/port the opencode-pty server isn't actually listening on.
+
 ## Shared env-var contracts (launcher sets, image consumes)
 
 These are behavioural contracts, not compose blocks to compare line-for-line:
@@ -59,6 +76,17 @@ the name and semantics in sync across both repos.
   `.env.example` would fire a bogus "update your launcher" drift warning, while
   adding it to `.env.example` would wrongly advertise an internal var as a user
   setting. Keeping it out of both is the invariant; do not add it to either.
+
+- **`PTY_WEB_HOSTNAME`/`PTY_WEB_PORT`** — told to the opencode-pty plugin so its
+  web-viewer server binds `0.0.0.0` (non-loopback, so `oc-publish`'s second
+  socat leg can reach it) on the derived `1<OPENCODE_PORT>` port. Same
+  symmetric-exclusion invariant as `OPENCODE_EXTRA_INSTRUCTIONS` above: these
+  are set **only** in `docker/docker-compose.yml`'s `opencode` `environment:`
+  block (computed from `OPENCODE_PORT`, not a user-facing setting), and must
+  appear in **neither** `.env.example` nor the image's `manifest.json` — adding
+  them to either would either advertise internal plumbing as a user knob, or
+  trip `manifest_missing_keys`' drift warning for a key `.env.example`
+  deliberately never carries.
 
 ## File location (a presentation-only delta)
 
@@ -113,17 +141,26 @@ to match the new location. Nothing to mirror.)
 
 ## Verified: needs no mirroring
 
-- **Opt-in plugins (`ENABLED_PLUGINS`).** The image bakes in three plugins
-  (`superpowers`, `dcp`, `opencode-workspace`), all OFF by default, and its
-  entrypoint reads `ENABLED_PLUGINS` on boot to symlink the requested ones in.
-  On the launcher side this is **just a plain env var the user sets in `.env`**.
-  The opencode service already injects `.env` into the container via
-  `env_file: - .env`, so the value reaches the entrypoint with **no compose or
-  `start.sh` change** — verified with `docker compose config` that a
-  space-separated value (e.g. `superpowers dcp`) survives env_file injection
-  intact. The plugin loading itself lives entirely in the image (entrypoint +
-  Dockerfile in OpenCode-Setup); nothing here mirrors it. Do **not** add an
-  `environment:` entry or any docker-exec/YAML-editing flow for it.
+- **Opt-in plugins (`ENABLED_PLUGINS`).** The image bakes in four plugins
+  (`superpowers`, `dcp`, `opencode-workspace`, `opencode-pty`), all OFF by
+  default, and its entrypoint reads `ENABLED_PLUGINS` on boot to symlink the
+  requested ones in. On the launcher side this is **just a plain env var the
+  user sets in `.env`**. The opencode service already injects `.env` into the
+  container via `env_file: - .env`, so the value reaches the entrypoint with
+  **no compose or `start.sh` change** — verified with `docker compose config`
+  that a space-separated value (e.g. `superpowers dcp`) survives env_file
+  injection intact. The plugin loading itself lives entirely in the image
+  (entrypoint + Dockerfile in OpenCode-Setup); nothing here mirrors it. Do
+  **not** add an `environment:` entry or any docker-exec/YAML-editing flow for
+  the *enable/disable* mechanism itself.
+
+  **`opencode-pty` is the one exception to "no compose change."** Unlike the
+  other three (purely image-internal), it needs a host-reachable port for its
+  web viewer — that's the `PTY_WEB_HOSTNAME`/`PTY_WEB_PORT` environment lines
+  and the `oc-publish` dual-socat/second-`ports:` block described above (see
+  "Blocks that must match the maintainer repo exactly" #3 and the
+  `PTY_WEB_HOSTNAME`/`PTY_WEB_PORT` entry under "Shared env-var contracts").
+  Those DO need mirroring; only the enable-list plumbing itself doesn't.
 
 ## Reversibility marker — the web-UI working-directory default
 
