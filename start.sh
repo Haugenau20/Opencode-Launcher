@@ -25,7 +25,7 @@ EXTRA_PACKAGES_FILE="${EXTRA_PACKAGES_FILE:-extra-packages.txt}"
 # first-run setup so users can opt in interactively. This is only a convenience
 # list: the prompt accepts any value (so a newer image's plugins still work even
 # if this is stale), and the authoritative catalog is the /plugins TUI command.
-KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace}"
+KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace opencode-pty}"
 
 # --- sourced libraries ------------------------------------------------------
 # Resolved relative to this script's OWN location so the modules load whether
@@ -577,6 +577,15 @@ cmd_run() {
     local WEB_UI_URL="http://localhost:${PORT}"
     info "web UI:  ${WEB_UI_URL}"
     [ "$WANT_OPEN" -eq 1 ] && open_url "$WEB_UI_URL"
+    # opencode-pty viewer: only worth printing when the plugin is actually
+    # enabled for this project (see pty_enabled, lib/project.sh) — its port is
+    # published (oc-publish's second socat leg) either way, but nothing is
+    # listening on it until the plugin's server is started in the TUI.
+    if pty_enabled "$PROJECT_ENV"; then
+      local VIEWER_URL="http://localhost:1${PORT}"
+      info "viewer:  ${VIEWER_URL}  (start it in the TUI with /pty-open-background-spy)"
+      [ "$WANT_OPEN" -eq 1 ] && open_url "$VIEWER_URL"
+    fi
     # Web-UI note — keep this visible on every web-UI boot. Remove once a newer
     # image defaults a new web-UI session to /workspace (upstream
     # anomalyco/opencode#14445).

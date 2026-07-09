@@ -114,7 +114,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume later with `./start.sh --continue --persist <repo>`. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only); leaves the stack running. |
 | `--continue` (`-c`) | Resume your most recent session instead of a fresh one (opencode's own `-c`). |
-| `--open` | Open the web UI URL in your browser via `xdg-open`. Non-fatal if `xdg-open` is missing. |
+| `--open` | Open the web UI URL in your browser via `xdg-open`. Also opens the opencode-pty viewer URL when that plugin is enabled. Non-fatal if `xdg-open` is missing. |
 | `--also <path>[:rw]` | Mount an extra host folder for context, read-only by default — see [Extra folders for context](#extra-folders-for-context---also). |
 | `--exec "<prompt>"` | Boot, run one prompt non-interactively, tear down, exit with its rc — see [Non-interactive one-shot runs](#non-interactive-one-shot-runs---exec). |
 | `--doctor [<repo>]` | Print a PASS/WARN/FAIL environment report (Docker, compose, registry auth, `.env`, ports, disk, launcher update). |
@@ -232,7 +232,10 @@ One launcher clone handles many repos — just point `start.sh` at another path:
 Each invocation derives its own project slug, port, and workspace mount from the
 path (nothing stored in `.env`). Each project gets its own web UI on its own port
 (the browser UI derives its backend from the page origin, so any port works) —
-they don't collide.
+they don't collide. If `opencode-pty` is enabled, its viewer port travels with
+the base port (base `4096` -> viewer `14096`, base `4097` -> viewer `14097`,
+etc.) — the two ranges stay disjoint, so multiple instances' viewers don't
+collide either.
 
 ## Known limitations
 
@@ -308,7 +311,7 @@ comparison and a "when to reach for which" guide.
 
 ## Plugins
 
-The image ships three OpenCode plugins, **baked in but OFF by default** (opt-in).
+The image ships four OpenCode plugins, **baked in but OFF by default** (opt-in).
 They load offline from files inside the image, so enabling them adds **no network
 access**:
 
@@ -317,6 +320,7 @@ access**:
 | `superpowers` | Skills library: brainstorming, writing-plans, systematic-debugging, TDD, code review, etc. | [obra/superpowers](https://github.com/obra/superpowers) |
 | `dcp` | Dynamic context pruning — silently trims stale tool output from the context window to save tokens (no user-facing tool). | [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) |
 | `opencode-workspace` | `plan_save`/`plan_read` planning tools + background-agent delegation (async sub-agents). | [kdcokenny/opencode-workspace](https://github.com/kdcokenny/opencode-workspace) |
+| `opencode-pty` | Web viewer onto the TUI's own terminal. Once enabled, run `/pty-open-background-spy` inside the TUI to start its server, then open `http://localhost:1<port>` (e.g. port `4096` -> `14096`; `start.sh`/`--status` print the exact URL). | (bundled with the image) |
 
 > **WARNING — `opencode-workspace` is incompatible with some models.** The extra
 > tools and system prompt it injects are rejected by certain upstreams, so every

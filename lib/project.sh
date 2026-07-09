@@ -30,11 +30,33 @@ port_in_use() {
   fi
 }
 
+# viewer_port_for BASE — echo the opencode-pty web-viewer port derived from
+# BASE by the docker-compose.yml oc-publish/opencode blocks: a literal '1'
+# prepended to BASE (e.g. 4096 -> 14096). Assumes BASE stays a 4-digit port,
+# same assumption the compose interpolation (`1${OPENCODE_PORT:-4096}`) makes.
+viewer_port_for() {
+  printf '1%s' "$1"
+}
+
+# port_pair_free BASE — return 0 iff BASE AND its derived viewer port
+# (viewer_port_for BASE) are BOTH free. Fresh port assignment must check both:
+# handing out a base port whose viewer port is already taken by some other
+# process would leave oc-publish unable to publish that second port (its
+# socat leg fails to bind), breaking `docker compose up` even though BASE
+# itself was fine.
+port_pair_free() {
+  local base="$1"
+  ! port_in_use "$base" && ! port_in_use "$(viewer_port_for "$base")"
+}
+
 # find_free_port START [LIMIT] — echo the first free port >= START, scanning up
 # to LIMIT (exclusive; default START+100). Echoes START itself if it is free.
+# "Free" means the viewer-port-aware sense (port_pair_free): a candidate whose
+# derived opencode-pty viewer port is taken gets skipped too, not just the
+# candidate itself.
 find_free_port() {
   local p="$1" limit="${2:-$(( $1 + 100 ))}"
-  while [ "$p" -lt "$limit" ] && port_in_use "$p"; do
+  while [ "$p" -lt "$limit" ] && ! port_pair_free "$p"; do
     p=$((p + 1))
   done
   printf '%s' "$p"
@@ -48,6 +70,19 @@ recorded_port() {
   local penv="${ENVS_DIR}/${slug}.env"
   [ -f "$penv" ] || return 0
   sed -n 's|^OPENCODE_PORT=\(.*\)$|\1|p' "$penv" | tail -n1
+}
+
+# pty_enabled ENV_PATH — return 0 iff ENV_PATH's ENABLED_PLUGINS list (space-
+# or comma-separated, same convention as .env.example) contains the token
+# "opencode-pty". Takes a file path rather than a SLUG so callers can point it
+# at whichever env file is in scope (the per-project env file at boot/status
+# time, or $ENV_FILE itself); a missing file or key is just "not enabled",
+# never fatal.
+pty_enabled() {
+  local env_path="$1" enabled
+  [ -f "$env_path" ] || return 1
+  enabled="$(sed -n 's|^ENABLED_PLUGINS=\(.*\)$|\1|p' "$env_path" | tail -n1)"
+  printf '%s' "$enabled" | grep -qE '(^|[[:space:],])opencode-pty([[:space:],]|$)'
 }
 
 # publish_container_running SLUG — return 0 iff this project's own
@@ -70,8 +105,14 @@ publish_container_running() {
 #      running with no recorded port, fall through to the default logic.
 #   b. else if a recorded port exists and is currently free, reuse it (sticky
 #      across down/up cycles, even after 4096 frees up again).
-#   c. else 4096 if free, otherwise the first free port in 4097-4196
-#      (find_free_port; existing fallback behavior).
+#   c. else 4096 if free (base AND its opencode-pty viewer port 14096 — see
+#      port_pair_free), otherwise the first free port in 4097-4196
+#      (find_free_port; existing fallback behavior, now equally viewer-aware).
+#
+# Only the FRESH-assignment branch (c) gets the viewer-port coupling — (a)/(b)
+# are sticky reuse of a port this project itself already recorded/is running
+# on, and must keep behaving exactly as before (never bounced to a different
+# port just because a viewer port looks busy).
 resolve_project_port() {
   local slug="$1" recorded running=0
   recorded="$(recorded_port "$slug")"
@@ -87,7 +128,7 @@ resolve_project_port() {
     return 0
   fi
 
-  if ! port_in_use 4096; then
+  if port_pair_free 4096; then
     printf '%s' 4096
     return 0
   fi
