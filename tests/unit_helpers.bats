@@ -77,6 +77,19 @@ setup() {
   [ "$(get_env HOST_GID)" = "2" ]
 }
 
+@test "set_env: appends a key that is not already present, leaving others intact" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  set_env NEWKEY hello
+  [ "$(get_env NEWKEY)" = "hello" ]
+  [ "$(get_env FOO)" = "bar" ]
+}
+
+@test "set_env: an appended value round-trips through sed-special characters" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  set_env JIRA_PAT 'p@ss|w&rd\x'
+  [ "$(get_env JIRA_PAT)" = 'p@ss|w&rd\x' ]
+}
+
 @test "get_env: returns empty for a missing key" {
   printf 'FOO=bar\n' > "$ENV_FILE"
   run get_env NOPE
@@ -1559,6 +1572,118 @@ git_repo_pair() {
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"still running"* ]]
+}
+
+# --- image_tag_pinned (lib/update.sh) ----------------------------------------
+
+@test "image_tag_pinned: empty tag is NOT a pin (tracks latest)" {
+  run image_tag_pinned ""
+  [ "$status" -ne 0 ]
+}
+
+@test "image_tag_pinned: 'latest' is NOT a pin" {
+  run image_tag_pinned "latest"
+  [ "$status" -ne 0 ]
+}
+
+@test "image_tag_pinned: 'local' (self-built sentinel) is NOT a pin to nudge" {
+  run image_tag_pinned "local"
+  [ "$status" -ne 0 ]
+}
+
+@test "image_tag_pinned: a semver tag IS a pin" {
+  run image_tag_pinned "0.0.5"
+  [ "$status" -eq 0 ]
+}
+
+@test "image_tag_pinned: a @sha256 digest IS a pin" {
+  run image_tag_pinned "@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  [ "$status" -eq 0 ]
+}
+
+# --- launcher_pull_ff (lib/update.sh) ----------------------------------------
+
+@test "launcher_pull_ff: fast-forwards a behind clone to its upstream" {
+  git_repo_pair ffclone
+  ( cd "$BATS_TEST_TMPDIR/ffclone-seed" && echo more >> f && git add f && git commit -q -m second && git push -q origin main )
+  # precondition: 1 behind
+  run launcher_behind_count "$BATS_TEST_TMPDIR/ffclone"
+  [ "$output" = "1" ]
+  # pull --ff-only succeeds and lands us back in sync
+  run launcher_pull_ff "$BATS_TEST_TMPDIR/ffclone"
+  [ "$status" -eq 0 ]
+  run launcher_behind_count "$BATS_TEST_TMPDIR/ffclone"
+  [ "$output" = "0" ]
+}
+
+@test "launcher_pull_ff: non-zero (never fatal) for a directory that is not a git repo" {
+  run launcher_pull_ff "$BATS_TEST_TMPDIR"
+  [ "$status" -ne 0 ]
+}
+
+# --- env_example_added_keys (lib/update.sh) ----------------------------------
+
+@test "env_example_added_keys: lists only keys new in .env.example since OLD_REV" {
+  local d="$BATS_TEST_TMPDIR/added"
+  git init -q -b main "$d"
+  ( cd "$d" && git config user.email t@e.com && git config user.name t \
+      && printf 'A=1\nB=2\n# a comment\n' > .env.example && git add -A && git commit -q -m v1 )
+  local old; old="$(git -C "$d" rev-parse HEAD)"
+  ( cd "$d" && printf 'A=1\nB=2\n# a comment\nC=3\nD=\n' > .env.example && git add -A && git commit -q -m v2 )
+  run env_example_added_keys "$d" "$old"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"C"* ]]
+  [[ "$output" == *"D"* ]]
+  [[ "$output" != *"A"* ]]
+  [[ "$output" != *"B"* ]]
+}
+
+@test "env_example_added_keys: empty when only a value changed (same keys)" {
+  local d="$BATS_TEST_TMPDIR/samekeys"
+  git init -q -b main "$d"
+  ( cd "$d" && git config user.email t@e.com && git config user.name t \
+      && printf 'A=1\n' > .env.example && git add -A && git commit -q -m v1 )
+  local old; old="$(git -C "$d" rev-parse HEAD)"
+  ( cd "$d" && printf 'A=999\n' > .env.example && git add -A && git commit -q -m v2 )
+  run env_example_added_keys "$d" "$old"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "env_example_added_keys: empty (never fatal) for a non-git dir or bad rev" {
+  run env_example_added_keys "$BATS_TEST_TMPDIR" "deadbeef"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- doctor_check_image_pin (lib/doctor.sh) ----------------------------------
+
+@test "doctor_check_image_pin: WARN (never FAIL) when the tag is pinned to a version" {
+  run doctor_check_image_pin 0.0.5
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN]"* ]]
+  [[ "$output" == *"pinned to 0.0.5"* ]]
+}
+
+@test "doctor_check_image_pin: PASS when the tag tracks latest" {
+  run doctor_check_image_pin latest
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS]"* ]]
+  [[ "$output" == *"tracks latest"* ]]
+}
+
+@test "doctor_check_image_pin: PASS for the 'local' self-built sentinel" {
+  run doctor_check_image_pin local
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS]"* ]]
+}
+
+@test "doctor_check_image_pin: reads IMAGE_TAG from .env when no arg is given" {
+  printf 'IMAGE_TAG=0.0.9\n' > "$ENV_FILE"
+  run doctor_check_image_pin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN]"* ]]
+  [[ "$output" == *"pinned to 0.0.9"* ]]
 }
 
 # --- doctor_check_launcher_update (lib/doctor.sh) ----------------------------

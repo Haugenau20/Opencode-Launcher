@@ -86,7 +86,10 @@ Notes:
     runs reuse it.
   * Web/desktop UI: give a new session the working directory /workspace (the
     default TUI is always rooted there).
-  * Each boot flags a launcher git update when one is due; set
-    OC_SKIP_UPDATE_CHECK=1 to skip that check.
+  * Each interactive boot offers to bring the launcher/image up to latest (the
+    only tested pairing) and restart into it when either is behind; after a
+    launcher upgrade it also offers to set any config keys new since your old
+    version. A headless/CI boot just prints a nudge. Set OC_SKIP_UPDATE_CHECK=1
+    to skip.
 EOF
 }

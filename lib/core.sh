@@ -16,11 +16,21 @@ die()  { err "$*"; exit 1; }
 # sed-escape a replacement string for use with '|' as the delimiter.
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
-# set_env KEY VALUE — replace `KEY=...` line in $ENV_FILE in place.
+# set_env KEY VALUE — set `KEY=VALUE` in $ENV_FILE: replace the existing `KEY=`
+# line in place, or APPEND it if the key isn't there yet. The append case
+# matters because a key can be genuinely new to a user's .env (a wizard/
+# --reconfigure key added to .env.example after their .env was created, or the
+# post-upgrade config offer): a pure in-place replace would silently no-op and
+# the value would be lost. Keys are `[A-Za-z_][A-Za-z0-9_]*`, so the `^KEY=`
+# grep/sed anchors carry no regex-special characters.
 set_env() {
   local key="$1" value="$2" esc
-  esc="$(sed_escape "$value")"
-  sed -i "s|^${key}=.*|${key}=${esc}|" "$ENV_FILE"
+  if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    esc="$(sed_escape "$value")"
+    sed -i "s|^${key}=.*|${key}=${esc}|" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
 }
 
 # read current value of KEY from $ENV_FILE (no surrounding processing).

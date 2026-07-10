@@ -41,9 +41,177 @@ for __lib in core config usage project also packages allowlist digest manifest u
 done
 unset __lib
 
+# --- boot-time upgrade gate -------------------------------------------------
+# upgrade_gate ATTACH_TUI [ORIG_ARGS...] — the "you're behind latest" gate.
+#
+# Only the newest launcher checkout running IMAGE_TAG=latest is a supported,
+# tested pairing (CHANGELOG "Compatibility"). Two things can leave that state,
+# and this walks the user back before the stack boots:
+#
+#   * the launcher checkout is behind its git upstream — a running bash can't
+#     reload itself, so accepting `git pull --ff-only`s it and re-execs
+#     start.sh with the original argv (guarded by OC_UPGRADED=1 so it can't
+#     loop) to run the new code;
+#   * IMAGE_TAG is pinned to a version/digest — accepting rewrites it to
+#     `latest` in .env, and the normal boot pull then lands the newest image.
+#
+# Accepting brings everything current and restarts into it; declining is a soft
+# no-op that boots what the user has. The gate only PROMPTS on an interactive
+# TUI boot with a real tty; every other boot (--detach/--no-tui, piped/CI, no
+# tty) falls back to the passive nudge that shipped before this gate — it never
+# blocks or hangs where nobody can answer. Skipped entirely under
+# OC_SKIP_UPDATE_CHECK=1, and once already re-exec'd this run (OC_UPGRADED=1).
+#
+# Uses the globals $__OCL_DIR (the launcher's own checkout) and $ENV_FILE (what
+# get_env/set_env read) defined at the top of this file.
+upgrade_gate() {
+  [ "${OC_SKIP_UPDATE_CHECK:-0}" = "1" ] && return 0
+  [ "${OC_UPGRADED:-0}" = "1" ] && return 0
+
+  local attach="$1"; shift
+  local -a orig=("$@")
+
+  # What's stale? behind = commits behind upstream (empty/non-numeric => 0);
+  # pin = the pinned IMAGE_TAG value, empty when tracking latest.
+  local behind pin="" tag
+  behind="$(launcher_behind_count "$__OCL_DIR")"
+  case "$behind" in ''|*[!0-9]*) behind=0 ;; esac
+  if [ -f "$ENV_FILE" ]; then
+    tag="$(get_env IMAGE_TAG)"
+    if image_tag_pinned "$tag"; then pin="$tag"; fi
+  fi
+
+  # Nothing stale => nothing to do.
+  if [ "$behind" -eq 0 ] && [ -z "$pin" ]; then return 0; fi
+
+  # Non-interactive (headless --detach/--no-tui, or no tty to prompt on): keep
+  # the passive nudge and boot — never prompt where nobody can answer.
+  if [ "$attach" -ne 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+    if [ "$behind" -gt 0 ]; then
+      info "launcher update available: $behind commit(s) behind origin — git pull to update"
+    fi
+    if [ -n "$pin" ]; then
+      info "image pinned to $pin — only IMAGE_TAG=latest is a supported/tested combo; set IMAGE_TAG=latest to update"
+    fi
+    return 0
+  fi
+
+  # Interactive: describe the drift and offer to fix it in one prompt.
+  info "updates available before boot:"
+  if [ "$behind" -gt 0 ]; then info "  launcher: $behind commit(s) behind origin"; fi
+  if [ -n "$pin" ]; then info "  image:    pinned to $pin (only latest is a supported/tested combo)"; fi
+  local reply=""
+  printf '\033[36m==>\033[0m bring everything up to date and restart? [Y/n] '
+  read -r reply || true
+  case "$reply" in
+    ''|[Yy]|[Yy][Ee][Ss]) ;;
+    *) warn "continuing on the current version (declined)."; return 0 ;;
+  esac
+
+  # Accepted. Pin first (cheap, local); then the launcher fast-forward, which
+  # re-execs on success so the new code runs (and picks up the latest IMAGE_TAG
+  # just written). A pin-only accept needs no re-exec: cmd_run reads the fresh
+  # IMAGE_TAG=latest from .env on the way down.
+  if [ -n "$pin" ]; then
+    set_env IMAGE_TAG latest
+    info "IMAGE_TAG set to latest."
+  fi
+  if [ "$behind" -gt 0 ]; then
+    info "updating launcher (git pull --ff-only) ..."
+    # Record the revision we're upgrading FROM (before the pull) so the restarted
+    # run can show exactly which config keys are new since it — see
+    # config_drift_step. Best-effort: empty if it can't be read.
+    local prev_rev
+    prev_rev="$(git -C "$__OCL_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if launcher_pull_ff "$__OCL_DIR"; then
+      info "launcher updated — restarting to run the newest ..."
+      export OC_UPGRADED=1
+      [ -n "$prev_rev" ] && export OC_PREV_REV="$prev_rev"
+      exec bash "$__OCL_DIR/start.sh" ${orig[@]+"${orig[@]}"}
+    fi
+    warn "couldn't fast-forward the launcher (dirty tree, diverged history, or offline)."
+    warn "  resolve it by hand:  git -C \"$__OCL_DIR\" pull --ff-only"
+    warn "  continuing on the current launcher version for now."
+  fi
+  return 0
+}
+
+# --- .env.example drift / post-upgrade config offer -------------------------
+# config_drift_step [PREV_REV] — reconcile the user's .env against .env.example.
+#
+# Ordinary boot (no PREV_REV, or non-interactive): passively warn about any
+# .env.example keys missing from the user's .env — today's behavior, unchanged.
+#
+# Right after an upgrade the gate re-execs us with OC_PREV_REV set to the commit
+# we upgraded FROM; at a real tty we then offer to set the keys that are NEW
+# since that version — the intersection of (keys added to .env.example in the
+# span just pulled) ∩ (still missing from .env) ∩ (editable via the wizard) —
+# one prompt each, reusing prompt_one_key. This is fully generic: it's driven by
+# the tracked .env.example diff across the exact commits the user crossed, so a
+# future release that adds a key surfaces automatically with no per-release code.
+# Declined/leftover keys fall through to the passive warning (and a later normal
+# boot re-flags anything still unset). Never prints values — keys only.
+#
+# Uses globals ENV_EXAMPLE, ENV_FILE, __OCL_DIR.
+config_drift_step() {
+  local prev_rev="${1:-}"
+  local drift_keys
+  drift_keys="$(check_env_drift "$ENV_EXAMPLE" "$ENV_FILE")"
+  [ -n "$drift_keys" ] || return 0
+
+  if [ -n "$prev_rev" ] && [ -t 0 ] && [ -t 1 ]; then
+    local added
+    added="$(env_example_added_keys "$__OCL_DIR" "$prev_rev")"
+    if [ -n "$added" ]; then
+      # new_keys = editable_schema_keys ∩ added ∩ drift_keys, in schema order.
+      # (editable_schema_keys excludes internal keys like HOST_UID/IMAGE_TAG.)
+      local -a new_keys=()
+      local k
+      while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        printf '%s\n' "$added"      | grep -qxF -- "$k" || continue
+        printf '%s\n' "$drift_keys" | grep -qxF -- "$k" || continue
+        new_keys+=("$k")
+      done < <(editable_schema_keys)
+
+      if [ "${#new_keys[@]}" -gt 0 ]; then
+        info "you just upgraded — ${#new_keys[@]} new config key(s) since your previous version:"
+        info "  ${new_keys[*]}"
+        local reply=""
+        printf '\033[36m==>\033[0m set them now? [Y/n] '
+        read -r reply || true
+        case "$reply" in
+          ''|[Yy]|[Yy][Ee][Ss])
+            # Buffer into an array first (done above) so each prompt_one_key
+            # reads from the terminal, not from a piped key list. prompt_one_key
+            # always set_env's the result, and set_env appends keys missing from
+            # .env — so every offered key lands (a skipped one as an empty line,
+            # which also stops the drift warning re-firing for it next boot).
+            for k in "${new_keys[@]}"; do prompt_one_key "$k"; done
+            info "saved to $ENV_FILE — continuing boot."
+            return 0 ;;
+          *)
+            warn "skipped — run ./start.sh --reconfigure to set them later."
+            return 0 ;;
+        esac
+      fi
+    fi
+  fi
+
+  # Passive fallback: ordinary boot, non-interactive, or nothing newly added.
+  warn "$ENV_EXAMPLE has new key(s) not in your $ENV_FILE: $(printf '%s' "$drift_keys" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  warn "  run ./start.sh --reconfigure, or add them to $ENV_FILE by hand."
+  return 0
+}
+
 # --- main flow --------------------------------------------------------------
 main() {
   set -euo pipefail
+
+  # Preserve argv verbatim before the parse loop consumes it, so the boot-time
+  # upgrade gate can re-exec start.sh into the freshly pulled version with the
+  # exact same invocation (see upgrade_gate).
+  local -a OC_ORIG_ARGS=("$@")
 
   local SCRIPT_DIR
   SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -200,6 +368,16 @@ main() {
     usage; die "--exec and --detach conflict — --exec is itself non-interactive"
   fi
 
+  # Boot-time upgrade gate: on an interactive boot, offer to bring the launcher
+  # and image up to latest (the only supported/tested pairing) before running,
+  # and restart into it if accepted. Skipped for --exec, which is scripted and
+  # non-interactive by construction — its output is machine-consumed and a
+  # prompt would hang it (upgrade_gate also falls back to a passive nudge on any
+  # non-tty boot, but skipping it here avoids the extra git fetch entirely).
+  if [ "$WANT_EXEC" -eq 0 ]; then
+    upgrade_gate "$ATTACH_TUI" ${OC_ORIG_ARGS[@]+"${OC_ORIG_ARGS[@]}"}
+  fi
+
   # Everything validated; hand off to the boot flow with the parsed options.
   #
   # --exec has its own entry point (cmd_exec, lib/exec.sh): it wraps the shared
@@ -329,16 +507,12 @@ cmd_run() {
     echo
   fi
 
-  # --- .env.example drift check ----------------------------------------------
-  # Non-fatal: new config can ship in .env.example between runs (a new optional
-  # key, etc). Tell the user what's missing from their own .env rather than
-  # silently ignoring it. Never prints values — keys only.
-  local drift_keys
-  drift_keys="$(check_env_drift "$ENV_EXAMPLE" "$ENV_FILE")"
-  if [ -n "$drift_keys" ]; then
-    warn "$ENV_EXAMPLE has new key(s) not in your $ENV_FILE: $(printf '%s' "$drift_keys" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    warn "  run ./start.sh --reconfigure, or add them to $ENV_FILE by hand."
-  fi
+  # --- .env.example drift / post-upgrade config offer ------------------------
+  # Non-fatal: new config can ship in .env.example between versions. On an
+  # ordinary boot this passively flags keys missing from the user's .env; right
+  # after an upgrade (OC_PREV_REV set) and at a tty it instead offers to set the
+  # keys that are NEW since the version upgraded from. See config_drift_step.
+  config_drift_step "${OC_PREV_REV:-}"
 
   # --- load IMAGE_REGISTRY and IMAGE_TAG from .env --------------------------
   local IMAGE_REGISTRY IMAGE_TAG
@@ -596,21 +770,10 @@ cmd_run() {
     warn "  /workspace). Tracking: anomalyco/opencode#14445."
   fi
 
-  # Launcher self-update nudge: best-effort (see lib/update.sh), silent on any
-  # failure (offline, no upstream, not a git checkout, etc.) and skippable
-  # entirely via OC_SKIP_UPDATE_CHECK=1 (e.g. for CI/scripted runs that don't
-  # want the extra `git fetch`). Skipped for --exec too: its output is
-  # machine-consumed (the nudge is buffered away on success anyway), and a
-  # `git fetch` on every one-shot run is exactly the startup latency --exec
-  # wants to avoid.
-  if [ "${OC_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ "$WANT_EXEC" -eq 0 ]; then
-    local behind_count
-    behind_count="$(launcher_behind_count "$__OCL_DIR")"
-    case "$behind_count" in
-      ''|0|*[!0-9]*) : ;;
-      *) info "launcher update available: $behind_count commit(s) behind origin — git pull to update" ;;
-    esac
-  fi
+  # The launcher/image update check now runs as an interactive gate BEFORE the
+  # boot (see upgrade_gate, called from main): on a tty it offers to bring both
+  # current and restart into the newest; on a headless/CI boot it falls back to
+  # the same passive nudge that used to print here. Nothing to repeat post-boot.
   echo
 
   # --- 9. attach the TUI (default) ------------------------------------------
