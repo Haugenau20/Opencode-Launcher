@@ -55,6 +55,54 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.13.0] — 2026-07-09
+
+### Changed
+
+- **The boot update check is now an interactive upgrade gate.** On a normal
+  interactive boot, when the launcher checkout is behind its git upstream
+  and/or `IMAGE_TAG` is pinned off `latest`, `start.sh` now prompts
+  `bring everything up to date and restart? [Y/n]` **before** booting the
+  stack. Accepting fast-forwards the launcher (`git pull --ff-only`), flips a
+  pinned `IMAGE_TAG` back to `latest`, and re-execs `start.sh` with the same
+  arguments so the run continues on the newest launcher + image — the only
+  tested pairing. Declining boots the current version unchanged.
+- The check runs **before** the image pull now (it used to nudge after the
+  stack was already up). Headless boots (`--detach`, `--exec`, or any run with
+  no controlling terminal) never prompt — they print the same passive
+  `launcher update available: …` nudge as before, plus an `image pinned to …`
+  line when relevant, and boot without blocking.
+- `OC_SKIP_UPDATE_CHECK=1` continues to skip the whole thing; a fresh
+  `OC_UPGRADED=1` guard (set only on the internal re-exec) prevents any restart
+  loop. `--doctor`'s launcher-behind report is unchanged. A pinned `local`
+  image tag (self-built / package-layer) is never treated as a pin to nudge.
+- **After a launcher upgrade, offer to set newly-added config keys.** When the
+  gate fast-forwards the launcher, the restarted run compares `.env.example` at
+  the version you upgraded *from* against the new one and, at a tty, offers to
+  set any keys that are new since then and still missing from your `.env` — one
+  prompt each (reusing the setup wizard), or skip and run `--reconfigure` later.
+  Fully generic: driven by the tracked `.env.example` diff across the exact
+  commits crossed, so future releases surface their new keys with no per-release
+  code. A headless boot keeps the existing passive drift warning.
+- **`--reconfigure` and the setup wizard can now add keys missing from your
+  `.env`.** Previously `set_env` only *replaced* an existing `KEY=` line, so a
+  key that was new to your `.env` since it was created (e.g. one added to
+  `.env.example` by a later release) was silently dropped — and the drift
+  warning's advice to "run `--reconfigure`" couldn't actually fix it. `set_env`
+  now appends a missing key, so both the wizard and the post-upgrade offer write
+  it correctly.
+- **`--doctor` now WARNs when `IMAGE_TAG` is pinned** off `latest` (only the
+  latest launcher + latest image is a tested pairing), alongside its existing
+  "new keys in `.env.example`" drift report. Both are WARN, never FAIL.
+
+### Internal
+
+- New pure helpers `image_tag_pinned`, `launcher_pull_ff`, and
+  `env_example_added_keys` in `lib/update.sh` (unit-tested); the boot gate
+  (`upgrade_gate`) and the post-upgrade config offer (`config_drift_step`) live
+  in `start.sh`. The gate passes the pre-upgrade revision to the restarted run
+  via `OC_PREV_REV`. New `doctor_check_image_pin` in `lib/doctor.sh`.
+
 ## [0.12.0] — 2026-07-09
 
 ### Added

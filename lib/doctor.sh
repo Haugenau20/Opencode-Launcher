@@ -185,6 +185,30 @@ doctor_check_env_drift() {
   return 0
 }
 
+# doctor_check_image_pin [TAG] — WARN (never FAIL) when IMAGE_TAG pins the image
+# to a specific version/digest instead of tracking `latest`. Only the newest
+# launcher + the `latest` image is a tested pairing (CHANGELOG "Compatibility"),
+# so a pin is worth surfacing — but it's a deliberate choice, not a broken
+# environment, hence WARN. The `local` self-built sentinel is not a pin (see
+# image_tag_pinned). Reads IMAGE_TAG from $ENV_FILE by default; a TAG argument
+# exists purely for testability.
+doctor_check_image_pin() {
+  local tag
+  if [ "$#" -ge 1 ]; then
+    tag="$1"
+  elif [ -f "$ENV_FILE" ]; then
+    tag="$(get_env IMAGE_TAG)"
+  else
+    tag=""
+  fi
+  if image_tag_pinned "$tag"; then
+    doctor_line WARN "image tag" "pinned to $tag — only IMAGE_TAG=latest is a tested pairing (set IMAGE_TAG=latest to track it)"
+  else
+    doctor_line PASS "image tag" "tracks latest"
+  fi
+  return 0
+}
+
 # doctor_check_launcher_update [DIR] — best-effort launcher-self-update check
 # (see lib/update.sh). PASS "launcher up to date" when 0 commits behind, WARN
 # (never FAIL — this is informational, not a broken environment) naming the
@@ -252,6 +276,7 @@ cmd_doctor() {
   doctor_check_env_file || overall_rc=1
   doctor_check_env_keys || overall_rc=1
   doctor_check_env_drift
+  doctor_check_image_pin
 
   IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY 2>/dev/null || true)"
   if [ -n "$IMAGE_REGISTRY" ]; then

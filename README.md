@@ -117,7 +117,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--open` | Open the web UI URL in your browser via `xdg-open`. Also opens the opencode-pty viewer URL when that plugin is enabled. Non-fatal if `xdg-open` is missing. |
 | `--also <path>[:rw]` | Mount an extra host folder for context, read-only by default — see [Extra folders for context](#extra-folders-for-context---also). |
 | `--exec "<prompt>"` | Boot, run one prompt non-interactively, tear down, exit with its rc — see [Non-interactive one-shot runs](#non-interactive-one-shot-runs---exec). |
-| `--doctor [<repo>]` | Print a PASS/WARN/FAIL environment report (Docker, compose, registry auth, `.env`, ports, disk, launcher update). |
+| `--doctor [<repo>]` | Print a PASS/WARN/FAIL environment report (Docker, compose, registry auth, `.env`, ports, disk, launcher update, image-tag pin). |
 | `--status [<repo>]` | Report running stacks — one project's state/URL/resume command, or every `opencode-*` stack. |
 | `--down`/`--stop` `<repo>` | Tear down a repo's stack the clean way (re-derives the same project `docker compose down` would). |
 | `--logs <repo>` | Follow the running stack's logs (Ctrl-C detaches). |
@@ -351,11 +351,31 @@ Images are pulled fresh on every `./start.sh`:
 - Pin a version — set `IMAGE_TAG` in `.env` to e.g. `0.0.2`.
 - `git pull` this repo occasionally to pick up topology changes.
 
-**The launcher checks itself, too.** Every boot does a best-effort check of
-whether this checkout is behind its git upstream and prints `launcher update
-available: N commit(s) behind origin — git pull to update` when it is (silent
-when up to date, offline, or not a git checkout). `--doctor` reports the same.
-Set `OC_SKIP_UPDATE_CHECK=1` to skip it (e.g. in CI).
+**The launcher gates on being behind, too.** Because only the latest launcher
+running the latest image is a tested pairing (see the changelog's
+*Compatibility* note), every boot does a best-effort check of whether this
+checkout is behind its git upstream **and** whether `IMAGE_TAG` is pinned to
+something other than `latest`. When either is true:
+
+- **Interactive boot (a real terminal):** you're prompted —
+  `bring everything up to date and restart? [Y/n]`. Accept and the launcher
+  fast-forwards itself (`git pull --ff-only`), flips a pinned `IMAGE_TAG` back to
+  `latest`, and **restarts into the newest** so you never run a stale
+  launcher/image combination. Decline and it boots what you have.
+  - **After a launcher upgrade, it also offers to set any *new* config.** If the
+    version you upgraded to added keys to `.env.example` that your `.env` doesn't
+    have yet, the restarted run lists exactly those new keys and offers to set
+    them right there (`set them now? [Y/n]`), one prompt each — or skip and run
+    `./start.sh --reconfigure` later. This is computed from the `.env.example`
+    diff across the exact versions you moved between, so it's always just what's
+    genuinely new since your last version.
+- **Headless/CI boot (`--detach`, `--exec`, or no terminal):** no prompt — it
+  just prints a nudge (`launcher update available: …` / `image pinned to …`)
+  and boots, exactly as before.
+
+`--doctor` still reports the launcher-behind count. Set
+`OC_SKIP_UPDATE_CHECK=1` to skip the whole check (e.g. in CI, or for a
+deliberate pin you don't want to be asked about).
 
 ## Troubleshooting
 
@@ -377,8 +397,10 @@ Set `OC_SKIP_UPDATE_CHECK=1` to skip it (e.g. in CI).
 - **Lost track of what's running?** `./start.sh --status` (all stacks) or
   `--status <repo>` (one); `--logs <repo>` follows logs, `--shell <repo>` drops
   you inside the container.
-- **`launcher update available: ...` on every boot?** Set
-  `OC_SKIP_UPDATE_CHECK=1` to skip the check (e.g. in CI) — see
-  [Updating to a new image](#updating-to-a-new-image). It's best-effort and
-  silent on failure, so this is just about noise, not an error.
+- **Prompted to upgrade / `launcher update available: ...` on every boot?** The
+  boot gate asks (interactively) or nudges (headless) whenever the launcher is
+  behind its upstream or `IMAGE_TAG` is pinned off `latest` — see
+  [Updating to a new image](#updating-to-a-new-image). To stop being asked
+  (e.g. in CI, or for a deliberate pin), set `OC_SKIP_UPDATE_CHECK=1`. It's
+  best-effort and silent on failure, so this is about noise, not an error.
 - **Linux only** — matches the parent system's supported scope.

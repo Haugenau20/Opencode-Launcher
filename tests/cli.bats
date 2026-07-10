@@ -772,6 +772,23 @@ seed_env_doctor() {
   [[ "$output" != *"do-not-print-this"* ]]
 }
 
+@test "--doctor: WARNs (not FAILs) when IMAGE_TAG is pinned off latest" {
+  seed_env_doctor
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] image tag"* ]]
+  [[ "$output" == *"pinned to 0.0.2"* ]]
+  ! [[ "$output" == *"[FAIL]"* ]]
+}
+
+@test "--doctor: PASSes the image tag check when tracking latest" {
+  seed_env_doctor
+  run_launcher --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS] image tag"* ]]
+}
+
 @test "--doctor: never prints the secret LLM_API_KEY value" {
   seed_env_doctor
   run_launcher --doctor
@@ -2298,6 +2315,60 @@ seed_env_doctor() {
   OC_SKIP_UPDATE_CHECK=1 run_launcher --detach "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   [[ "$output" != *"launcher update available"* ]]
+}
+
+# The gate only PROMPTS on an interactive tty boot; bats' `run` has no tty, so
+# these headless (`--detach`) runs exercise the passive-nudge fallback — the
+# same path a --detach/CI boot takes in production. The interactive accept +
+# git-pull + re-exec path is covered by the pure-helper unit tests
+# (image_tag_pinned, launcher_pull_ff) plus manual verification.
+
+@test "boot nudges when IMAGE_TAG is pinned off latest" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"image pinned to 0.0.2"* ]]
+}
+
+@test "boot does NOT nudge when IMAGE_TAG=local (self-built sentinel)" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=local|' "$SANDBOX/.env"
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image pinned"* ]]
+}
+
+@test "OC_SKIP_UPDATE_CHECK=1 suppresses the pinned-image nudge" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  OC_SKIP_UPDATE_CHECK=1 run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"image pinned"* ]]
+}
+
+@test "boot nudges for BOTH a behind launcher and a pinned image" {
+  seed_env
+  sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=0.0.2|' "$SANDBOX/.env"
+  make_sandbox_git_repo_behind 2
+  run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"launcher update available: 2 commit(s) behind origin — git pull to update"* ]]
+  [[ "$output" == *"image pinned to 0.0.2"* ]]
+}
+
+@test "post-upgrade config offer falls back to the passive drift warn on a non-tty boot" {
+  # OC_PREV_REV is set (as it would be right after a re-exec), but bats has no
+  # tty, so config_drift_step must NOT prompt (no hang) and must print the same
+  # passive drift warning instead. A brand-new .env.example key the .env lacks
+  # is the drift signal.
+  seed_env
+  printf 'NEWKEY_FOR_TEST=\n' >> "$SANDBOX/.env.example"
+  OC_PREV_REV=HEAD run_launcher --detach "$(make_repo_arg)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"has new key(s) not in your"* ]]
+  [[ "$output" == *"NEWKEY_FOR_TEST"* ]]
+  [[ "$output" != *"set them now?"* ]]
 }
 
 @test "--doctor: PASSes 'launcher up to date' when in sync" {
