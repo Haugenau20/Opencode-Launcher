@@ -39,9 +39,10 @@ config_schema() {
   cat <<'EOF'
 LLM|LLM_API_BASE|url|LLM API base URL|
 LLM|LLM_API_KEY|secret|LLM API key|
-Bitbucket|BITBUCKET_BASE_URL|url|Bitbucket base URL|optional; plain http:// on the internal instance
-Bitbucket|BITBUCKET_USER|text|Bitbucket username|optional
+Bitbucket|BITBUCKET_BASE_URL|url|Bitbucket base URL|optional; prefer the canonical https:// endpoint
+Bitbucket|BITBUCKET_USER|text|Bitbucket username|optional; only for git-over-HTTPS
 Bitbucket|BITBUCKET_PAT|secret|Bitbucket personal access token|optional
+Bitbucket|BITBUCKET_LEGACY_URL|url|Bitbucket legacy URL (redirects to base)|optional; git insteadOf rewrite
 Jira|JIRA_BASE_URL|url|Jira base URL|optional
 Jira|JIRA_PAT|secret|Jira personal access token|optional
 GitLab|GITLAB_BASE_URL|url|GitLab base URL|optional; https://, required if you use GitLab
@@ -109,13 +110,16 @@ field_help_text() {
       printf 'Bearer token for the LLM API, per developer.'
       ;;
     BITBUCKET_BASE_URL)
-      printf 'Bitbucket REST API base URL, no trailing slash.\nOnly needed if the agent should authenticate to Bitbucket.\nNote: the internal instance speaks plain http:// (https:// fails with a TLS error).'
+      printf 'Bitbucket REST API base URL, no trailing slash.\nOnly needed if the agent should authenticate to Bitbucket.\nPrefer the canonical https:// endpoint (e.g. https://bitbucket.internal.example:8443); the plain-HTTP connector also serves the REST API but can trigger a git auth-redirect prompt.'
       ;;
     BITBUCKET_USER)
-      printf 'Your Bitbucket username (also used for git auth). Optional.'
+      printf 'Your Bitbucket username. Optional — not used by the REST API (Bearer PAT); only the git credential helper for git-over-HTTPS clone/push uses it.'
       ;;
     BITBUCKET_PAT)
-      printf 'Bitbucket personal access token (serves both git and the REST API). Optional.'
+      printf 'Bitbucket personal access token — Bearer for the REST API, and the git password over HTTPS. Optional.'
+      ;;
+    BITBUCKET_LEGACY_URL)
+      printf 'Optional legacy Bitbucket URL that redirects to BITBUCKET_BASE_URL (e.g. the plain-HTTP connector on :7990).\nWhen set, the container rewrites git remotes still pointing here to BITBUCKET_BASE_URL before connecting, avoiding a "Username for https://…" prompt.'
       ;;
     JIRA_BASE_URL)
       printf 'Jira REST API base URL, no trailing slash.\nOnly needed if the agent should reach Jira. Optional.'
@@ -197,6 +201,7 @@ LLM_API_KEY
 BITBUCKET_BASE_URL
 BITBUCKET_USER
 BITBUCKET_PAT
+BITBUCKET_LEGACY_URL
 JIRA_BASE_URL
 JIRA_PAT
 GITLAB_BASE_URL

@@ -55,6 +55,24 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.14.0] — 2026-07-10
+
+### Added
+- Support for the image `0.1.0` Bitbucket changes: the **new optional
+  `BITBUCKET_LEGACY_URL`** field is now known to `.env.example`, the first-run
+  setup wizard, and `--doctor`. Set it to a legacy Bitbucket URL that redirects
+  to your `BITBUCKET_BASE_URL` (e.g. the plain-HTTP connector on `:7990`) and the
+  image rewrites git remotes still pointing there — no more
+  `Username for 'https://…'` prompt from a redirecting remote. Existing `.env`
+  files get the new key flagged on the next boot; run `./start.sh --reconfigure`
+  to fill it in.
+
+### Changed
+- The Bitbucket setup prompts and help text now reflect the image `0.1.0`
+  **Bearer-PAT** auth: `BITBUCKET_USER` is optional (used only for
+  git-over-HTTPS, not the REST API), and `.env.example` steers toward the
+  canonical **HTTPS** base URL instead of the old plain-`http://` guidance.
+
 ## [0.13.0] — 2026-07-09
 
 ### Changed
@@ -367,6 +385,36 @@ _Changes to the launcher itself._
 
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
+
+## [0.1.0] — 2026-07-10
+
+**Action required:** re-pull image + recreate the stack (the `NO_PROXY`, Squid,
+and theme changes ride the images) + edit `.env` + update launcher (≥ 0.14.0).
+
+- **Bitbucket now authenticates with a Bearer PAT** (Bitbucket Data Center HTTP
+  access token), matching Jira/JFrog/Confluence. `BITBUCKET_USER` is no longer
+  required to turn the MCP on — it's now optional, used only by git for
+  clone/push over HTTPS. Existing setups with the full user+PAT keep working.
+- **New optional `BITBUCKET_LEGACY_URL`.** Point it at a legacy Bitbucket URL
+  that redirects to your `BITBUCKET_BASE_URL` (typically the plain-HTTP connector
+  on `:7990`) and the container rewrites any git remote still using it before
+  connecting — so a redirecting remote no longer surfaces an interactive
+  `Username for 'https://…'` prompt. Prefer pointing `BITBUCKET_BASE_URL` at your
+  canonical **HTTPS** endpoint. Add the new key to `.env` via
+  `./start.sh --reconfigure` (needs launcher ≥ 0.14.0).
+- **Internal `*.local` hosts now route through the proxy** (removed `.local`
+  from `NO_PROXY`). Previously `git`/`curl` tried to reach them directly and
+  failed with `could not resolve host` / `CONNECT tunnel failed`; now they go
+  through Squid like the MCP already did, so git-over-HTTPS to Bitbucket works.
+- **Squid resolves bare (short) hostnames** by appending your internal domain,
+  so an internal service reachable only by short name (e.g. `mybitbucket`) no
+  longer `503`s at the proxy.
+- **The bundled `corp` theme is split into `corp-dark` and `corp-light`;** the
+  default is now `corp-dark`. If you pinned `corp` in your own `tui.json`
+  `theme` or a `disabled.yaml` `themes:` entry, update it to `corp-dark` or
+  `corp-light`.
+- New **troubleshooting docs** (image `docs/TROUBLESHOOTING.md`) for the
+  Bitbucket base-URL redirect prompt and the `NO_PROXY` bypass errors above.
 
 ## [0.0.8] — 2026-07-09
 

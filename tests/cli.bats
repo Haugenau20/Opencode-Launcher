@@ -466,18 +466,19 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]   # precondition: no .env yet
   local repo; repo="$(make_repo_arg)"
 
-  # 18 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
-  # Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab PAT, JFrog base
-  # URL, JFrog PAT, Confluence base URL, Confluence PAT, git name, git email,
-  # plugins, image registry. Feed a key with sed-special chars to exercise
-  # sed_escape and a space-bearing plugin list. Feed via a redirect (not a pipe):
-  # `printf | run` would run `run` in a subshell, losing $status.
+  # 19 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
+  # BB legacy URL, Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab
+  # PAT, JFrog base URL, JFrog PAT, Confluence base URL, Confluence PAT, git name,
+  # git email, plugins, image registry. Feed a key with sed-special chars to
+  # exercise sed_escape and a space-bearing plugin list. Feed via a redirect (not
+  # a pipe): `printf | run` would run `run` in a subshell, losing $status.
   printf '%s\n' \
     'https://llm.test/v1' \
     'sk-a&b|c' \
     'http://bb.test' \
     'bobu' \
     'bbpat' \
+    'http://bb-old.test' \
     'https://jira.test' \
     'jirapat' \
     'https://gitlab.test' \
@@ -500,6 +501,7 @@ setup() {
   grep -q '^LLM_API_KEY=sk-a&b|c$' "$SANDBOX/.env"       # sed_escape round-trip
   grep -q '^BITBUCKET_BASE_URL=http://bb.test$' "$SANDBOX/.env"
   grep -q '^BITBUCKET_USER=bobu$' "$SANDBOX/.env"
+  grep -q '^BITBUCKET_LEGACY_URL=http://bb-old.test$' "$SANDBOX/.env"
   grep -q '^JIRA_BASE_URL=https://jira.test$' "$SANDBOX/.env"
   grep -q '^JIRA_PAT=jirapat$' "$SANDBOX/.env"
   grep -q '^GITLAB_BASE_URL=https://gitlab.test$' "$SANDBOX/.env"
@@ -519,7 +521,7 @@ setup() {
   # make_sandbox already puts tests/fake-bin (a fake whiptail included) first
   # on PATH. This is the critical regression: have_tui requires a real tty,
   # and bats's stdin here is a redirected file, not a tty, so a piped/CI
-  # first-run must still hit the linear run_setup_wizard (pinned 18-prompt
+  # first-run must still hit the linear run_setup_wizard (pinned 19-prompt
   # walk + UID/GID autofill) — the ncurses --first-run path must never
   # hijack it just because a backend happens to be installed.
   [ ! -f "$SANDBOX/.env" ]
@@ -527,7 +529,7 @@ setup() {
   local repo; repo="$(make_repo_arg)"
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
-    '' '' '' \
+    '' '' '' '' \
     '' '' \
     '' '' '' \
     '' '' '' '' \
@@ -548,10 +550,10 @@ setup() {
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
-  # Same 18 prompts, but press Enter past the plugins one (empty line).
+  # Same 19 prompts, but press Enter past the plugins one (empty line).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
-    'http://bb.test' 'bobu' 'bbpat' \
+    'http://bb.test' 'bobu' 'bbpat' '' \
     'https://jira.test' 'jirapat' \
     'https://gitlab.test' 'glu' 'glpat' \
     'https://jfrog.test' 'jfrogpat' \
@@ -569,11 +571,11 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
   # Provide the required LLM base + registry; press Enter past every optional
-  # integration prompt (Bitbucket/Jira/GitLab/JFrog/Confluence base URLs, users,
-  # PATs).
+  # integration prompt (Bitbucket base URL/user/PAT/legacy URL, then Jira/GitLab/
+  # JFrog/Confluence base URLs, users, PATs).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
-    '' '' '' \
+    '' '' '' '' \
     '' '' \
     '' '' '' \
     '' '' '' '' \
@@ -983,12 +985,14 @@ seed_env_doctor() {
   sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
   sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
 
-  # 18 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
-  # BB user (keep), BB PAT (keep/empty), Jira base (keep), Jira PAT (keep),
-  # GitLab base (keep), GitLab user (keep), GitLab PAT (keep), JFrog base (keep),
-  # JFrog PAT (keep), Confluence base (keep), Confluence PAT (keep),
-  # git name (CHANGE), git email (keep), plugins (keep), registry (keep).
+  # 19 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
+  # BB user (keep), BB PAT (keep/empty), BB legacy URL (keep), Jira base (keep),
+  # Jira PAT (keep), GitLab base (keep), GitLab user (keep), GitLab PAT (keep),
+  # JFrog base (keep), JFrog PAT (keep), Confluence base (keep),
+  # Confluence PAT (keep), git name (CHANGE), git email (keep), plugins (keep),
+  # registry (keep).
   printf '%s\n' \
+    '' \
     '' \
     '' \
     '' \
@@ -1060,7 +1064,7 @@ seed_env_doctor() {
   [ ! -f "$SANDBOX/.env" ]
   printf '%s\n' \
     'https://llm.test/v1' 'sk-newkey' \
-    'http://bb.test' 'newuser' 'newpat' \
+    'http://bb.test' 'newuser' 'newpat' 'http://bb-old.test' \
     'https://jira.test' 'jirapat' \
     'https://gitlab.test' 'glu' 'glpat' \
     'https://jfrog.test' 'jfrogpat' \
@@ -1110,7 +1114,7 @@ seed_env_doctor() {
   seed_env
   command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
   sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
-  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
