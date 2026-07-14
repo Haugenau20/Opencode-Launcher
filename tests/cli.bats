@@ -1127,7 +1127,7 @@ seed_env_doctor() {
   seed_env
   command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
   sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
-  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
