@@ -1556,6 +1556,38 @@ older"
   [[ "$output" == *"SURVIVED"* ]]
 }
 
+@test "tui_infobox: a non-zero exit is not a script error" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-cancel-backend"; }
+    fake-cancel-backend() { return 1; }
+    set -euo pipefail
+    tui_infobox "Title" "some text"
+    echo SURVIVED
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SURVIVED"* ]]
+}
+
+@test "tui_infobox: reaches the terminal even when the caller is itself inside a \$(...) capture" {
+  # Regression test: mfiles_tui_mint runs entirely as new="\$(mfiles_tui_mint)".
+  # Without the same 3>&1 1>&2 2>&3 swap every other tui_* helper uses, the
+  # backend's own drawing output lands INSIDE that outer capture instead of
+  # ever reaching the screen — which is exactly why the infobox appeared to
+  # do nothing visually.
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" "fake-info-backend"; }
+    fake-info-backend() { printf "INFOBOX-RENDERED"; }
+    wrapper() { tui_infobox "Title" "some text"; printf "RETURN-VALUE"; }
+    result="$(wrapper)"
+    echo "captured: $result"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"INFOBOX-RENDERED"* ]]        # reached the terminal, not swallowed
+  [[ "$output" == *"captured: RETURN-VALUE"* ]]  # only the intended value was captured
+}
+
 # --- required_keys / field_satisfied / unmet_required (first-run gate) ------
 
 @test "required_keys: lists exactly the three required keys" {

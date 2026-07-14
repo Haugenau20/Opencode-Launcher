@@ -397,10 +397,16 @@ tui_msgbox() {
 # the terminal shows nothing at all until the next box — which reads as "did
 # it just hang, or exit?" during a slow mint/verify call. rc captured locally
 # so a non-zero exit never trips set -e; never blocks (infobox has no button).
+# The 3>&1 1>&2 2>&3 swap matters here even though nothing captures a return
+# value: callers of this function (mfiles_tui_mint) run entirely inside their
+# own `x="$(...)"` capture, so without redirecting whiptail's own stdout to
+# the terminal (fd2), the infobox's drawing gets swallowed into THAT capture
+# pipe instead of ever reaching the screen — every other tui_* helper below
+# already does this same swap for exactly that reason.
 tui_infobox() {
   local title="$1" text="$2" backend rc=0
   backend="$(tui_backend)"
-  "$backend" --infobox "$text" 0 0 --title "$title" || rc=$?
+  "$backend" --infobox "$text" 0 0 --title "$title" 3>&1 1>&2 2>&3 || rc=$?
   return 0
 }
 
