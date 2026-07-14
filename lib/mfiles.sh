@@ -39,6 +39,42 @@ mfiles_json_escape() {
 MFILES_CURL_CONNECT_TIMEOUT="${MFILES_CURL_CONNECT_TIMEOUT:-10}"
 MFILES_CURL_MAX_TIME="${MFILES_CURL_MAX_TIME:-20}"
 
+# Sites typically only ever log into one of a small, fixed set of Windows
+# domains, so the domain step is a pick-one rather than free text. These are
+# placeholders — override via the environment (or just edit the two lines)
+# once you know your real domain names.
+MFILES_DOMAIN_1="${MFILES_DOMAIN_1:-DOMAIN-ONE}"
+MFILES_DOMAIN_2="${MFILES_DOMAIN_2:-DOMAIN-TWO}"
+
+# mfiles_prompt_domain_plain — plain-read 1/2/3 choice between the two known
+# domains or "none" (M-Files-native login); echoes the chosen domain (or
+# empty for "none") on stdout.
+mfiles_prompt_domain_plain() {
+  echo "Windows domain:" >&2
+  printf '  1) %s\n' "$MFILES_DOMAIN_1" >&2
+  printf '  2) %s\n' "$MFILES_DOMAIN_2" >&2
+  echo "  3) none (M-Files-native login)" >&2
+  local choice
+  read -r -p 'Choose [1-3]: ' choice || true
+  case "$choice" in
+    1) printf '%s' "$MFILES_DOMAIN_1" ;;
+    2) printf '%s' "$MFILES_DOMAIN_2" ;;
+    *) printf '' ;;
+  esac
+}
+
+# mfiles_prompt_domain_tui TITLE — same choice as mfiles_prompt_domain_plain,
+# via a whiptail/dialog menu instead of a plain 1/2/3 read.
+mfiles_prompt_domain_tui() {
+  local title="$1" domain
+  domain="$(tui_menu "$title" 'Windows domain:' \
+    "$MFILES_DOMAIN_1" "$MFILES_DOMAIN_1" \
+    "$MFILES_DOMAIN_2" "$MFILES_DOMAIN_2" \
+    NONE 'M-Files-native login (no domain)')"
+  [ "$domain" = "NONE" ] && domain=""
+  printf '%s' "$domain"
+}
+
 # mfiles_mint_token BASE USERNAME DOMAIN VAULT_GUID PASSWORD — exchange vault
 # credentials for an X-Authentication token via POST …/REST/server/
 # authenticationtokens (no .aspx). Echoes the token on stdout and returns 0 on
@@ -102,9 +138,9 @@ mfiles_collect_and_mint() {
   base="$(prompt_with_default 'M-Files base URL (https://…, no trailing slash)' "$base")"
   base="${base%/}"
   read -r -p 'Username: ' user || true
-  read -r -p 'Windows domain (blank for M-Files-native login): ' domain || true
+  domain="$(mfiles_prompt_domain_plain)"
   read -r -p 'Vault GUID: ' vault_guid || true
-  read -rs -p 'Password (input hidden): ' password || true
+  read -rs -p 'M-Files password (input hidden): ' password || true
   echo >&2
 
   if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then
@@ -162,27 +198,30 @@ mfiles_plain_mint() {
 # mfiles_tui_mint — the ncurses editor's mint flow (Layer 2): same fields as
 # mfiles_collect_and_mint, gathered via tui_input/tui_password and reported
 # via tui_msgbox instead of plain read/warn/info. Caller (run_tui_reconfigure)
-# gates this behind its own tui_yesno "mint automatically?" prompt.
+# gates this behind its own tui_yesno "mint automatically?" prompt, and — once
+# that's accepted — treats every outcome here (success, decline-to-save, or a
+# failed attempt) as final: it never falls through to a manual-paste box
+# asking for a raw token the user doesn't have.
 mfiles_tui_mint() {
-  local title="M-Files: mint token"
+  local title="M-Files Authentication"
   local base user domain vault_guid password token
 
   base="$(get_env MFILES_BASE_URL)"
   base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")"
   base="${base%/}"
-  user="$(tui_input "$title" 'Username' '')"
-  domain="$(tui_input "$title" 'Windows domain (blank for M-Files-native login)' '')"
+  user="$(tui_input "$title" 'M-Files username' '')"
+  domain="$(mfiles_prompt_domain_tui "$title")"
   vault_guid="$(tui_input "$title" 'Vault GUID (M-Files Desktop Settings -> Document Vault on Server)' '')"
 
   if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then
-    tui_msgbox "$title" 'Base URL, username and vault GUID are all required — falling back to manual paste.'
+    tui_msgbox "$title" 'Base URL, username and vault GUID are all required — try again from the menu.'
     return 1
   fi
 
-  password="$(tui_password "$title" 'Password')"
+  password="$(tui_password 'M-Files Password' 'Enter your M-Files account password:')"
 
   token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
-    tui_msgbox "$title" 'Token mint failed. Check the base URL, credentials, domain and vault GUID, then try again or paste a token manually.'
+    tui_msgbox "$title" 'Token mint failed. Check the base URL, credentials, domain and vault GUID, then try again from the menu.'
     return 1
   }
 

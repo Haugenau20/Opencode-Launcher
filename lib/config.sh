@@ -479,14 +479,17 @@ run_tui_reconfigure() {
         case "$type" in
           secret)
             cur="$(get_env "$choice")"
-            new=""
             # MFILES_PAT: offer to mint a token instead of pasting one (see
-            # prompt_one_key's linear-path equivalent). Declining, Cancel, or
-            # a failed mint falls through to the normal password box.
+            # prompt_one_key's linear-path equivalent). Declining THIS offer
+            # falls through to the normal password box below (that's the
+            # expected "I'll paste one myself" path) — but once minting is
+            # accepted, mfiles_tui_mint's own outcome (success, a declined
+            # save-anyway, or a failed attempt) is final: it already reported
+            # what happened via its own tui_msgbox, so this never ALSO shows
+            # a manual-paste box asking for a raw token the user doesn't have.
             if [ "$choice" = "MFILES_PAT" ] && tui_yesno "$label" "Mint an M-Files authentication token automatically instead of pasting one?"; then
-              new="$(mfiles_tui_mint)" || new=""
-            fi
-            if [ -z "$new" ]; then
+              new="$(mfiles_tui_mint)" || new="$cur"
+            else
               body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
               new="$(tui_password "$label" "$body")"
               # Blank input keeps the current value, same rule prompt_one_key

@@ -1204,7 +1204,7 @@ older"
       for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-999\"}"; return 0 ;; esac; done
       return 0
     }
-    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 0 ]
   # The token is the very last thing printed (info/warn banner lines precede
@@ -1228,7 +1228,7 @@ older"
       done
       return 0
     }
-    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 1 ]
   [[ "$output" == *"verification call failed"* ]]
@@ -1252,7 +1252,7 @@ older"
       done
       return 0
     }
-    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"tok-override" ]]
@@ -1272,13 +1272,123 @@ older"
   grep -qF -- '--max-time' "$BATS_TEST_TMPDIR/curl-argv"
 }
 
+# --- mfiles domain pick-one (only 2 known domains at the company) -----------
+
+@test "mfiles_prompt_domain_plain: 1/2 map to the two configured domains" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "1\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CORP" ]
+
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "2\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CONTRACTORS" ]
+}
+
+@test "mfiles_prompt_domain_plain: anything but 1/2 means no domain (M-Files-native)" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "3\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ -z "$output" ]
+}
+
+@test "mfiles_prompt_domain_tui: offers both configured domains plus a none option via tui_menu" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_menu() { printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/tui_menu-argv"; printf "ACME-CONTRACTORS"; }
+    mfiles_prompt_domain_tui "Test Title"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "ACME-CONTRACTORS" ]
+  grep -qF "ACME-CORP" "$BATS_TEST_TMPDIR/tui_menu-argv"
+  grep -qF "ACME-CONTRACTORS" "$BATS_TEST_TMPDIR/tui_menu-argv"
+  grep -qF "NONE" "$BATS_TEST_TMPDIR/tui_menu-argv"
+}
+
+@test "mfiles_prompt_domain_tui: the NONE tag means no domain" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_menu() { printf "NONE"; }
+    mfiles_prompt_domain_tui "Test Title"
+  '
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- mfiles_tui_mint (ncurses mint flow) -------------------------------------
+
+@test "mfiles_tui_mint: the password box has a clear dedicated title, not the generic mint title" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "ACME-CORP"; }
+    tui_password() { printf "%s" "$1" > "'"$BATS_TEST_TMPDIR"'/tui_password-title"; printf "secretpw"; }
+    tui_msgbox() { :; }
+    tui_yesno() { return 0; }
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-1\"}"; return 0 ;; esac; done
+      return 0
+    }
+    mfiles_tui_mint
+  '
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui_password-title")" = "M-Files Password" ]
+}
+
+@test "mfiles_tui_mint: declining to save an unverified token returns 1 and never mentions manual paste" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "ACME-CORP"; }
+    tui_password() { printf "secretpw"; }
+    tui_msgbox() { printf "%s\n" "$2"; }
+    tui_yesno() { return 1; }   # decline "save this unverified token anyway?"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-bad\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    mfiles_tui_mint
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"tok-bad"* ]]
+  [[ "$output" != *"manual paste"* ]]
+  [[ "$output" != *"paste a token manually"* ]]
+  [[ "$output" == *"Discarded the unverified token"* ]]
+}
+
 @test "mfiles_collect_and_mint: a blank required field skips the mint (rc 1, no token)" {
   printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     export ENV_FILE="'"$ENV_FILE"'"
     curl() { echo "curl must not be called" >&2; return 1; }
-    printf "https://mfiles.test\nbob\nCORP\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
+    printf "https://mfiles.test\nbob\n1\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
   '
   [ "$status" -eq 1 ]
   [[ "$output" == *"required"* ]]
@@ -1305,7 +1415,7 @@ older"
       for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-777\"}"; return 0 ;; esac; done
       return 0
     }
-    printf "\nhttps://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
+    printf "\nhttps://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"tok-777" ]]

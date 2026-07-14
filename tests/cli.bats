@@ -1355,7 +1355,7 @@ seed_env_doctor() {
   seed_env
   FAKE_CURL_MINT_OUTPUT='{"Value":"minted-tok-42"}' \
     run bash -c '
-      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" |
+      printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" |
         bash "'"$SANDBOX"'/start.sh" --mfiles-token
     '
   [ "$status" -eq 0 ]
@@ -1369,7 +1369,7 @@ seed_env_doctor() {
   [ ! -f "$SANDBOX/.env" ]
   FAKE_CURL_MINT_OUTPUT='{"Value":"tok-from-scratch"}' \
     run bash -c '
-      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" |
+      printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" |
         bash "'"$SANDBOX"'/start.sh" --mfiles-token
     '
   [ "$status" -eq 0 ]
@@ -1380,7 +1380,7 @@ seed_env_doctor() {
   seed_env
   FAKE_CURL_MINT_RC=1 FAKE_CURL_MINT_OUTPUT='unauthorized' \
     run bash -c '
-      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nwrongpw\n" |
+      printf "https://mfiles.test\nbob\n1\n{GUID-1}\nwrongpw\n" |
         bash "'"$SANDBOX"'/start.sh" --mfiles-token
     '
   [ "$status" -eq 1 ]
@@ -1396,7 +1396,7 @@ seed_env_doctor() {
   seed_env
   FAKE_CURL_MINT_OUTPUT='{"Value":"bogus-tok"}' FAKE_CURL_VERIFY_RC=22 \
     run bash -c '
-      printf "https://mfiles.test\nwrongUsername\nCORP\n{GUID-1}\nwrongpw\nn\n" |
+      printf "https://mfiles.test\nwrongUsername\n1\n{GUID-1}\nwrongpw\nn\n" |
         bash "'"$SANDBOX"'/start.sh" --mfiles-token
     '
   [ "$status" -eq 1 ]
@@ -1409,7 +1409,7 @@ seed_env_doctor() {
   seed_env
   FAKE_CURL_MINT_OUTPUT='{"Value":"unverified-tok"}' FAKE_CURL_VERIFY_RC=22 \
     run bash -c '
-      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\ny\n" |
+      printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\ny\n" |
         bash "'"$SANDBOX"'/start.sh" --mfiles-token
     '
   [ "$status" -eq 0 ]

@@ -76,7 +76,13 @@ _Changes to the launcher itself._
   touring the whole wizard. Every mint auto-verifies the token against the
   vault (a bounded call — 10s to connect, 20s total); a failed verification
   (almost always wrong credentials) is never saved silently — it requires an
-  explicit "save it anyway? [y/N]" opt-in.
+  explicit "save it anyway? [y/N]" opt-in, and in the ncurses editor that
+  outcome (success, decline, or failure) always returns you to the config
+  menu rather than dropping you into a manual paste-the-raw-token box. The
+  Windows domain is a pick-one between the two domains the company actually
+  uses (`MFILES_DOMAIN_1`/`MFILES_DOMAIN_2`, placeholder names — set them to
+  your real domains) rather than free text, and the password prompt is now
+  labeled plainly instead of carrying the generic "mint token" dialog title.
 - Docs: a new **"M-Files authentication token"** section in
   [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
   covering how to read the vault GUID from **M-Files Desktop Settings**, the

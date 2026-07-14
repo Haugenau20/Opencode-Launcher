@@ -112,13 +112,22 @@ you paste them anyway.)
   ```
 
 Either way it prompts for the base URL (defaulted from `MFILES_BASE_URL` in
-your `.env`), your username, your Windows domain (leave blank for
-M-Files-native accounts), and the vault GUID, then reads your password
-**silently** (never stored or echoed). It POSTs them to
+your `.env`), your username, a **Windows domain — pick one of two configured
+options, or "none" for an M-Files-native login** (a menu in the ncurses
+editor, a numbered 1/2/3 choice on the plain-text path — see
+`MFILES_DOMAIN_1`/`MFILES_DOMAIN_2` below), and the vault GUID, then reads
+your password **silently** (never stored or echoed). It POSTs them to
 `…/REST/server/authenticationtokens`, verifies the result against the vault
 (bounded to 10s to connect / 20s total, so a bad address fails fast rather
 than hanging), and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself —
 you never see or handle the raw token.
+
+The two domain choices are placeholders (`DOMAIN-ONE`/`DOMAIN-TWO` by
+default) — set the environment variables `MFILES_DOMAIN_1`/`MFILES_DOMAIN_2`
+to your real domain names (e.g. in your shell profile, or prefixed on the
+command: `MFILES_DOMAIN_1=CORP MFILES_DOMAIN_2=CONTRACTORS ./start.sh
+--mfiles-token`) or just edit the two `MFILES_DOMAIN_*` lines at the top of
+`lib/mfiles.sh` once you know them.
 
 If the verification call fails — usually a sign the username, password,
 domain or vault GUID was wrong — the token is **not** saved automatically:
