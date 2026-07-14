@@ -390,6 +390,20 @@ tui_msgbox() {
   return 0
 }
 
+# tui_infobox TITLE TEXT — show a transient, auto-dismissing status message
+# (no OK button, no keypress waited on) to cover a blocking operation (e.g. a
+# network call) that's about to run right after this returns. Without it, the
+# whiptail/dialog screen disappears the instant the previous box closes and
+# the terminal shows nothing at all until the next box — which reads as "did
+# it just hang, or exit?" during a slow mint/verify call. rc captured locally
+# so a non-zero exit never trips set -e; never blocks (infobox has no button).
+tui_infobox() {
+  local title="$1" text="$2" backend rc=0
+  backend="$(tui_backend)"
+  "$backend" --infobox "$text" 0 0 --title "$title" || rc=$?
+  return 0
+}
+
 # run_tui_reconfigure [--first-run] — the ncurses editor loop: a tui_menu of
 # editable_schema_keys() (the same authoritative editable set Layer 1 uses),
 # each item tagged by KEY with a description of its label plus a

@@ -83,6 +83,10 @@ _Changes to the launcher itself._
   uses (`MFILES_DOMAIN_1`/`MFILES_DOMAIN_2`, placeholder names — set them to
   your real domains) rather than free text, and the password prompt is now
   labeled plainly instead of carrying the generic "mint token" dialog title.
+  Both the mint and verify network calls now show a status line (a
+  `--infobox` in the ncurses editor, a spinner + text on the plain path) so
+  the terminal never goes silent for however long the call takes — previously
+  the screen just went blank between dialogs, reading as a crash or exit.
 - Docs: a new **"M-Files authentication token"** section in
   [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
   covering how to read the vault GUID from **M-Files Desktop Settings**, the

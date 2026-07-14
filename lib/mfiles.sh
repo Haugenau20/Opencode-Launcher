@@ -129,7 +129,7 @@ mfiles_verify_token() {
 # .env. rc 1 when a required field is left blank or the mint call fails
 # (diagnostic already emitted via warn/mfiles_mint_token's stderr).
 mfiles_collect_and_mint() {
-  local base user domain vault_guid password token
+  local base user domain vault_guid password token mint_rc verify_rc
   base="$(get_env MFILES_BASE_URL)"
 
   echo "Vault GUID: system tray -> right-click the M-Files icon -> Settings ->" >&2
@@ -149,18 +149,41 @@ mfiles_collect_and_mint() {
     return 1
   fi
 
-  token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
-    warn "M-Files token mint failed — check the base URL, credentials, domain and vault GUID."
-    return 1
-  }
-
-  set_env MFILES_BASE_URL "$base"
   # info()/warn() write to stdout/stderr respectively, but this function's
   # whole point is to be called as `token="$(mfiles_collect_and_mint)"` —
   # anything printed to stdout here (other than the final token line below)
   # would land IN that variable, so every status line is explicitly on
-  # stderr (info needs the redirect; warn already goes there).
+  # stderr (info needs the redirect; warn already goes there). The spinner
+  # (writes only to /dev/tty, never fd1/fd2 — see lib/exec.sh) covers the
+  # curl calls below: without it the terminal sits silent for however long
+  # the network round-trip takes, which reads as the program having exited.
+  info "minting M-Files token…" >&2
+  exec_spinner_start
+  # A bare `token="$(mfiles_mint_token ...)"` would abort the whole script
+  # under set -e the instant the mint fails, skipping exec_spinner_stop below
+  # (leaving a stuck spinner) — wrapping it as an if-condition is one of the
+  # contexts set -e exempts, so the failure path below can run normally.
+  if token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")"; then
+    mint_rc=0
+  else
+    mint_rc=$?
+  fi
+  exec_spinner_stop
+  if [ "$mint_rc" -ne 0 ]; then
+    warn "M-Files token mint failed — check the base URL, credentials, domain and vault GUID."
+    return 1
+  fi
+
+  set_env MFILES_BASE_URL "$base"
+  info "verifying token against the vault…" >&2
+  exec_spinner_start
   if mfiles_verify_token "$base" "$token"; then
+    verify_rc=0
+  else
+    verify_rc=$?
+  fi
+  exec_spinner_stop
+  if [ "$verify_rc" -eq 0 ]; then
     info "M-Files token minted and verified." >&2
   else
     # A failed verify usually means the credentials were wrong — an
@@ -221,12 +244,19 @@ mfiles_tui_mint() {
 
   password="$(tui_password 'M-Files Password' 'Enter your M-Files account password:')"
 
+  # An --infobox has no OK button and returns immediately, but — unlike a
+  # dialog closing with nothing to replace it — it stays drawn on screen while
+  # the blocking curl call right after it runs. Without this, the whiptail
+  # screen would go blank for however long the network call takes, which
+  # reads as the program having silently exited.
+  tui_infobox "$title" 'Minting M-Files token…'
   token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
     tui_msgbox "$title" 'Token mint failed. Check the base URL, credentials, domain and vault GUID, then try again from the menu.'
     return 1
   }
 
   set_env MFILES_BASE_URL "$base"
+  tui_infobox "$title" 'Verifying token against the vault…'
   if mfiles_verify_token "$base" "$token"; then
     tui_msgbox "$title" 'Token minted and verified.'
   else
