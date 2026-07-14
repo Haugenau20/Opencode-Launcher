@@ -62,18 +62,75 @@ applies them.
 
 ## Service integrations
 
-Bitbucket, Jira, and GitLab are MCP servers the image auto-enables purely from
-the credentials you put in `.env` (each with a `DISABLE_*_MCP` off-switch).
-Every service needs its own `*_BASE_URL`; GitLab's is required for its MCP to
-start at all.
+Bitbucket, GitLab, Jira, JFrog, Confluence, and M-Files are read-only MCP
+servers the image auto-enables purely from the credentials you put in `.env`
+(each with a `DISABLE_*_MCP` off-switch). Every service needs its own
+`*_BASE_URL`; GitLab's is required for its MCP to start at all.
 
 - **Bitbucket** and **GitLab** each provide both a read-only MCP and a git
   remote. Bitbucket talks plain HTTP on the internal instance; GitLab is HTTPS,
   with REST auth via the `PRIVATE-TOKEN` header and git Basic auth from
   `GITLAB_USER:GITLAB_PAT`.
-- **Jira** is REST-only, authenticated with its PAT as a Bearer token.
+- **Jira**, **JFrog**, and **Confluence** are REST-only, each authenticated with
+  its PAT as a Bearer token (no username). JFrog's base is the platform root (the
+  MCP appends `/artifactory/api`); Confluence's default connector is HTTP on
+  `:8090` (the MCP appends `/rest/api`).
+- **M-Files** is REST-only too, but is the one service that authenticates via a
+  custom **`X-Authentication`** header instead of Bearer/Basic — and its token is
+  one you **mint yourself** (see below). Its base is the site root over HTTPS; the
+  MCP appends `/REST`.
 
 The service hostnames themselves are baked into the squid allowlist in the
 image, so the launcher can't see or change them — it only passes through the
 credentials and base URLs you configure. Set or change these any time with
 `./start.sh --reconfigure`.
+
+### M-Files authentication token
+
+For every other service you paste a PAT created in that tool's web UI. M-Files
+is different: its `X-Authentication` value is a **session token you exchange
+your vault credentials for** — there is no "copy token" button. The launcher
+ships a helper that does the exchange for you.
+
+**1. Find your vault GUID.** In the Windows system tray, **right-click the
+M-Files icon → Settings → M-Files Desktop Settings**. In the window that opens,
+the **"Document Vault on Server"** column shows the GUID in curly braces, e.g.
+`{C540E37E-...}`. You need **only the ID inside the braces** — don't copy the
+braces or the rest of the cell. (The helper strips braces defensively if you
+paste them anyway.)
+
+**2. Mint the token.** From the launcher directory, run:
+
+```bash
+./mfiles-token.sh
+```
+
+It prompts for the base URL (defaulted from `MFILES_BASE_URL` in your `.env`),
+your username, your Windows domain (leave blank for M-Files-native accounts),
+and the vault GUID, then reads your password **silently** (never stored or
+echoed). It POSTs them to `…/REST/server/authenticationtokens`, prints the
+token, and offers to verify it against the vault. Paste the result into `.env`:
+
+```dotenv
+MFILES_PAT=<the token it prints>
+```
+
+Run this on **your own machine**, on the corp network with direct access to
+M-Files — not inside the container. The helper talks to M-Files directly
+(`--noproxy '*'`).
+
+**Manual fallback.** If you'd rather not use the helper, the same exchange by
+hand (note: **no `.aspx`** on the path):
+
+```bash
+curl --fail-with-body --noproxy '*' \
+  -X POST https://mfiles.internal.example/REST/server/authenticationtokens \
+  -H 'Content-Type: application/json' \
+  -d '{"Username":"you","Password":"secret","Domain":"CORP","VaultGuid":"C540E37E-..."}'
+# → {"Value":"<token>"}
+```
+
+The `Value` is your `MFILES_PAT`.
+
+**If M-Files starts returning auth errors after it worked**, the session token
+has most likely expired — re-run `./mfiles-token.sh` and update `.env`.

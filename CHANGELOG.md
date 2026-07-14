@@ -55,6 +55,29 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [Unreleased]
+
+### Added
+
+- **M-Files service integration** (sixth read-only MCP server, matching the
+  image). `.env.example` gains an M-Files block (`MFILES_BASE_URL`,
+  `MFILES_PAT`, `DISABLE_MFILES_MCP`); the setup wizard, `--reconfigure`,
+  `--doctor`, and `--show-allowlist` all now cover M-Files alongside the other
+  five services.
+- **`mfiles-token.sh`** — an interactive helper that mints the M-Files
+  `X-Authentication` token from your vault credentials (prompts for base URL,
+  username, domain and vault GUID, reads the password silently) and prints it
+  for `MFILES_PAT`, with an optional verification call. Unlike the other
+  services, M-Files' token is minted, not copied from a web UI.
+- Docs: a new **"M-Files authentication token"** section in
+  [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
+  covering how to read the vault GUID from **M-Files Desktop Settings**, the
+  helper, the manual `curl` fallback, and token-expiry symptoms. The service
+  enumerations in the README were refreshed to include M-Files.
+
+**Action required:** edit .env (add the M-Files keys — `./start.sh --reconfigure`
+offers them) if you want the M-Files MCP; otherwise none.
+
 ## [0.14.0] — 2026-07-10
 
 ### Added

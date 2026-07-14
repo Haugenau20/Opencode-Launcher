@@ -52,6 +52,8 @@ JFrog|JFROG_BASE_URL|url|JFrog base URL|optional; https://, no trailing slash
 JFrog|JFROG_PAT|secret|JFrog access token|optional
 Confluence|CONFLUENCE_BASE_URL|url|Confluence base URL|optional; include :8090 for the default HTTP connector
 Confluence|CONFLUENCE_PAT|secret|Confluence personal access token|optional
+M-Files|MFILES_BASE_URL|url|M-Files base URL|optional; https://, no trailing slash
+M-Files|MFILES_PAT|secret|M-Files authentication token (X-Authentication)|optional; mint with ./mfiles-token.sh
 Git identity|GIT_USER_NAME|text|Git user name for container commits|optional
 Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
@@ -62,6 +64,7 @@ Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
 Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
 Safety|DISABLE_JFROG_MCP|bool|Force-disable the JFrog MCP|
 Safety|DISABLE_CONFLUENCE_MCP|bool|Force-disable the Confluence MCP|
+Safety|DISABLE_MFILES_MCP|bool|Force-disable the M-Files MCP|
 User layer|USER_LAYER_PATH|text|Personal agents/skills/commands layer path|optional; empty uses a per-project named volume instead
 Plugins|ENABLED_PLUGINS|list|Enable plugins|space-separated
 Image|IMAGE_REGISTRY|text|Image registry (Artifactory path)|
@@ -148,6 +151,12 @@ field_help_text() {
     CONFLUENCE_PAT)
       printf 'Confluence personal access token, sent as a Bearer token (no username needed). Optional.'
       ;;
+    MFILES_BASE_URL)
+      printf 'M-Files site base URL over HTTPS, no trailing slash (the MCP appends /REST).\nAPI-only (no git transport). Optional — the M-Files MCP turns on once this + MFILES_PAT are set.'
+      ;;
+    MFILES_PAT)
+      printf 'M-Files authentication token, sent as the X-Authentication header (no username needed).\nMint it from your vault credentials with ./mfiles-token.sh (see the README). Optional.'
+      ;;
     GIT_USER_NAME)
       printf 'Git user name used for commits made inside the container. Optional.'
       ;;
@@ -171,6 +180,9 @@ field_help_text() {
       ;;
     DISABLE_CONFLUENCE_MCP)
       printf 'Force-disable the Confluence MCP even if Confluence credentials are present in .env.'
+      ;;
+    DISABLE_MFILES_MCP)
+      printf 'Force-disable the M-Files MCP even if M-Files credentials are present in .env.'
       ;;
     USER_LAYER_PATH)
       printf 'Host path to bind-mount as your personal agents/skills/commands layer (e.g. ./user-layer).\nLeave empty to use a per-project named volume instead.'
@@ -211,6 +223,8 @@ JFROG_BASE_URL
 JFROG_PAT
 CONFLUENCE_BASE_URL
 CONFLUENCE_PAT
+MFILES_BASE_URL
+MFILES_PAT
 GIT_USER_NAME
 GIT_USER_EMAIL
 ENABLED_PLUGINS

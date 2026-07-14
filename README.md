@@ -4,8 +4,8 @@ A thin **launcher** for a pre-built, locked-down OpenCode environment that runs
 against your own repo. It pulls two images from Artifactory and wires them
 together with `docker compose`: the agent runs sandboxed behind a Squid proxy
 whose egress allowlist limits it to the LLM endpoint, Bitbucket, Jira, GitLab,
-JFrog, and Confluence. Everything locked down (agent bundle, policy, allowlist,
-CA) lives in the images; this repo is just the glue.
+JFrog, Confluence, and M-Files. Everything locked down (agent bundle, policy,
+allowlist, CA) lives in the images; this repo is just the glue.
 
 > **What's new:** see the [CHANGELOG](CHANGELOG.md) — it tracks both launcher
 > releases and the OpenCode Workplace image versions you can run (each with an
@@ -39,6 +39,7 @@ grouped into folders so a fresh clone isn't overwhelming.
 .
 ├── start.sh              # main entry point — run the launcher (see flags below)
 ├── install.sh            # one-time bootstrap / prerequisite check
+├── mfiles-token.sh       # helper: mint an M-Files X-Authentication token for MFILES_PAT
 ├── .env.example          # template copied to .env on first run (your secrets)
 ├── extra-packages.txt.example  # template for the optional system-package layer
 ├── docker/               # the docker compose stack (overlays + the package Dockerfile)
@@ -97,7 +98,9 @@ On the **first run**, `start.sh` copies `.env.example` → `.env` and prompts fo
 the only required fields — your LLM endpoint/key and Artifactory path. At a real
 terminal it's a small ncurses editor (`whiptail`/`dialog`); piped input or CI
 gets a plain-text wizard. The service integrations (Bitbucket, Jira, GitLab,
-JFrog, Confluence, git identity) are optional — press Enter to skip. It then
+JFrog, Confluence, M-Files, git identity) are optional — press Enter to skip.
+M-Files needs a minted token — see
+[Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). It then
 fills in `HOST_UID`/`HOST_GID`, pulls the images, and boots. Later runs reuse
 `.env` (edit it by hand any time; it's gitignored).
 
@@ -253,12 +256,12 @@ ease as newer images ship.
 ## Egress allowlist
 
 The agent runs sandboxed behind a Squid proxy. The **authoritative allowlist**
-(LLM endpoint, Bitbucket, Jira, GitLab, JFrog, Confluence) is enforced **inside
-the squid image**, not in this repo — so the launcher only knows about, and can
-report on, the bits it configures:
+(LLM endpoint, Bitbucket, Jira, GitLab, JFrog, Confluence, M-Files) is enforced
+**inside the squid image**, not in this repo — so the launcher only knows about,
+and can report on, the bits it configures:
 
 - the LLM host from `LLM_API_BASE`,
-- whether Bitbucket/Jira/GitLab/JFrog/Confluence credentials are set (their
+- whether Bitbucket/Jira/GitLab/JFrog/Confluence/M-Files credentials are set (their
   hostnames are baked into the image, not visible here), and
 - any local `extra-allowlist.d/*.conf` extensions (see
   [Extending the egress allowlist](docs/CUSTOMIZING.md#extending-the-egress-allowlist)).
