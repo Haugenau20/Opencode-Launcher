@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace opencode-pty}
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config usage project also packages allowlist digest manifest update doctor commands exec; do
+for __lib in core config mfiles usage project also packages allowlist digest manifest update doctor commands exec; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -240,6 +240,7 @@ main() {
   local WANT_RECONFIGURE=0
   local WANT_CONFIG=0
   local WANT_SHOW_ALLOWLIST=0
+  local WANT_MFILES_TOKEN=0
   local WANT_LOGS=0
   local WANT_SHELL=0
   local WANT_OPEN=0
@@ -267,6 +268,7 @@ main() {
       --reconfigure) WANT_RECONFIGURE=1; shift ;;
       --config) WANT_CONFIG=1; shift ;;
       --show-allowlist) WANT_SHOW_ALLOWLIST=1; shift ;;
+      --mfiles-token) WANT_MFILES_TOKEN=1; shift ;;
       --logs) WANT_LOGS=1; shift ;;
       --shell) WANT_SHELL=1; shift ;;
       --help|-h) usage; exit 0 ;;
@@ -302,6 +304,15 @@ main() {
   # for symmetry with --doctor/--status; it doesn't change the report).
   if [ "$WANT_SHOW_ALLOWLIST" -eq 1 ]; then
     cmd_show_allowlist "$REPO_ARG"
+    exit $?
+  fi
+
+  # --mfiles-token also short-circuits everything else: no image pull, no TUI
+  # attach, no LLM key required. Takes no <host-repo-path> argument, mirroring
+  # --reconfigure/--config.
+  if [ "$WANT_MFILES_TOKEN" -eq 1 ]; then
+    [ -z "$REPO_ARG" ] || { usage; die "--mfiles-token takes no <host-repo-path> argument"; }
+    cmd_mfiles_token
     exit $?
   fi
 

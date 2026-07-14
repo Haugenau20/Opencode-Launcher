@@ -39,7 +39,6 @@ grouped into folders so a fresh clone isn't overwhelming.
 .
 ├── start.sh              # main entry point — run the launcher (see flags below)
 ├── install.sh            # one-time bootstrap / prerequisite check
-├── mfiles-token.sh       # helper: mint an M-Files X-Authentication token for MFILES_PAT
 ├── .env.example          # template copied to .env on first run (your secrets)
 ├── extra-packages.txt.example  # template for the optional system-package layer
 ├── docker/               # the docker compose stack (overlays + the package Dockerfile)
@@ -99,9 +98,10 @@ the only required fields — your LLM endpoint/key and Artifactory path. At a re
 terminal it's a small ncurses editor (`whiptail`/`dialog`); piped input or CI
 gets a plain-text wizard. The service integrations (Bitbucket, Jira, GitLab,
 JFrog, Confluence, M-Files, git identity) are optional — press Enter to skip.
-M-Files needs a minted token — see
-[Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). It then
-fills in `HOST_UID`/`HOST_GID`, pulls the images, and boots. Later runs reuse
+M-Files needs a minted token rather than a pasted one — the prompt offers to
+mint it for you (see
+[Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token)). It
+then fills in `HOST_UID`/`HOST_GID`, pulls the images, and boots. Later runs reuse
 `.env` (edit it by hand any time; it's gitignored).
 
 The stack comes up with the **OpenCode TUI attached**, rooted at `/workspace`
@@ -128,9 +128,11 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--reconfigure` | Re-run the secrets wizard, pre-filled with your current `.env` (Enter keeps each value). |
 | `--config` | Read-only dashboard of every `.env` setting (secrets shown as set/unset only). |
 | `--show-allowlist [<repo>]` | Print what egress the agent is allowed — see [Egress allowlist](#egress-allowlist). |
+| `--mfiles-token` | Mint an M-Files auth token from your vault credentials and write it straight into `.env` — see [Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). |
 
 The inspect/manage commands (`--doctor`, `--status`, `--down`, `--logs`,
-`--shell`, `--config`, `--show-allowlist`) are read-only or teardown-only: they
+`--shell`, `--config`, `--show-allowlist`, `--mfiles-token`) are read-only or
+teardown-only (`--mfiles-token` only ever touches its own two `.env` keys): they
 never pull an image, attach the TUI, or need your LLM key, and they no-op
 gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.

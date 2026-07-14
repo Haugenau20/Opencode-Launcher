@@ -1,0 +1,194 @@
+# shellcheck shell=bash
+#
+# lib/mfiles.sh — M-Files authentication token minting.
+#
+# M-Files is the one service (unlike Bitbucket/Jira/GitLab/JFrog/Confluence)
+# where MFILES_PAT isn't a PAT you copy from a web UI: its X-Authentication
+# value is a session token you exchange your vault credentials for. This
+# module does that exchange so nobody has to hand-run curl or copy a token off
+# a terminal into .env.
+#
+# Sourced by start.sh (not run standalone); depends on core.sh (info/warn/
+# get_env/set_env) and config.sh (prompt_with_default, tui_input/tui_password/
+# tui_msgbox), both sourced earlier in start.sh's load order.
+
+# mfiles_strip_guid_braces GUID — drop a leading/trailing {} so a GUID copied
+# straight out of M-Files Desktop Settings ("Document Vault on Server" shows
+# it as "{C540E37E-...}") works whether or not the braces came along.
+mfiles_strip_guid_braces() {
+  local g="$1"
+  g="${g#\{}"
+  g="${g%\}}"
+  printf '%s' "$g"
+}
+
+# mfiles_json_escape STRING — escape backslashes and double quotes for a JSON
+# string, so a password/username containing " or \ can't break the request
+# body built by mfiles_mint_token.
+mfiles_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# mfiles_mint_token BASE USERNAME DOMAIN VAULT_GUID PASSWORD — exchange vault
+# credentials for an X-Authentication token via POST …/REST/server/
+# authenticationtokens (no .aspx). Echoes the token on stdout and returns 0 on
+# success; on failure prints a diagnostic to stderr and returns 1. --noproxy
+# '*' talks to M-Files directly, matching the original one-off script (run
+# from the caller's own machine, not the sandboxed container).
+mfiles_mint_token() {
+  local base="$1" username="$2" domain="$3" vault_guid="$4" password="$5"
+  local body response token
+  vault_guid="$(mfiles_strip_guid_braces "$vault_guid")"
+  body="$(printf '{"Username":"%s","Password":"%s","Domain":"%s","VaultGuid":"%s"}' \
+    "$(mfiles_json_escape "$username")" "$(mfiles_json_escape "$password")" \
+    "$(mfiles_json_escape "$domain")"   "$(mfiles_json_escape "$vault_guid")")"
+
+  if ! response="$(printf '%s' "$body" |
+    curl --fail-with-body --silent --show-error --noproxy '*' \
+      -X POST "${base%/}/REST/server/authenticationtokens" \
+      -H 'Content-Type: application/json' --data-binary @- 2>&1)"; then
+    printf 'M-Files token request failed: %s\n' "$response" >&2
+    return 1
+  fi
+
+  token="$(printf '%s' "$response" | sed -n 's/.*"Value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [ -z "$token" ]; then
+    printf 'M-Files did not return a token. Server said: %s\n' "$response" >&2
+    return 1
+  fi
+  printf '%s' "$token"
+}
+
+# mfiles_verify_token BASE TOKEN — smoke-test a minted token with a read-only
+# GET …/REST/structure/objecttypes call. Returns curl's exit code; callers
+# treat a non-zero result as a soft warning, never fatal (the token may still
+# be valid even if this particular check can't reach the vault).
+mfiles_verify_token() {
+  local base="$1" token="$2"
+  curl --fail-with-body --silent --show-error --noproxy '*' \
+    -H "X-Authentication: $token" -H 'Accept: application/json' \
+    "${base%/}/REST/structure/objecttypes" >/dev/null
+}
+
+# mfiles_collect_and_mint — prompt (plain read) for base URL/username/domain/
+# vault GUID/password, mint a token, auto-verify it, and echo the token on
+# stdout (rc 0). Base URL defaults from MFILES_BASE_URL in $ENV_FILE and is
+# written back via set_env if the user changes it — the only field this
+# writes itself; MFILES_PAT stays the caller's responsibility (prompt_one_key/
+# cmd_mfiles_token), so there is one place that decides how secrets land in
+# .env. rc 1 when a required field is left blank or the mint call fails
+# (diagnostic already emitted via warn/mfiles_mint_token's stderr).
+mfiles_collect_and_mint() {
+  local base user domain vault_guid password token
+  base="$(get_env MFILES_BASE_URL)"
+
+  echo "Vault GUID: system tray -> right-click the M-Files icon -> Settings ->" >&2
+  echo "M-Files Desktop Settings. \"Document Vault on Server\" shows it in curly" >&2
+  echo "braces {...} - only the ID inside matters." >&2
+
+  base="$(prompt_with_default 'M-Files base URL (https://…, no trailing slash)' "$base")"
+  base="${base%/}"
+  read -r -p 'Username: ' user || true
+  read -r -p 'Windows domain (blank for M-Files-native login): ' domain || true
+  read -r -p 'Vault GUID: ' vault_guid || true
+  read -rs -p 'Password (input hidden): ' password || true
+  echo >&2
+
+  if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then
+    warn "base URL, username and vault GUID are all required — skipping token mint."
+    return 1
+  fi
+
+  token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
+    warn "M-Files token mint failed — check the base URL, credentials, domain and vault GUID."
+    return 1
+  }
+
+  set_env MFILES_BASE_URL "$base"
+  # info() writes to stdout, but this function's whole point is to be called
+  # as `token="$(mfiles_collect_and_mint)"` — anything printed to stdout here
+  # (other than the final token line below) would land IN that variable, so
+  # this status line is explicitly redirected to stderr.
+  if mfiles_verify_token "$base" "$token"; then
+    info "M-Files token minted and verified." >&2
+  else
+    warn "M-Files token minted, but the verification call failed — check network/base URL."
+  fi
+  printf '%s' "$token"
+}
+
+# mfiles_plain_mint — the setup-wizard hook (plain/linear path): ask whether
+# to mint automatically, and if so, delegate to mfiles_collect_and_mint.
+# Declining (or leaving the answer at its Yes default and then a required
+# sub-field blank) returns 1 so the caller falls back to the normal
+# paste-a-token prompt.
+mfiles_plain_mint() {
+  local reply
+  read -r -p 'Mint an M-Files token automatically instead of pasting one? [Y/n]: ' reply || true
+  case "${reply:-Y}" in
+    [Nn]*) return 1 ;;
+  esac
+  mfiles_collect_and_mint
+}
+
+# mfiles_tui_mint — the ncurses editor's mint flow (Layer 2): same fields as
+# mfiles_collect_and_mint, gathered via tui_input/tui_password and reported
+# via tui_msgbox instead of plain read/warn/info. Caller (run_tui_reconfigure)
+# gates this behind its own tui_yesno "mint automatically?" prompt.
+mfiles_tui_mint() {
+  local title="M-Files: mint token"
+  local base user domain vault_guid password token
+
+  base="$(get_env MFILES_BASE_URL)"
+  base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")"
+  base="${base%/}"
+  user="$(tui_input "$title" 'Username' '')"
+  domain="$(tui_input "$title" 'Windows domain (blank for M-Files-native login)' '')"
+  vault_guid="$(tui_input "$title" 'Vault GUID (M-Files Desktop Settings -> Document Vault on Server)' '')"
+
+  if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then
+    tui_msgbox "$title" 'Base URL, username and vault GUID are all required — falling back to manual paste.'
+    return 1
+  fi
+
+  password="$(tui_password "$title" 'Password')"
+
+  token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
+    tui_msgbox "$title" 'Token mint failed. Check the base URL, credentials, domain and vault GUID, then try again or paste a token manually.'
+    return 1
+  }
+
+  set_env MFILES_BASE_URL "$base"
+  if mfiles_verify_token "$base" "$token"; then
+    tui_msgbox "$title" 'Token minted and verified.'
+  else
+    tui_msgbox "$title" 'Token minted, but the verification call failed — check network/base URL.'
+  fi
+  printf '%s' "$token"
+}
+
+# cmd_mfiles_token — standalone `./start.sh --mfiles-token` entry point: mint
+# a token and write MFILES_BASE_URL/MFILES_PAT straight into $ENV_FILE
+# (creating it from $ENV_EXAMPLE first if missing, same as --reconfigure) —
+# for rotating an expired token without touring the full wizard. Never pulls,
+# attaches, or requires docker/an LLM key.
+cmd_mfiles_token() {
+  if [ ! -f "$ENV_FILE" ]; then
+    [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
+    cp "$ENV_EXAMPLE" "$ENV_FILE"
+    info "no $ENV_FILE found — created one from $ENV_EXAMPLE."
+  fi
+
+  echo "M-Files authentication token helper"
+  echo "==================================="
+  echo
+
+  local token
+  token="$(mfiles_collect_and_mint)" || die "could not mint an M-Files token."
+  set_env MFILES_PAT "$token"
+  echo
+  info "wrote MFILES_BASE_URL/MFILES_PAT to $ENV_FILE."
+}

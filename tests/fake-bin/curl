@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Fake `curl` for the test suite — lib/mfiles.sh is the only caller today.
+# Distinguishes the two M-Files REST calls by a substring in the URL argument
+# (authenticationtokens = mint, objecttypes = verify) so both endpoints can be
+# stubbed independently by one fake. Mirrors --fail-with-body: prints the
+# stubbed body to stdout regardless of the stubbed rc, then exits with it.
+#
+# Knobs (all optional, read from the environment):
+#   FAKE_CURL_LOG            file to append "argv: ...\nstdin: ...\n---\n" to,
+#                             one record per invocation (draining stdin either
+#                             way so callers piping a body never block).
+#   FAKE_CURL_MINT_RC        exit code for the authenticationtokens call (default 0)
+#   FAKE_CURL_MINT_OUTPUT    stdout for the authenticationtokens call
+#                             (default: {"Value":"faketoken"})
+#   FAKE_CURL_VERIFY_RC      exit code for the objecttypes call (default 0)
+
+url=""
+for a in "$@"; do
+  case "$a" in
+    *authenticationtokens*|*objecttypes*) url="$a" ;;
+  esac
+done
+
+stdin_body=""
+[ -t 0 ] || stdin_body="$(cat)"
+
+if [ -n "${FAKE_CURL_LOG:-}" ]; then
+  {
+    printf 'argv:'
+    printf ' %q' "$@"
+    printf '\n'
+    [ -n "$stdin_body" ] && printf 'stdin: %s\n' "$stdin_body"
+    printf -- '---\n'
+  } >> "$FAKE_CURL_LOG"
+fi
+
+case "$url" in
+  *authenticationtokens*)
+    mint_output='{"Value":"faketoken"}'
+    [ -n "${FAKE_CURL_MINT_OUTPUT+set}" ] && mint_output="$FAKE_CURL_MINT_OUTPUT"
+    printf '%s' "$mint_output"
+    exit "${FAKE_CURL_MINT_RC:-0}"
+    ;;
+  *objecttypes*)
+    exit "${FAKE_CURL_VERIFY_RC:-0}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac

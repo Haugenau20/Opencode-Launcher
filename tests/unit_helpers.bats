@@ -1126,6 +1126,133 @@ older"
   [[ "$output" == *"Bitbucket personal access token (optional, Enter to skip, input hidden): "* ]]
 }
 
+@test "prompt_one_key: MFILES_PAT mint offer is skipped off a tty, same paste prompt as any other secret" {
+  # bats stdin is never a tty, so mfiles_plain_mint (gated on [ -t 0 ] && [ -t 1 ]
+  # in prompt_one_key) must never fire here — a regression guard against the
+  # mint hook leaking into piped/CI runs, where curl must never be invoked.
+  printf 'MFILES_PAT=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called off a tty" >&2; return 1; }
+    printf "mfilestoken123\n" | { prompt_one_key MFILES_PAT; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"M-Files authentication token (X-Authentication) (optional, Enter to skip, input hidden): "* ]]
+  [[ "$output" != *"curl must not be called"* ]]
+  [ "$(get_env MFILES_PAT)" = "mfilestoken123" ]
+}
+
+# --- mfiles_* (lib/mfiles.sh — M-Files token minting) ------------------------
+
+@test "mfiles_strip_guid_braces: strips a leading/trailing brace pair" {
+  run mfiles_strip_guid_braces '{C540E37E-1234}'
+  [ "$output" = "C540E37E-1234" ]
+}
+
+@test "mfiles_strip_guid_braces: a GUID without braces is unchanged" {
+  run mfiles_strip_guid_braces 'C540E37E-1234'
+  [ "$output" = "C540E37E-1234" ]
+}
+
+@test "mfiles_json_escape: escapes backslashes and double quotes" {
+  run mfiles_json_escape 'a"b\c'
+  [ "$output" = 'a\"b\\c' ]
+}
+
+@test "mfiles_mint_token: posts the escaped, brace-stripped fields and returns the token" {
+  curl() { cat > "$BATS_TEST_TMPDIR/curl-stdin"; printf '{"Value":"tok-123"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bo"b' 'CORP' '{GUID-1}' 'pa\ss'
+  [ "$status" -eq 0 ]
+  [ "$output" = "tok-123" ]
+  grep -qF '"Username":"bo\"b"' "$BATS_TEST_TMPDIR/curl-stdin"
+  grep -qF '"Password":"pa\\ss"' "$BATS_TEST_TMPDIR/curl-stdin"
+  grep -qF '"VaultGuid":"GUID-1"' "$BATS_TEST_TMPDIR/curl-stdin"   # braces stripped
+}
+
+@test "mfiles_mint_token: a failed request returns 1 with the server's response" {
+  curl() { printf 'unauthorized'; return 22; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"token request failed"* ]]
+  [[ "$output" == *"unauthorized"* ]]
+}
+
+@test "mfiles_mint_token: a 200 with no Value field is treated as a failure" {
+  curl() { printf '{"error":"nope"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not return a token"* ]]
+}
+
+@test "mfiles_verify_token: passes through curl's exit code" {
+  curl() { return 0; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-123'
+  [ "$status" -eq 0 ]
+
+  curl() { return 22; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-123'
+  [ "$status" -ne 0 ]
+}
+
+@test "mfiles_collect_and_mint: mints, verifies, saves the base URL, and echoes the token" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-999\"}"; return 0 ;; esac; done
+      return 0
+    }
+    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 0 ]
+  # The token is the very last thing printed (info/warn banner lines precede
+  # it), so match on suffix rather than the whole (multi-line) output.
+  [[ "$output" == *"tok-999" ]]
+  [[ "$output" == *"minted and verified"* ]]
+  [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
+}
+
+@test "mfiles_collect_and_mint: a blank required field skips the mint (rc 1, no token)" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called" >&2; return 1; }
+    printf "https://mfiles.test\nbob\nCORP\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"required"* ]]
+  [[ "$output" != *"curl must not be called"* ]]   # never reached mfiles_mint_token
+}
+
+@test "mfiles_plain_mint: declining ([Nn]) leaves the field for a manual paste, never calls curl" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called" >&2; return 1; }
+    printf "n\n" | mfiles_plain_mint
+  '
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "mfiles_plain_mint: accepting (default Y) delegates to mfiles_collect_and_mint" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-777\"}"; return 0 ;; esac; done
+      return 0
+    }
+    printf "\nhttps://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tok-777" ]]
+}
+
 # --- tui_backend / have_tui (ncurses config editor detection) ---------------
 # tests/fake-bin/whiptail and tests/fake-bin/dialog are detection-only stubs
 # (no real ncurses rendering) — see their headers. These tests only exercise

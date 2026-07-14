@@ -1334,6 +1334,60 @@ seed_env_doctor() {
   [[ "$output" != *"sk-super-secret-value"* ]]
 }
 
+# --- --mfiles-token -------------------------------------------------------------
+# make_sandbox puts tests/fake-bin (which includes a fake curl — see its header)
+# first on PATH, so these never touch a real M-Files instance.
+
+@test "--help mentions --mfiles-token" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--mfiles-token"* ]]
+}
+
+@test "--mfiles-token rejects a repo-path argument" {
+  seed_env
+  run_launcher --mfiles-token "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--mfiles-token takes no"* ]]
+}
+
+@test "--mfiles-token mints a token and writes it straight into .env — no copy-paste" {
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"minted-tok-42"}' \
+    run bash -c '
+      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"minted-tok-42"* ]]   # never echoed to the terminal
+  [[ "$output" == *"wrote MFILES_BASE_URL/MFILES_PAT"* ]]
+  grep -q '^MFILES_BASE_URL=https://mfiles.test$' "$SANDBOX/.env"
+  grep -q '^MFILES_PAT=minted-tok-42$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token creates .env from the template when none exists yet" {
+  [ ! -f "$SANDBOX/.env" ]
+  FAKE_CURL_MINT_OUTPUT='{"Value":"tok-from-scratch"}' \
+    run bash -c '
+      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  grep -q '^MFILES_PAT=tok-from-scratch$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token dies with a clear message when the vault rejects the credentials" {
+  seed_env
+  FAKE_CURL_MINT_RC=1 FAKE_CURL_MINT_OUTPUT='unauthorized' \
+    run bash -c '
+      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nwrongpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not mint an M-Files token"* ]]
+  grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
+}
+
 # --- --logs -------------------------------------------------------------------
 
 @test "--help mentions --logs and --shell" {

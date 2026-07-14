@@ -53,7 +53,7 @@ JFrog|JFROG_PAT|secret|JFrog access token|optional
 Confluence|CONFLUENCE_BASE_URL|url|Confluence base URL|optional; include :8090 for the default HTTP connector
 Confluence|CONFLUENCE_PAT|secret|Confluence personal access token|optional
 M-Files|MFILES_BASE_URL|url|M-Files base URL|optional; https://, no trailing slash
-M-Files|MFILES_PAT|secret|M-Files authentication token (X-Authentication)|optional; mint with ./mfiles-token.sh
+M-Files|MFILES_PAT|secret|M-Files authentication token (X-Authentication)|optional
 Git identity|GIT_USER_NAME|text|Git user name for container commits|optional
 Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
@@ -155,7 +155,7 @@ field_help_text() {
       printf 'M-Files site base URL over HTTPS, no trailing slash (the MCP appends /REST).\nAPI-only (no git transport). Optional — the M-Files MCP turns on once this + MFILES_PAT are set.'
       ;;
     MFILES_PAT)
-      printf 'M-Files authentication token, sent as the X-Authentication header (no username needed).\nMint it from your vault credentials with ./mfiles-token.sh (see the README). Optional.'
+      printf 'M-Files authentication token, sent as the X-Authentication header (no username needed).\nThis prompt can mint one for you from your vault credentials, or run ./start.sh --mfiles-token any time. Optional.'
       ;;
     GIT_USER_NAME)
       printf 'Git user name used for commits made inside the container. Optional.'
@@ -479,11 +479,20 @@ run_tui_reconfigure() {
         case "$type" in
           secret)
             cur="$(get_env "$choice")"
-            body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
-            new="$(tui_password "$label" "$body")"
-            # Blank input keeps the current value, same rule prompt_one_key
-            # uses for masked secrets.
-            [ -n "$new" ] || new="$cur"
+            new=""
+            # MFILES_PAT: offer to mint a token instead of pasting one (see
+            # prompt_one_key's linear-path equivalent). Declining, Cancel, or
+            # a failed mint falls through to the normal password box.
+            if [ "$choice" = "MFILES_PAT" ] && tui_yesno "$label" "Mint an M-Files authentication token automatically instead of pasting one?"; then
+              new="$(mfiles_tui_mint)" || new=""
+            fi
+            if [ -z "$new" ]; then
+              body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
+              new="$(tui_password "$label" "$body")"
+              # Blank input keeps the current value, same rule prompt_one_key
+              # uses for masked secrets.
+              [ -n "$new" ] || new="$cur"
+            fi
             set_env "$choice" "$new"
             ;;
           bool)
@@ -570,17 +579,27 @@ prompt_one_key() {
     new="$(prompt_with_default "$prompt_label (0/1)" "$cur_bool")"
     [ "$new" = "1" ] || new=0
   elif is_secret "$key"; then
-    if [ "$reconfigure" -eq 1 ]; then
-      printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
-    else
-      if [ "$required" -eq 1 ]; then
-        printf '%s (input hidden): ' "$prompt_label"
-      else
-        printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
-      fi
+    new=""
+    # MFILES_PAT is the one secret you can't just copy off a web UI — offer to
+    # mint it instead of pasting, but only on a real terminal (never during a
+    # piped/CI run, so tests and scripted use are unaffected). Declining, or a
+    # required sub-field left blank, falls through to the normal paste prompt.
+    if [ "$key" = "MFILES_PAT" ] && [ -t 0 ] && [ -t 1 ]; then
+      new="$(mfiles_plain_mint)" || new=""
     fi
-    read -rs new || true; echo
-    [ -n "$new" ] || new="$cur"
+    if [ -z "$new" ]; then
+      if [ "$reconfigure" -eq 1 ]; then
+        printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
+      else
+        if [ "$required" -eq 1 ]; then
+          printf '%s (input hidden): ' "$prompt_label"
+        else
+          printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
+        fi
+      fi
+      read -rs new || true; echo
+      [ -n "$new" ] || new="$cur"
+    fi
   elif [ "$required" -eq 1 ] || [ "$always_show_default" -eq 1 ]; then
     # Required fields and plain URLs/registry: always pre-shown, Enter accepts.
     new="$(prompt_with_default "$prompt_label" "$cur")"

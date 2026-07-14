@@ -27,6 +27,7 @@ _opencode_launcher_flags=(
   --reconfigure
   --config
   --show-allowlist
+  --mfiles-token
   --help -h
 )
 

@@ -90,37 +90,41 @@ credentials and base URLs you configure. Set or change these any time with
 For every other service you paste a PAT created in that tool's web UI. M-Files
 is different: its `X-Authentication` value is a **session token you exchange
 your vault credentials for** — there is no "copy token" button. The launcher
-ships a helper that does the exchange for you.
+mints it for you and writes it straight into `.env` — no copy-paste.
 
 **1. Find your vault GUID.** In the Windows system tray, **right-click the
 M-Files icon → Settings → M-Files Desktop Settings**. In the window that opens,
 the **"Document Vault on Server"** column shows the GUID in curly braces, e.g.
 `{C540E37E-...}`. You need **only the ID inside the braces** — don't copy the
-braces or the rest of the cell. (The helper strips braces defensively if you
-paste them anyway.)
+braces or the rest of the cell. (The mint flow strips braces defensively if
+you paste them anyway.)
 
-**2. Mint the token.** From the launcher directory, run:
+**2. Mint the token.** Two ways to trigger the same mint flow:
 
-```bash
-./mfiles-token.sh
-```
+- **During the setup wizard or `--reconfigure`**, on a real terminal, the
+  `MFILES_PAT` prompt itself asks "Mint an M-Files token automatically instead
+  of pasting one? [Y/n]" — accept it and the rest happens inline.
+- **On its own, any time** (e.g. to rotate an expired token without touring
+  the whole wizard):
 
-It prompts for the base URL (defaulted from `MFILES_BASE_URL` in your `.env`),
-your username, your Windows domain (leave blank for M-Files-native accounts),
-and the vault GUID, then reads your password **silently** (never stored or
-echoed). It POSTs them to `…/REST/server/authenticationtokens`, prints the
-token, and offers to verify it against the vault. Paste the result into `.env`:
+  ```bash
+  ./start.sh --mfiles-token
+  ```
 
-```dotenv
-MFILES_PAT=<the token it prints>
-```
+Either way it prompts for the base URL (defaulted from `MFILES_BASE_URL` in
+your `.env`), your username, your Windows domain (leave blank for
+M-Files-native accounts), and the vault GUID, then reads your password
+**silently** (never stored or echoed). It POSTs them to
+`…/REST/server/authenticationtokens`, verifies the result against the vault,
+and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself — you never see
+or handle the raw token.
 
 Run this on **your own machine**, on the corp network with direct access to
-M-Files — not inside the container. The helper talks to M-Files directly
+M-Files — not inside the container. The mint call talks to M-Files directly
 (`--noproxy '*'`).
 
-**Manual fallback.** If you'd rather not use the helper, the same exchange by
-hand (note: **no `.aspx`** on the path):
+**Manual fallback.** If you'd rather do the exchange by hand (note: **no
+`.aspx`** on the path):
 
 ```bash
 curl --fail-with-body --noproxy '*' \
@@ -130,7 +134,7 @@ curl --fail-with-body --noproxy '*' \
 # → {"Value":"<token>"}
 ```
 
-The `Value` is your `MFILES_PAT`.
+The `Value` is your `MFILES_PAT` — paste it via `./start.sh --reconfigure`.
 
 **If M-Files starts returning auth errors after it worked**, the session token
-has most likely expired — re-run `./mfiles-token.sh` and update `.env`.
+has most likely expired — run `./start.sh --mfiles-token` to mint a fresh one.
