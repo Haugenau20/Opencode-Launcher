@@ -1067,10 +1067,16 @@ older"
   [[ "$output" == *"REQUIRED"* ]]
 }
 
-@test "field_help_text: BITBUCKET_BASE_URL notes plain http://" {
+@test "field_help_text: BITBUCKET_BASE_URL steers toward the canonical https:// endpoint" {
   run field_help_text BITBUCKET_BASE_URL
   [ "$status" -eq 0 ]
-  [[ "$output" == *"http://"* ]]
+  [[ "$output" == *"https://"* ]]
+}
+
+@test "field_help_text: BITBUCKET_LEGACY_URL explains the insteadOf rewrite" {
+  run field_help_text BITBUCKET_LEGACY_URL
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BITBUCKET_BASE_URL"* ]]
 }
 
 # --- prompt_one_key -----------------------------------------------------------
