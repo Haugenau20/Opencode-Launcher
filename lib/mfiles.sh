@@ -46,33 +46,34 @@ MFILES_CURL_MAX_TIME="${MFILES_CURL_MAX_TIME:-20}"
 MFILES_DOMAIN_1="${MFILES_DOMAIN_1:-DOMAIN-ONE}"
 MFILES_DOMAIN_2="${MFILES_DOMAIN_2:-DOMAIN-TWO}"
 
-# mfiles_prompt_domain_plain — plain-read 1/2/3 choice between the two known
-# domains or "none" (M-Files-native login); echoes the chosen domain (or
-# empty for "none") on stdout.
+# mfiles_prompt_domain_plain — plain-read 1/2 choice between the two known
+# domains; echoes the chosen domain on stdout. Anything other than "2"
+# (blank, garbage, "1") defaults to MFILES_DOMAIN_1 rather than looping.
 mfiles_prompt_domain_plain() {
   echo "Windows domain:" >&2
   printf '  1) %s\n' "$MFILES_DOMAIN_1" >&2
   printf '  2) %s\n' "$MFILES_DOMAIN_2" >&2
-  echo "  3) none (M-Files-native login)" >&2
   local choice
-  read -r -p 'Choose [1-3]: ' choice || true
+  read -r -p 'Choose [1-2]: ' choice || true
   case "$choice" in
-    1) printf '%s' "$MFILES_DOMAIN_1" ;;
     2) printf '%s' "$MFILES_DOMAIN_2" ;;
-    *) printf '' ;;
+    *) printf '%s' "$MFILES_DOMAIN_1" ;;
   esac
 }
 
 # mfiles_prompt_domain_tui TITLE — same choice as mfiles_prompt_domain_plain,
-# via a whiptail/dialog menu instead of a plain 1/2/3 read.
+# via a whiptail/dialog menu instead of a plain 1/2 read. Tags are "1"/"2"
+# (not the domain name itself) so the menu shows "1  <domain>" / "2  <domain>"
+# instead of the domain name appearing twice per row.
 mfiles_prompt_domain_tui() {
-  local title="$1" domain
-  domain="$(tui_menu "$title" 'Windows domain:' \
-    "$MFILES_DOMAIN_1" "$MFILES_DOMAIN_1" \
-    "$MFILES_DOMAIN_2" "$MFILES_DOMAIN_2" \
-    NONE 'M-Files-native login (no domain)')"
-  [ "$domain" = "NONE" ] && domain=""
-  printf '%s' "$domain"
+  local title="$1" choice
+  choice="$(tui_menu "$title" 'Windows domain:' \
+    1 "$MFILES_DOMAIN_1" \
+    2 "$MFILES_DOMAIN_2")"
+  case "$choice" in
+    2) printf '%s' "$MFILES_DOMAIN_2" ;;
+    *) printf '%s' "$MFILES_DOMAIN_1" ;;
+  esac
 }
 
 # mfiles_mint_token BASE USERNAME DOMAIN VAULT_GUID PASSWORD — exchange vault
@@ -119,7 +120,7 @@ mfiles_verify_token() {
     "${base%/}/REST/structure/objecttypes" >/dev/null
 }
 
-# mfiles_collect_and_mint — prompt (plain read) for base URL/username/domain/
+# mfiles_collect_and_mint — prompt (plain read) for base URL/domain/username/
 # vault GUID/password, mint a token, auto-verify it, and echo the token on
 # stdout (rc 0). Base URL defaults from MFILES_BASE_URL in $ENV_FILE and is
 # written back via set_env if the user changes it — the only field this
@@ -137,8 +138,8 @@ mfiles_collect_and_mint() {
 
   base="$(prompt_with_default 'M-Files base URL (https://…, no trailing slash)' "$base")"
   base="${base%/}"
-  read -r -p 'Username: ' user || true
   domain="$(mfiles_prompt_domain_plain)"
+  read -r -p 'Username: ' user || true
   read -r -p 'Vault GUID: ' vault_guid || true
   read -rs -p 'M-Files password (input hidden): ' password || true
   echo >&2
@@ -209,8 +210,8 @@ mfiles_tui_mint() {
   base="$(get_env MFILES_BASE_URL)"
   base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")"
   base="${base%/}"
-  user="$(tui_input "$title" 'M-Files username' '')"
   domain="$(mfiles_prompt_domain_tui "$title")"
+  user="$(tui_input "$title" 'M-Files username' '')"
   vault_guid="$(tui_input "$title" 'Vault GUID (M-Files Desktop Settings -> Document Vault on Server)' '')"
 
   if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then

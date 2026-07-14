@@ -112,11 +112,11 @@ you paste them anyway.)
   ```
 
 Either way it prompts for the base URL (defaulted from `MFILES_BASE_URL` in
-your `.env`), your username, a **Windows domain — pick one of two configured
-options, or "none" for an M-Files-native login** (a menu in the ncurses
-editor, a numbered 1/2/3 choice on the plain-text path — see
-`MFILES_DOMAIN_1`/`MFILES_DOMAIN_2` below), and the vault GUID, then reads
-your password **silently** (never stored or echoed). It POSTs them to
+your `.env`), a **Windows domain — pick one of the two the company uses**
+(a menu in the ncurses editor, a numbered 1/2 choice on the plain-text path —
+see `MFILES_DOMAIN_1`/`MFILES_DOMAIN_2` below), then your username and the
+vault GUID, then reads your password **silently** (never stored or echoed).
+It POSTs them to
 `…/REST/server/authenticationtokens`, verifies the result against the vault
 (bounded to 10s to connect / 20s total, so a bad address fails fast rather
 than hanging), and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself —

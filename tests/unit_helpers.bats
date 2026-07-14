@@ -1204,7 +1204,7 @@ older"
       for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-999\"}"; return 0 ;; esac; done
       return 0
     }
-    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 0 ]
   # The token is the very last thing printed (info/warn banner lines precede
@@ -1228,7 +1228,7 @@ older"
       done
       return 0
     }
-    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 1 ]
   [[ "$output" == *"verification call failed"* ]]
@@ -1252,7 +1252,7 @@ older"
       done
       return 0
     }
-    printf "https://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"tok-override" ]]
@@ -1292,44 +1292,53 @@ older"
   [ "$output" = "ACME-CONTRACTORS" ]
 }
 
-@test "mfiles_prompt_domain_plain: anything but 1/2 means no domain (M-Files-native)" {
-  run bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    printf "3\n" | mfiles_prompt_domain_plain 2>/dev/null
-  '
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-
-  run bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    printf "\n" | mfiles_prompt_domain_plain 2>/dev/null
-  '
-  [ -z "$output" ]
-}
-
-@test "mfiles_prompt_domain_tui: offers both configured domains plus a none option via tui_menu" {
+@test "mfiles_prompt_domain_plain: anything but 2 (blank, garbage, or 1) defaults to domain 1" {
   run bash -c '
     export MFILES_DOMAIN_1="ACME-CORP"
     export MFILES_DOMAIN_2="ACME-CONTRACTORS"
     source "'"$REPO_ROOT"'/start.sh"
-    tui_menu() { printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/tui_menu-argv"; printf "ACME-CONTRACTORS"; }
+    printf "3\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "ACME-CORP" ]
+
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CORP" ]
+}
+
+@test "mfiles_prompt_domain_tui: offers exactly the two configured domains, tagged 1/2 (no name repeated as its own tag)" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_menu() { printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/tui_menu-argv"; printf "2"; }
     mfiles_prompt_domain_tui "Test Title"
   '
   [ "$status" -eq 0 ]
   [ "$output" = "ACME-CONTRACTORS" ]
-  grep -qF "ACME-CORP" "$BATS_TEST_TMPDIR/tui_menu-argv"
-  grep -qF "ACME-CONTRACTORS" "$BATS_TEST_TMPDIR/tui_menu-argv"
-  grep -qF "NONE" "$BATS_TEST_TMPDIR/tui_menu-argv"
+  # exactly two menu rows: tag "1"/"2", NOT the domain name used as its own tag
+  [ "$(grep -cxF '1' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF '2' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF 'ACME-CORP' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF 'ACME-CONTRACTORS' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [[ "$(cat "$BATS_TEST_TMPDIR/tui_menu-argv")" != *NONE* ]]
 }
 
-@test "mfiles_prompt_domain_tui: the NONE tag means no domain" {
+@test "mfiles_prompt_domain_tui: Cancel/Esc (empty tui_menu result) defaults to domain 1" {
   run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
     source "'"$REPO_ROOT"'/start.sh"
-    tui_menu() { printf "NONE"; }
+    tui_menu() { printf ""; }
     mfiles_prompt_domain_tui "Test Title"
   '
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "ACME-CORP" ]
 }
 
 # --- mfiles_tui_mint (ncurses mint flow) -------------------------------------
@@ -1340,7 +1349,7 @@ older"
     source "'"$REPO_ROOT"'/start.sh"
     export ENV_FILE="'"$ENV_FILE"'"
     tui_input() { printf "x"; }
-    tui_menu() { printf "ACME-CORP"; }
+    tui_menu() { printf "1"; }   # domain choice tag
     tui_password() { printf "%s" "$1" > "'"$BATS_TEST_TMPDIR"'/tui_password-title"; printf "secretpw"; }
     tui_msgbox() { :; }
     tui_yesno() { return 0; }
@@ -1360,7 +1369,7 @@ older"
     source "'"$REPO_ROOT"'/start.sh"
     export ENV_FILE="'"$ENV_FILE"'"
     tui_input() { printf "x"; }
-    tui_menu() { printf "ACME-CORP"; }
+    tui_menu() { printf "1"; }   # domain choice tag
     tui_password() { printf "secretpw"; }
     tui_msgbox() { printf "%s\n" "$2"; }
     tui_yesno() { return 1; }   # decline "save this unverified token anyway?"
@@ -1388,7 +1397,7 @@ older"
     source "'"$REPO_ROOT"'/start.sh"
     export ENV_FILE="'"$ENV_FILE"'"
     curl() { echo "curl must not be called" >&2; return 1; }
-    printf "https://mfiles.test\nbob\n1\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
+    printf "https://mfiles.test\n1\nbob\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
   '
   [ "$status" -eq 1 ]
   [[ "$output" == *"required"* ]]
@@ -1415,7 +1424,7 @@ older"
       for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-777\"}"; return 0 ;; esac; done
       return 0
     }
-    printf "\nhttps://mfiles.test\nbob\n1\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
+    printf "\nhttps://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"tok-777" ]]
