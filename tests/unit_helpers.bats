@@ -1210,6 +1210,11 @@ older"
   # The token is the very last thing printed (info/warn banner lines precede
   # it), so match on suffix rather than the whole (multi-line) output.
   [[ "$output" == *"tok-999" ]]
+  # The status lines that cover the curl calls (see mfiles_tui_mint's header
+  # comment for why these matter — this is what replaces the terminal going
+  # silent for however long minting/verifying takes).
+  [[ "$output" == *"minting M-Files token"* ]]
+  [[ "$output" == *"verifying token against the vault"* ]]
   [[ "$output" == *"minted and verified"* ]]
   [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
 }
@@ -1342,6 +1347,35 @@ older"
 }
 
 # --- mfiles_tui_mint (ncurses mint flow) -------------------------------------
+
+@test "mfiles_tui_mint: prints minting/verifying status lines to the terminal, not just into the captured token" {
+  # This is the actual regression test for the ncurses "silent gap" bug: the
+  # status lines must reach the real output even though this whole function
+  # runs as new="\$(mfiles_tui_mint)" (only fd1/stdout is captured there —
+  # info's >&2 target must still land on the visible stream, same as
+  # mfiles_collect_and_mint's plain-text path).
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "1"; }
+    tui_password() { printf "secretpw"; }
+    tui_msgbox() { :; }
+    tui_yesno() { return 0; }
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-1\"}"; return 0 ;; esac; done
+      return 0
+    }
+    wrapper() { mfiles_tui_mint; }
+    new="$(wrapper)"
+    echo "captured: $new"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"minting M-Files token"* ]]
+  [[ "$output" == *"verifying token against the vault"* ]]
+  [[ "$output" == *"captured: tok-1"* ]]   # only the token landed in the captured value
+}
 
 @test "mfiles_tui_mint: the password box has a clear dedicated title, not the generic mint title" {
   printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
@@ -1554,38 +1588,6 @@ older"
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"SURVIVED"* ]]
-}
-
-@test "tui_infobox: a non-zero exit is not a script error" {
-  run bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" "fake-cancel-backend"; }
-    fake-cancel-backend() { return 1; }
-    set -euo pipefail
-    tui_infobox "Title" "some text"
-    echo SURVIVED
-  '
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"SURVIVED"* ]]
-}
-
-@test "tui_infobox: reaches the terminal even when the caller is itself inside a \$(...) capture" {
-  # Regression test: mfiles_tui_mint runs entirely as new="\$(mfiles_tui_mint)".
-  # Without the same 3>&1 1>&2 2>&3 swap every other tui_* helper uses, the
-  # backend's own drawing output lands INSIDE that outer capture instead of
-  # ever reaching the screen — which is exactly why the infobox appeared to
-  # do nothing visually.
-  run bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" "fake-info-backend"; }
-    fake-info-backend() { printf "INFOBOX-RENDERED"; }
-    wrapper() { tui_infobox "Title" "some text"; printf "RETURN-VALUE"; }
-    result="$(wrapper)"
-    echo "captured: $result"
-  '
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"INFOBOX-RENDERED"* ]]        # reached the terminal, not swallowed
-  [[ "$output" == *"captured: RETURN-VALUE"* ]]  # only the intended value was captured
 }
 
 # --- required_keys / field_satisfied / unmet_required (first-run gate) ------

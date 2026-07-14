@@ -74,7 +74,7 @@ _Changes to the launcher itself._
   other launcher capability. The same mint flow is also available on its own
   via **`./start.sh --mfiles-token`**, for rotating an expired token without
   touring the whole wizard. Every mint auto-verifies the token against the
-  vault (a bounded call — 10s to connect, 20s total); a failed verification
+  vault (a bounded call — 10s to connect, 10s total); a failed verification
   (almost always wrong credentials) is never saved silently — it requires an
   explicit "save it anyway? [y/N]" opt-in, and in the ncurses editor that
   outcome (success, decline, or failure) always returns you to the config
@@ -83,10 +83,14 @@ _Changes to the launcher itself._
   uses (`MFILES_DOMAIN_1`/`MFILES_DOMAIN_2`, placeholder names — set them to
   your real domains) rather than free text, and the password prompt is now
   labeled plainly instead of carrying the generic "mint token" dialog title.
-  Both the mint and verify network calls now show a status line (a
-  `--infobox` in the ncurses editor, a spinner + text on the plain path) so
-  the terminal never goes silent for however long the call takes — previously
-  the screen just went blank between dialogs, reading as a crash or exit.
+  Both the mint and verify network calls now show a status line + spinner
+  (in both the ncurses editor and the plain path) so the terminal never goes
+  silent for however long the call takes — previously the screen just went
+  blank between dialogs, reading as a crash or exit. (A whiptail `--infobox`
+  was tried first for the ncurses side; dropped after confirming by hand
+  that it doesn't reliably stay visible across a blocking call on every
+  terminal — the fix instead writes directly to the terminal at the moment
+  a closing dialog hands it back, which does work reliably.)
 - Docs: a new **"M-Files authentication token"** section in
   [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
   covering how to read the vault GUID from **M-Files Desktop Settings**, the

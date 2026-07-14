@@ -390,25 +390,14 @@ tui_msgbox() {
   return 0
 }
 
-# tui_infobox TITLE TEXT — show a transient, auto-dismissing status message
-# (no OK button, no keypress waited on) to cover a blocking operation (e.g. a
-# network call) that's about to run right after this returns. Without it, the
-# whiptail/dialog screen disappears the instant the previous box closes and
-# the terminal shows nothing at all until the next box — which reads as "did
-# it just hang, or exit?" during a slow mint/verify call. rc captured locally
-# so a non-zero exit never trips set -e; never blocks (infobox has no button).
-# The 3>&1 1>&2 2>&3 swap matters here even though nothing captures a return
-# value: callers of this function (mfiles_tui_mint) run entirely inside their
-# own `x="$(...)"` capture, so without redirecting whiptail's own stdout to
-# the terminal (fd2), the infobox's drawing gets swallowed into THAT capture
-# pipe instead of ever reaching the screen — every other tui_* helper below
-# already does this same swap for exactly that reason.
-tui_infobox() {
-  local title="$1" text="$2" backend rc=0
-  backend="$(tui_backend)"
-  "$backend" --infobox "$text" 0 0 --title "$title" 3>&1 1>&2 2>&3 || rc=$?
-  return 0
-}
+# NOTE: no tui_infobox helper here. One was tried (a transient whiptail/
+# dialog --infobox to cover the M-Files mint/verify network calls) and
+# dropped: confirmed by hand that even a bare `whiptail --infobox "..." 10
+# 50; sleep 5` shows nothing on some terminals/whiptail builds — --infobox
+# isn't a reliable "please wait" mechanism, unlike the other widgets here.
+# See mfiles_tui_mint (lib/mfiles.sh) for what covers those calls instead: a
+# plain status line + spinner written directly to the terminal, the same
+# mechanism the non-whiptail mint path already used successfully.
 
 # run_tui_reconfigure [--first-run] — the ncurses editor loop: a tui_menu of
 # editable_schema_keys() (the same authoritative editable set Layer 1 uses),

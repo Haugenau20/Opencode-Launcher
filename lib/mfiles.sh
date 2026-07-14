@@ -37,7 +37,7 @@ mfiles_json_escape() {
 # whole request (--max-time) in case the server accepts the connection but
 # never answers. Override via the environment if a slow link needs more.
 MFILES_CURL_CONNECT_TIMEOUT="${MFILES_CURL_CONNECT_TIMEOUT:-10}"
-MFILES_CURL_MAX_TIME="${MFILES_CURL_MAX_TIME:-20}"
+MFILES_CURL_MAX_TIME="${MFILES_CURL_MAX_TIME:-10}"
 
 # Sites typically only ever log into one of a small, fixed set of Windows
 # domains, so the domain step is a pick-one rather than free text. These are
@@ -226,9 +226,21 @@ mfiles_plain_mint() {
 # that's accepted — treats every outcome here (success, decline-to-save, or a
 # failed attempt) as final: it never falls through to a manual-paste box
 # asking for a raw token the user doesn't have.
+#
+# The mint/verify curl calls are NOT covered by a whiptail box (a
+# --infobox was tried and dropped: confirmed by hand — even a bare
+# `whiptail --infobox "..." 10 50; sleep 5` shows nothing on some
+# terminals/whiptail builds, so it isn't a reliable "please wait" mechanism
+# here). Instead they use the exact same status-line + spinner as
+# mfiles_collect_and_mint's plain-text path, written to stderr/`/dev/tty`.
+# That works here for the same reason it works there: a whiptail box hands
+# the terminal back to normal (cooked) mode the instant it closes — which is
+# the "void" moment users saw — and since this whole function runs as
+# `new="$(mfiles_tui_mint)"`, only fd1/stdout is captured; fd2 (info's
+# target below) still reaches the real, now-plain terminal.
 mfiles_tui_mint() {
   local title="M-Files Authentication"
-  local base user domain vault_guid password token
+  local base user domain vault_guid password token mint_rc verify_rc
 
   base="$(get_env MFILES_BASE_URL)"
   base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")"
@@ -244,20 +256,33 @@ mfiles_tui_mint() {
 
   password="$(tui_password 'M-Files Password' 'Enter your M-Files account password:')"
 
-  # An --infobox has no OK button and returns immediately, but — unlike a
-  # dialog closing with nothing to replace it — it stays drawn on screen while
-  # the blocking curl call right after it runs. Without this, the whiptail
-  # screen would go blank for however long the network call takes, which
-  # reads as the program having silently exited.
-  tui_infobox "$title" 'Minting M-Files token…'
-  token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")" || {
+  info "minting M-Files token…" >&2
+  exec_spinner_start
+  # The if/else form (rather than `token="$(...)" || { ...; }` followed by a
+  # separate rc check) is required here: exec_spinner_stop must run on EITHER
+  # outcome, and a bare failing assignment on its own line would abort the
+  # whole script under set -e before a later line could ever run it.
+  if token="$(mfiles_mint_token "$base" "$user" "$domain" "$vault_guid" "$password")"; then
+    mint_rc=0
+  else
+    mint_rc=$?
+  fi
+  exec_spinner_stop
+  if [ "$mint_rc" -ne 0 ]; then
     tui_msgbox "$title" 'Token mint failed. Check the base URL, credentials, domain and vault GUID, then try again from the menu.'
     return 1
-  }
+  fi
 
   set_env MFILES_BASE_URL "$base"
-  tui_infobox "$title" 'Verifying token against the vault…'
+  info "verifying token against the vault…" >&2
+  exec_spinner_start
   if mfiles_verify_token "$base" "$token"; then
+    verify_rc=0
+  else
+    verify_rc=$?
+  fi
+  exec_spinner_stop
+  if [ "$verify_rc" -eq 0 ]; then
     tui_msgbox "$title" 'Token minted and verified.'
   else
     # Same rule as mfiles_collect_and_mint: a failed verify usually means bad

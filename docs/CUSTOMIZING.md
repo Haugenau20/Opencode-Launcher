@@ -118,7 +118,7 @@ see `MFILES_DOMAIN_1`/`MFILES_DOMAIN_2` below), then your username and the
 vault GUID, then reads your password **silently** (never stored or echoed).
 It POSTs them to
 `…/REST/server/authenticationtokens`, verifies the result against the vault
-(bounded to 10s to connect / 20s total, so a bad address fails fast rather
+(bounded to 10s to connect / 10s total, so a bad address fails fast rather
 than hanging), and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself —
 you never see or handle the raw token.
 
