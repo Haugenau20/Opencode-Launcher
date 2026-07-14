@@ -1388,6 +1388,34 @@ seed_env_doctor() {
   grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
 }
 
+@test "--mfiles-token: a failed verification never writes a bogus token to .env by default" {
+  # Regression test: minting can succeed (the vault issues a session token)
+  # while the credentials are still wrong for the resource actually checked,
+  # surfacing only as a failed verify (e.g. a 403 on objecttypes). That must
+  # not land an unverified token in .env silently.
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"bogus-tok"}' FAKE_CURL_VERIFY_RC=22 \
+    run bash -c '
+      printf "https://mfiles.test\nwrongUsername\nCORP\n{GUID-1}\nwrongpw\nn\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"verification call failed"* ]]
+  [[ "$output" != *"bogus-tok"* ]]
+  grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token: an unverified token is written when the user explicitly opts in" {
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"unverified-tok"}' FAKE_CURL_VERIFY_RC=22 \
+    run bash -c '
+      printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\ny\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  grep -q '^MFILES_PAT=unverified-tok$' "$SANDBOX/.env"
+}
+
 # --- --logs -------------------------------------------------------------------
 
 @test "--help mentions --logs and --shell" {

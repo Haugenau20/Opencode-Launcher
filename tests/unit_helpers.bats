@@ -1214,6 +1214,64 @@ older"
   [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
 }
 
+@test "mfiles_collect_and_mint: a failed verify is NOT saved unless the user opts in" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-bad\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"verification call failed"* ]]
+  [[ "$output" == *"discarding the unverified token"* ]]
+  [[ "$output" != *"tok-bad"* ]]
+  # the base URL is still worth keeping even though the PAT was discarded
+  [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
+}
+
+@test "mfiles_collect_and_mint: a failed verify IS saved when the user explicitly opts in" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-override\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    printf "https://mfiles.test\nbob\nCORP\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tok-override" ]]
+}
+
+@test "mfiles_mint_token / mfiles_verify_token: pass explicit connect/max-time bounds to curl" {
+  curl() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/curl-argv"; printf '{"Value":"tok-1"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 0 ]
+  grep -qF -- '--connect-timeout' "$BATS_TEST_TMPDIR/curl-argv"
+  grep -qF -- '--max-time' "$BATS_TEST_TMPDIR/curl-argv"
+
+  curl() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/curl-argv"; return 0; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-1'
+  [ "$status" -eq 0 ]
+  grep -qF -- '--connect-timeout' "$BATS_TEST_TMPDIR/curl-argv"
+  grep -qF -- '--max-time' "$BATS_TEST_TMPDIR/curl-argv"
+}
+
 @test "mfiles_collect_and_mint: a blank required field skips the mint (rc 1, no token)" {
   printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
   run bash -c '

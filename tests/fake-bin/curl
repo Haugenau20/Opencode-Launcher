@@ -8,22 +8,28 @@
 #
 # Knobs (all optional, read from the environment):
 #   FAKE_CURL_LOG            file to append "argv: ...\nstdin: ...\n---\n" to,
-#                             one record per invocation (draining stdin either
-#                             way so callers piping a body never block).
+#                             one record per invocation (stdin is only in the
+#                             record when the call actually sent one).
 #   FAKE_CURL_MINT_RC        exit code for the authenticationtokens call (default 0)
 #   FAKE_CURL_MINT_OUTPUT    stdout for the authenticationtokens call
 #                             (default: {"Value":"faketoken"})
 #   FAKE_CURL_VERIFY_RC      exit code for the objecttypes call (default 0)
 
-url=""
+url="" has_data=0
 for a in "$@"; do
   case "$a" in
     *authenticationtokens*|*objecttypes*) url="$a" ;;
+    --data-binary|--data|-d) has_data=1 ;;
   esac
 done
 
+# Only drain stdin when this invocation actually carries a request body (the
+# mint call pipes one via --data-binary @-), same as real curl — a plain GET
+# (the verify call) must never touch stdin, or it'll eat input meant for a
+# prompt that runs right after (e.g. mfiles_collect_and_mint's "save this
+# unverified token anyway?" follow-up).
 stdin_body=""
-[ -t 0 ] || stdin_body="$(cat)"
+[ "$has_data" -eq 1 ] && [ ! -t 0 ] && stdin_body="$(cat)"
 
 if [ -n "${FAKE_CURL_LOG:-}" ]; then
   {

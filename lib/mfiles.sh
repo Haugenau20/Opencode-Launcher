@@ -32,6 +32,13 @@ mfiles_json_escape() {
   printf '%s' "$s"
 }
 
+# Bounds on both M-Files calls below: fail fast on a black-holed connection
+# (--connect-timeout) instead of hanging on curl/OS defaults, and cap the
+# whole request (--max-time) in case the server accepts the connection but
+# never answers. Override via the environment if a slow link needs more.
+MFILES_CURL_CONNECT_TIMEOUT="${MFILES_CURL_CONNECT_TIMEOUT:-10}"
+MFILES_CURL_MAX_TIME="${MFILES_CURL_MAX_TIME:-20}"
+
 # mfiles_mint_token BASE USERNAME DOMAIN VAULT_GUID PASSWORD — exchange vault
 # credentials for an X-Authentication token via POST …/REST/server/
 # authenticationtokens (no .aspx). Echoes the token on stdout and returns 0 on
@@ -48,6 +55,7 @@ mfiles_mint_token() {
 
   if ! response="$(printf '%s' "$body" |
     curl --fail-with-body --silent --show-error --noproxy '*' \
+      --connect-timeout "$MFILES_CURL_CONNECT_TIMEOUT" --max-time "$MFILES_CURL_MAX_TIME" \
       -X POST "${base%/}/REST/server/authenticationtokens" \
       -H 'Content-Type: application/json' --data-binary @- 2>&1)"; then
     printf 'M-Files token request failed: %s\n' "$response" >&2
@@ -63,12 +71,14 @@ mfiles_mint_token() {
 }
 
 # mfiles_verify_token BASE TOKEN — smoke-test a minted token with a read-only
-# GET …/REST/structure/objecttypes call. Returns curl's exit code; callers
-# treat a non-zero result as a soft warning, never fatal (the token may still
-# be valid even if this particular check can't reach the vault).
+# GET …/REST/structure/objecttypes call. Returns curl's exit code (0 = the
+# vault accepted the token). Callers must NOT write an unverified token
+# without asking first (see mfiles_collect_and_mint/mfiles_tui_mint) — a 4xx
+# here almost always means the credentials were wrong.
 mfiles_verify_token() {
   local base="$1" token="$2"
   curl --fail-with-body --silent --show-error --noproxy '*' \
+    --connect-timeout "$MFILES_CURL_CONNECT_TIMEOUT" --max-time "$MFILES_CURL_MAX_TIME" \
     -H "X-Authentication: $token" -H 'Accept: application/json' \
     "${base%/}/REST/structure/objecttypes" >/dev/null
 }
@@ -108,14 +118,29 @@ mfiles_collect_and_mint() {
   }
 
   set_env MFILES_BASE_URL "$base"
-  # info() writes to stdout, but this function's whole point is to be called
-  # as `token="$(mfiles_collect_and_mint)"` — anything printed to stdout here
-  # (other than the final token line below) would land IN that variable, so
-  # this status line is explicitly redirected to stderr.
+  # info()/warn() write to stdout/stderr respectively, but this function's
+  # whole point is to be called as `token="$(mfiles_collect_and_mint)"` —
+  # anything printed to stdout here (other than the final token line below)
+  # would land IN that variable, so every status line is explicitly on
+  # stderr (info needs the redirect; warn already goes there).
   if mfiles_verify_token "$base" "$token"; then
     info "M-Files token minted and verified." >&2
   else
-    warn "M-Files token minted, but the verification call failed — check network/base URL."
+    # A failed verify usually means the credentials were wrong — an
+    # unverified token must never be saved silently. Require an explicit
+    # opt-in (e.g. the objecttypes endpoint itself may be restricted even
+    # for otherwise-valid credentials); declining discards the token
+    # entirely rather than looping — just run the mint again.
+    warn "M-Files token minted, but the verification call failed — the base URL, credentials, domain or vault GUID may be wrong."
+    local keep
+    read -r -p 'Save this unverified token to MFILES_PAT anyway? [y/N]: ' keep || true
+    case "$keep" in
+      [Yy]*) : ;;
+      *)
+        warn "discarding the unverified token — nothing was written. Re-run to try again."
+        return 1
+        ;;
+    esac
   fi
   printf '%s' "$token"
 }
@@ -165,7 +190,14 @@ mfiles_tui_mint() {
   if mfiles_verify_token "$base" "$token"; then
     tui_msgbox "$title" 'Token minted and verified.'
   else
-    tui_msgbox "$title" 'Token minted, but the verification call failed — check network/base URL.'
+    # Same rule as mfiles_collect_and_mint: a failed verify usually means bad
+    # credentials, so require an explicit opt-in before saving it.
+    if tui_yesno "$title" 'Token minted, but the verification call failed — the base URL, credentials, domain or vault GUID may be wrong. Save this unverified token anyway?'; then
+      :
+    else
+      tui_msgbox "$title" 'Discarded the unverified token — nothing was written. Try again from the menu.'
+      return 1
+    fi
   fi
   printf '%s' "$token"
 }

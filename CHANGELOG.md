@@ -73,7 +73,10 @@ _Changes to the launcher itself._
   copy-paste, and no separate script: it's a `lib/mfiles.sh` module like every
   other launcher capability. The same mint flow is also available on its own
   via **`./start.sh --mfiles-token`**, for rotating an expired token without
-  touring the whole wizard.
+  touring the whole wizard. Every mint auto-verifies the token against the
+  vault (a bounded call — 10s to connect, 20s total); a failed verification
+  (almost always wrong credentials) is never saved silently — it requires an
+  explicit "save it anyway? [y/N]" opt-in.
 - Docs: a new **"M-Files authentication token"** section in
   [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
   covering how to read the vault GUID from **M-Files Desktop Settings**, the

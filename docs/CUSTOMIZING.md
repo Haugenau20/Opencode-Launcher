@@ -115,9 +115,16 @@ Either way it prompts for the base URL (defaulted from `MFILES_BASE_URL` in
 your `.env`), your username, your Windows domain (leave blank for
 M-Files-native accounts), and the vault GUID, then reads your password
 **silently** (never stored or echoed). It POSTs them to
-`…/REST/server/authenticationtokens`, verifies the result against the vault,
-and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself — you never see
-or handle the raw token.
+`…/REST/server/authenticationtokens`, verifies the result against the vault
+(bounded to 10s to connect / 20s total, so a bad address fails fast rather
+than hanging), and writes `MFILES_BASE_URL`/`MFILES_PAT` into `.env` itself —
+you never see or handle the raw token.
+
+If the verification call fails — usually a sign the username, password,
+domain or vault GUID was wrong — the token is **not** saved automatically:
+you're asked "Save this unverified token anyway? [y/N]". Answering no (the
+default) discards it and writes nothing; just run the mint again with the
+right credentials.
 
 Run this on **your own machine**, on the corp network with direct access to
 M-Files — not inside the container. The mint call talks to M-Files directly
