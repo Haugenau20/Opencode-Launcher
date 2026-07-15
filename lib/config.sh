@@ -52,6 +52,8 @@ JFrog|JFROG_BASE_URL|url|JFrog base URL|optional; https://, no trailing slash
 JFrog|JFROG_PAT|secret|JFrog access token|optional
 Confluence|CONFLUENCE_BASE_URL|url|Confluence base URL|optional; include :8090 for the default HTTP connector
 Confluence|CONFLUENCE_PAT|secret|Confluence personal access token|optional
+M-Files|MFILES_BASE_URL|url|M-Files base URL|optional; https://, no trailing slash
+M-Files|MFILES_PAT|secret|M-Files authentication token (X-Authentication)|optional
 Git identity|GIT_USER_NAME|text|Git user name for container commits|optional
 Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
@@ -62,6 +64,7 @@ Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
 Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
 Safety|DISABLE_JFROG_MCP|bool|Force-disable the JFrog MCP|
 Safety|DISABLE_CONFLUENCE_MCP|bool|Force-disable the Confluence MCP|
+Safety|DISABLE_MFILES_MCP|bool|Force-disable the M-Files MCP|
 User layer|USER_LAYER_PATH|text|Personal agents/skills/commands layer path|optional; empty uses a per-project named volume instead
 Plugins|ENABLED_PLUGINS|list|Enable plugins|space-separated
 Image|IMAGE_REGISTRY|text|Image registry (Artifactory path)|
@@ -148,6 +151,12 @@ field_help_text() {
     CONFLUENCE_PAT)
       printf 'Confluence personal access token, sent as a Bearer token (no username needed). Optional.'
       ;;
+    MFILES_BASE_URL)
+      printf 'M-Files site base URL over HTTPS, no trailing slash (the MCP appends /REST).\nAPI-only (no git transport). Optional — the M-Files MCP turns on once this + MFILES_PAT are set.'
+      ;;
+    MFILES_PAT)
+      printf 'M-Files authentication token, sent as the X-Authentication header (no username needed).\nThis prompt can mint one for you from your vault credentials, or run ./start.sh --mfiles-token any time. Optional.'
+      ;;
     GIT_USER_NAME)
       printf 'Git user name used for commits made inside the container. Optional.'
       ;;
@@ -171,6 +180,9 @@ field_help_text() {
       ;;
     DISABLE_CONFLUENCE_MCP)
       printf 'Force-disable the Confluence MCP even if Confluence credentials are present in .env.'
+      ;;
+    DISABLE_MFILES_MCP)
+      printf 'Force-disable the M-Files MCP even if M-Files credentials are present in .env.'
       ;;
     USER_LAYER_PATH)
       printf 'Host path to bind-mount as your personal agents/skills/commands layer (e.g. ./user-layer).\nLeave empty to use a per-project named volume instead.'
@@ -211,6 +223,8 @@ JFROG_BASE_URL
 JFROG_PAT
 CONFLUENCE_BASE_URL
 CONFLUENCE_PAT
+MFILES_BASE_URL
+MFILES_PAT
 GIT_USER_NAME
 GIT_USER_EMAIL
 ENABLED_PLUGINS
@@ -376,6 +390,15 @@ tui_msgbox() {
   return 0
 }
 
+# NOTE: no tui_infobox helper here. One was tried (a transient whiptail/
+# dialog --infobox to cover the M-Files mint/verify network calls) and
+# dropped: confirmed by hand that even a bare `whiptail --infobox "..." 10
+# 50; sleep 5` shows nothing on some terminals/whiptail builds — --infobox
+# isn't a reliable "please wait" mechanism, unlike the other widgets here.
+# See mfiles_tui_mint (lib/mfiles.sh) for what covers those calls instead: a
+# plain status line + spinner written directly to the terminal, the same
+# mechanism the non-whiptail mint path already used successfully.
+
 # run_tui_reconfigure [--first-run] — the ncurses editor loop: a tui_menu of
 # editable_schema_keys() (the same authoritative editable set Layer 1 uses),
 # each item tagged by KEY with a description of its label plus a
@@ -465,11 +488,23 @@ run_tui_reconfigure() {
         case "$type" in
           secret)
             cur="$(get_env "$choice")"
-            body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
-            new="$(tui_password "$label" "$body")"
-            # Blank input keeps the current value, same rule prompt_one_key
-            # uses for masked secrets.
-            [ -n "$new" ] || new="$cur"
+            # MFILES_PAT: offer to mint a token instead of pasting one (see
+            # prompt_one_key's linear-path equivalent). Declining THIS offer
+            # falls through to the normal password box below (that's the
+            # expected "I'll paste one myself" path) — but once minting is
+            # accepted, mfiles_tui_mint's own outcome (success, a declined
+            # save-anyway, or a failed attempt) is final: it already reported
+            # what happened via its own tui_msgbox, so this never ALSO shows
+            # a manual-paste box asking for a raw token the user doesn't have.
+            if [ "$choice" = "MFILES_PAT" ] && tui_yesno "$label" "Mint an M-Files authentication token automatically instead of pasting one?"; then
+              new="$(mfiles_tui_mint)" || new="$cur"
+            else
+              body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
+              new="$(tui_password "$label" "$body")"
+              # Blank input keeps the current value, same rule prompt_one_key
+              # uses for masked secrets.
+              [ -n "$new" ] || new="$cur"
+            fi
             set_env "$choice" "$new"
             ;;
           bool)
@@ -556,17 +591,27 @@ prompt_one_key() {
     new="$(prompt_with_default "$prompt_label (0/1)" "$cur_bool")"
     [ "$new" = "1" ] || new=0
   elif is_secret "$key"; then
-    if [ "$reconfigure" -eq 1 ]; then
-      printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
-    else
-      if [ "$required" -eq 1 ]; then
-        printf '%s (input hidden): ' "$prompt_label"
-      else
-        printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
-      fi
+    new=""
+    # MFILES_PAT is the one secret you can't just copy off a web UI — offer to
+    # mint it instead of pasting, but only on a real terminal (never during a
+    # piped/CI run, so tests and scripted use are unaffected). Declining, or a
+    # required sub-field left blank, falls through to the normal paste prompt.
+    if [ "$key" = "MFILES_PAT" ] && [ -t 0 ] && [ -t 1 ]; then
+      new="$(mfiles_plain_mint)" || new=""
     fi
-    read -rs new || true; echo
-    [ -n "$new" ] || new="$cur"
+    if [ -z "$new" ]; then
+      if [ "$reconfigure" -eq 1 ]; then
+        printf '%s %s (input hidden): ' "$prompt_label" "$(mask_secret "$cur")"
+      else
+        if [ "$required" -eq 1 ]; then
+          printf '%s (input hidden): ' "$prompt_label"
+        else
+          printf '%s, Enter to skip, input hidden): ' "${prompt_label%)}"
+        fi
+      fi
+      read -rs new || true; echo
+      [ -n "$new" ] || new="$cur"
+    fi
   elif [ "$required" -eq 1 ] || [ "$always_show_default" -eq 1 ]; then
     # Required fields and plain URLs/registry: always pre-shown, Enter accepts.
     new="$(prompt_with_default "$prompt_label" "$cur")"

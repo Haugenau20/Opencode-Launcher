@@ -1126,6 +1126,344 @@ older"
   [[ "$output" == *"Bitbucket personal access token (optional, Enter to skip, input hidden): "* ]]
 }
 
+@test "prompt_one_key: MFILES_PAT mint offer is skipped off a tty, same paste prompt as any other secret" {
+  # bats stdin is never a tty, so mfiles_plain_mint (gated on [ -t 0 ] && [ -t 1 ]
+  # in prompt_one_key) must never fire here — a regression guard against the
+  # mint hook leaking into piped/CI runs, where curl must never be invoked.
+  printf 'MFILES_PAT=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called off a tty" >&2; return 1; }
+    printf "mfilestoken123\n" | { prompt_one_key MFILES_PAT; }
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"M-Files authentication token (X-Authentication) (optional, Enter to skip, input hidden): "* ]]
+  [[ "$output" != *"curl must not be called"* ]]
+  [ "$(get_env MFILES_PAT)" = "mfilestoken123" ]
+}
+
+# --- mfiles_* (lib/mfiles.sh — M-Files token minting) ------------------------
+
+@test "mfiles_strip_guid_braces: strips a leading/trailing brace pair" {
+  run mfiles_strip_guid_braces '{C540E37E-1234}'
+  [ "$output" = "C540E37E-1234" ]
+}
+
+@test "mfiles_strip_guid_braces: a GUID without braces is unchanged" {
+  run mfiles_strip_guid_braces 'C540E37E-1234'
+  [ "$output" = "C540E37E-1234" ]
+}
+
+@test "mfiles_json_escape: escapes backslashes and double quotes" {
+  run mfiles_json_escape 'a"b\c'
+  [ "$output" = 'a\"b\\c' ]
+}
+
+@test "mfiles_mint_token: posts the escaped, brace-stripped fields and returns the token" {
+  curl() { cat > "$BATS_TEST_TMPDIR/curl-stdin"; printf '{"Value":"tok-123"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bo"b' 'CORP' '{GUID-1}' 'pa\ss'
+  [ "$status" -eq 0 ]
+  [ "$output" = "tok-123" ]
+  grep -qF '"Username":"bo\"b"' "$BATS_TEST_TMPDIR/curl-stdin"
+  grep -qF '"Password":"pa\\ss"' "$BATS_TEST_TMPDIR/curl-stdin"
+  grep -qF '"VaultGuid":"GUID-1"' "$BATS_TEST_TMPDIR/curl-stdin"   # braces stripped
+}
+
+@test "mfiles_mint_token: a failed request returns 1 with the server's response" {
+  curl() { printf 'unauthorized'; return 22; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"token request failed"* ]]
+  [[ "$output" == *"unauthorized"* ]]
+}
+
+@test "mfiles_mint_token: a 200 with no Value field is treated as a failure" {
+  curl() { printf '{"error":"nope"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not return a token"* ]]
+}
+
+@test "mfiles_verify_token: passes through curl's exit code" {
+  curl() { return 0; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-123'
+  [ "$status" -eq 0 ]
+
+  curl() { return 22; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-123'
+  [ "$status" -ne 0 ]
+}
+
+@test "mfiles_collect_and_mint: mints, verifies, saves the base URL, and echoes the token" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-999\"}"; return 0 ;; esac; done
+      return 0
+    }
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 0 ]
+  # The token is the very last thing printed (info/warn banner lines precede
+  # it), so match on suffix rather than the whole (multi-line) output.
+  [[ "$output" == *"tok-999" ]]
+  # The status lines that cover the curl calls (see mfiles_tui_mint's header
+  # comment for why these matter — this is what replaces the terminal going
+  # silent for however long minting/verifying takes).
+  [[ "$output" == *"minting M-Files token"* ]]
+  [[ "$output" == *"verifying token against the vault"* ]]
+  [[ "$output" == *"minted and verified"* ]]
+  [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
+}
+
+@test "mfiles_collect_and_mint: a failed verify is NOT saved unless the user opts in" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-bad\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\nn\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"verification call failed"* ]]
+  [[ "$output" == *"discarding the unverified token"* ]]
+  [[ "$output" != *"tok-bad"* ]]
+  # the base URL is still worth keeping even though the PAT was discarded
+  [ "$(get_env MFILES_BASE_URL)" = "https://mfiles.test" ]
+}
+
+@test "mfiles_collect_and_mint: a failed verify IS saved when the user explicitly opts in" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-override\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\ny\n" | mfiles_collect_and_mint
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tok-override" ]]
+}
+
+@test "mfiles_mint_token / mfiles_verify_token: pass explicit connect/max-time bounds to curl" {
+  curl() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/curl-argv"; printf '{"Value":"tok-1"}'; }
+  run mfiles_mint_token 'https://mfiles.test' 'bob' 'CORP' 'GUID-1' 'secret'
+  [ "$status" -eq 0 ]
+  grep -qF -- '--connect-timeout' "$BATS_TEST_TMPDIR/curl-argv"
+  grep -qF -- '--max-time' "$BATS_TEST_TMPDIR/curl-argv"
+
+  curl() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/curl-argv"; return 0; }
+  run mfiles_verify_token 'https://mfiles.test' 'tok-1'
+  [ "$status" -eq 0 ]
+  grep -qF -- '--connect-timeout' "$BATS_TEST_TMPDIR/curl-argv"
+  grep -qF -- '--max-time' "$BATS_TEST_TMPDIR/curl-argv"
+}
+
+# --- mfiles domain pick-one (only 2 known domains at the company) -----------
+
+@test "mfiles_prompt_domain_plain: 1/2 map to the two configured domains" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "1\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CORP" ]
+
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "2\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CONTRACTORS" ]
+}
+
+@test "mfiles_prompt_domain_plain: anything but 2 (blank, garbage, or 1) defaults to domain 1" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "3\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "ACME-CORP" ]
+
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    printf "\n" | mfiles_prompt_domain_plain 2>/dev/null
+  '
+  [ "$output" = "ACME-CORP" ]
+}
+
+@test "mfiles_prompt_domain_tui: offers exactly the two configured domains, tagged 1/2 (no name repeated as its own tag)" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_menu() { printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/tui_menu-argv"; printf "2"; }
+    mfiles_prompt_domain_tui "Test Title"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "ACME-CONTRACTORS" ]
+  # exactly two menu rows: tag "1"/"2", NOT the domain name used as its own tag
+  [ "$(grep -cxF '1' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF '2' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF 'ACME-CORP' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [ "$(grep -cxF 'ACME-CONTRACTORS' "$BATS_TEST_TMPDIR/tui_menu-argv")" -eq 1 ]
+  [[ "$(cat "$BATS_TEST_TMPDIR/tui_menu-argv")" != *NONE* ]]
+}
+
+@test "mfiles_prompt_domain_tui: Cancel/Esc (empty tui_menu result) defaults to domain 1" {
+  run bash -c '
+    export MFILES_DOMAIN_1="ACME-CORP"
+    export MFILES_DOMAIN_2="ACME-CONTRACTORS"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_menu() { printf ""; }
+    mfiles_prompt_domain_tui "Test Title"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "ACME-CORP" ]
+}
+
+# --- mfiles_tui_mint (ncurses mint flow) -------------------------------------
+
+@test "mfiles_tui_mint: prints minting/verifying status lines to the terminal, not just into the captured token" {
+  # This is the actual regression test for the ncurses "silent gap" bug: the
+  # status lines must reach the real output even though this whole function
+  # runs as new="\$(mfiles_tui_mint)" (only fd1/stdout is captured there —
+  # info's >&2 target must still land on the visible stream, same as
+  # mfiles_collect_and_mint's plain-text path).
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "1"; }
+    tui_password() { printf "secretpw"; }
+    tui_msgbox() { :; }
+    tui_yesno() { return 0; }
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-1\"}"; return 0 ;; esac; done
+      return 0
+    }
+    wrapper() { mfiles_tui_mint; }
+    new="$(wrapper)"
+    echo "captured: $new"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"minting M-Files token"* ]]
+  [[ "$output" == *"verifying token against the vault"* ]]
+  [[ "$output" == *"captured: tok-1"* ]]   # only the token landed in the captured value
+}
+
+@test "mfiles_tui_mint: the password box has a clear dedicated title, not the generic mint title" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "1"; }   # domain choice tag
+    tui_password() { printf "%s" "$1" > "'"$BATS_TEST_TMPDIR"'/tui_password-title"; printf "secretpw"; }
+    tui_msgbox() { :; }
+    tui_yesno() { return 0; }
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-1\"}"; return 0 ;; esac; done
+      return 0
+    }
+    mfiles_tui_mint
+  '
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui_password-title")" = "M-Files Password" ]
+}
+
+@test "mfiles_tui_mint: declining to save an unverified token returns 1 and never mentions manual paste" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    tui_input() { printf "x"; }
+    tui_menu() { printf "1"; }   # domain choice tag
+    tui_password() { printf "secretpw"; }
+    tui_msgbox() { printf "%s\n" "$2"; }
+    tui_yesno() { return 1; }   # decline "save this unverified token anyway?"
+    curl() {
+      for a in "$@"; do
+        case "$a" in
+          *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-bad\"}"; return 0 ;;
+          *objecttypes*) return 22 ;;
+        esac
+      done
+      return 0
+    }
+    mfiles_tui_mint
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"tok-bad"* ]]
+  [[ "$output" != *"manual paste"* ]]
+  [[ "$output" != *"paste a token manually"* ]]
+  [[ "$output" == *"Discarded the unverified token"* ]]
+}
+
+@test "mfiles_collect_and_mint: a blank required field skips the mint (rc 1, no token)" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called" >&2; return 1; }
+    printf "https://mfiles.test\n1\nbob\n\nsecretpw\n" | mfiles_collect_and_mint   # blank vault GUID
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"required"* ]]
+  [[ "$output" != *"curl must not be called"* ]]   # never reached mfiles_mint_token
+}
+
+@test "mfiles_plain_mint: declining ([Nn]) leaves the field for a manual paste, never calls curl" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() { echo "curl must not be called" >&2; return 1; }
+    printf "n\n" | mfiles_plain_mint
+  '
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "mfiles_plain_mint: accepting (default Y) delegates to mfiles_collect_and_mint" {
+  printf 'MFILES_BASE_URL=\n' > "$ENV_FILE"
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    export ENV_FILE="'"$ENV_FILE"'"
+    curl() {
+      for a in "$@"; do case "$a" in *authenticationtokens*) cat >/dev/null; printf "{\"Value\":\"tok-777\"}"; return 0 ;; esac; done
+      return 0
+    }
+    printf "\nhttps://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" | mfiles_plain_mint
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tok-777" ]]
+}
+
 # --- tui_backend / have_tui (ncurses config editor detection) ---------------
 # tests/fake-bin/whiptail and tests/fake-bin/dialog are detection-only stubs
 # (no real ncurses rendering) — see their headers. These tests only exercise

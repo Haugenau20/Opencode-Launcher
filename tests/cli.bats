@@ -466,12 +466,13 @@ setup() {
   [ ! -f "$SANDBOX/.env" ]   # precondition: no .env yet
   local repo; repo="$(make_repo_arg)"
 
-  # 19 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
+  # 21 prompts in order: LLM base, LLM key, BB base URL, BB user, BB PAT,
   # BB legacy URL, Jira base URL, Jira PAT, GitLab base URL, GitLab user, GitLab
-  # PAT, JFrog base URL, JFrog PAT, Confluence base URL, Confluence PAT, git name,
-  # git email, plugins, image registry. Feed a key with sed-special chars to
-  # exercise sed_escape and a space-bearing plugin list. Feed via a redirect (not
-  # a pipe): `printf | run` would run `run` in a subshell, losing $status.
+  # PAT, JFrog base URL, JFrog PAT, Confluence base URL, Confluence PAT, M-Files
+  # base URL, M-Files PAT, git name, git email, plugins, image registry. Feed a
+  # key with sed-special chars to exercise sed_escape and a space-bearing plugin
+  # list. Feed via a redirect (not a pipe): `printf | run` would run `run` in a
+  # subshell, losing $status.
   printf '%s\n' \
     'https://llm.test/v1' \
     'sk-a&b|c' \
@@ -488,6 +489,8 @@ setup() {
     'jfrogpat' \
     'http://confluence.test:8090' \
     'confpat' \
+    'https://mfiles.test' \
+    'mfilespat' \
     'Bob Builder' \
     'bob@test.dev' \
     'superpowers dcp' \
@@ -511,6 +514,8 @@ setup() {
   grep -q '^JFROG_PAT=jfrogpat$' "$SANDBOX/.env"
   grep -q '^CONFLUENCE_BASE_URL=http://confluence.test:8090$' "$SANDBOX/.env"
   grep -q '^CONFLUENCE_PAT=confpat$' "$SANDBOX/.env"
+  grep -q '^MFILES_BASE_URL=https://mfiles.test$' "$SANDBOX/.env"
+  grep -q '^MFILES_PAT=mfilespat$' "$SANDBOX/.env"
   grep -q '^GIT_USER_NAME=Bob Builder$' "$SANDBOX/.env"
   grep -q '^ENABLED_PLUGINS=superpowers dcp$' "$SANDBOX/.env"  # opt-in, space kept
   grep -q "^HOST_UID=$(id -u)$" "$SANDBOX/.env"          # auto-filled
@@ -521,7 +526,7 @@ setup() {
   # make_sandbox already puts tests/fake-bin (a fake whiptail included) first
   # on PATH. This is the critical regression: have_tui requires a real tty,
   # and bats's stdin here is a redirected file, not a tty, so a piped/CI
-  # first-run must still hit the linear run_setup_wizard (pinned 19-prompt
+  # first-run must still hit the linear run_setup_wizard (pinned 21-prompt
   # walk + UID/GID autofill) — the ncurses --first-run path must never
   # hijack it just because a backend happens to be installed.
   [ ! -f "$SANDBOX/.env" ]
@@ -533,6 +538,7 @@ setup() {
     '' '' \
     '' '' '' \
     '' '' '' '' \
+    '' '' \
     '' '' \
     '' \
     'reg.test.local/opencode' \
@@ -550,7 +556,7 @@ setup() {
 @test "first run with no plugins selected leaves ENABLED_PLUGINS empty" {
   [ ! -f "$SANDBOX/.env" ]
   local repo; repo="$(make_repo_arg)"
-  # Same 19 prompts, but press Enter past the plugins one (empty line).
+  # Same 21 prompts, but press Enter past the plugins one (empty line).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
     'http://bb.test' 'bobu' 'bbpat' '' \
@@ -558,6 +564,7 @@ setup() {
     'https://gitlab.test' 'glu' 'glpat' \
     'https://jfrog.test' 'jfrogpat' \
     'http://confluence.test:8090' 'confpat' \
+    'https://mfiles.test' 'mfilespat' \
     'Bob Builder' 'bob@test.dev' \
     '' \
     'reg.test.local/opencode' \
@@ -572,13 +579,14 @@ setup() {
   local repo; repo="$(make_repo_arg)"
   # Provide the required LLM base + registry; press Enter past every optional
   # integration prompt (Bitbucket base URL/user/PAT/legacy URL, then Jira/GitLab/
-  # JFrog/Confluence base URLs, users, PATs).
+  # JFrog/Confluence/M-Files base URLs, users, PATs).
   printf '%s\n' \
     'https://llm.test/v1' 'sk-key' \
     '' '' '' '' \
     '' '' \
     '' '' '' \
     '' '' '' '' \
+    '' '' \
     '' '' \
     '' \
     'reg.test.local/opencode' \
@@ -594,11 +602,12 @@ setup() {
   grep -q '^GITLAB_BASE_URL=$' "$SANDBOX/.env"
   grep -q '^GITLAB_USER=$' "$SANDBOX/.env"
   grep -q '^GITLAB_PAT=$' "$SANDBOX/.env"
-  # JFrog/Confluence base URLs are url-type fields that ship with non-empty
-  # example values (like LLM_API_BASE), so Enter keeps the placeholder; the
-  # empty PATs are what keep each MCP off (auto-enable needs both set).
+  # JFrog/Confluence/M-Files base URLs are url-type fields that ship with
+  # non-empty example values (like LLM_API_BASE), so Enter keeps the placeholder;
+  # the empty PATs are what keep each MCP off (auto-enable needs both set).
   grep -q '^JFROG_PAT=$' "$SANDBOX/.env"
   grep -q '^CONFLUENCE_PAT=$' "$SANDBOX/.env"
+  grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
 }
 
 @test "placeholder IMAGE_REGISTRY triggers a warning" {
@@ -985,13 +994,15 @@ seed_env_doctor() {
   sed -i 's|^LLM_API_BASE=.*|LLM_API_BASE=https://old.example/v1|' "$SANDBOX/.env"
   sed -i 's|^BITBUCKET_USER=.*|BITBUCKET_USER=olduser|' "$SANDBOX/.env"
 
-  # 19 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
+  # 21 prompts in order: LLM base (keep), LLM key (keep/empty), BB base (keep),
   # BB user (keep), BB PAT (keep/empty), BB legacy URL (keep), Jira base (keep),
   # Jira PAT (keep), GitLab base (keep), GitLab user (keep), GitLab PAT (keep),
   # JFrog base (keep), JFrog PAT (keep), Confluence base (keep),
-  # Confluence PAT (keep), git name (CHANGE), git email (keep), plugins (keep),
-  # registry (keep).
+  # Confluence PAT (keep), M-Files base (keep), M-Files PAT (keep),
+  # git name (CHANGE), git email (keep), plugins (keep), registry (keep).
   printf '%s\n' \
+    '' \
+    '' \
     '' \
     '' \
     '' \
@@ -1069,6 +1080,7 @@ seed_env_doctor() {
     'https://gitlab.test' 'glu' 'glpat' \
     'https://jfrog.test' 'jfrogpat' \
     'http://confluence.test:8090' 'confpat' \
+    'https://mfiles.test' 'mfilespat' \
     'New Person' 'new@test.dev' 'superpowers' 'reg.test.local/opencode' \
     > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
@@ -1079,6 +1091,7 @@ seed_env_doctor() {
   grep -q '^GIT_USER_NAME=New Person$' "$SANDBOX/.env"
   grep -q '^JIRA_BASE_URL=https://jira.test$' "$SANDBOX/.env"
   grep -q '^GITLAB_PAT=glpat$' "$SANDBOX/.env"
+  grep -q '^MFILES_PAT=mfilespat$' "$SANDBOX/.env"
 }
 
 @test "--reconfigure rejects a repo-path argument" {
@@ -1114,7 +1127,7 @@ seed_env_doctor() {
   seed_env
   command -v whiptail >/dev/null 2>&1   # sanity: the fake whiptail IS on PATH
   sed -i 's|^GIT_USER_NAME=.*|GIT_USER_NAME=Old Name|' "$SANDBOX/.env"
-  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
+  printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' '' 'New Name' '' '' '' > "$BATS_TEST_TMPDIR/answers"
   run bash "$SANDBOX/start.sh" --reconfigure < "$BATS_TEST_TMPDIR/answers"
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconfigure: press Enter on any prompt to keep the current value."* ]]
@@ -1319,6 +1332,88 @@ seed_env_doctor() {
   [[ "$output" == *"egress allowlist: LLM(llm.test)"* ]]
   [[ "$output" == *"--show-allowlist"* ]]
   [[ "$output" != *"sk-super-secret-value"* ]]
+}
+
+# --- --mfiles-token -------------------------------------------------------------
+# make_sandbox puts tests/fake-bin (which includes a fake curl — see its header)
+# first on PATH, so these never touch a real M-Files instance.
+
+@test "--help mentions --mfiles-token" {
+  run_launcher --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--mfiles-token"* ]]
+}
+
+@test "--mfiles-token rejects a repo-path argument" {
+  seed_env
+  run_launcher --mfiles-token "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--mfiles-token takes no"* ]]
+}
+
+@test "--mfiles-token mints a token and writes it straight into .env — no copy-paste" {
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"minted-tok-42"}' \
+    run bash -c '
+      printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"minted-tok-42"* ]]   # never echoed to the terminal
+  [[ "$output" == *"wrote MFILES_BASE_URL/MFILES_PAT"* ]]
+  grep -q '^MFILES_BASE_URL=https://mfiles.test$' "$SANDBOX/.env"
+  grep -q '^MFILES_PAT=minted-tok-42$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token creates .env from the template when none exists yet" {
+  [ ! -f "$SANDBOX/.env" ]
+  FAKE_CURL_MINT_OUTPUT='{"Value":"tok-from-scratch"}' \
+    run bash -c '
+      printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  grep -q '^MFILES_PAT=tok-from-scratch$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token dies with a clear message when the vault rejects the credentials" {
+  seed_env
+  FAKE_CURL_MINT_RC=1 FAKE_CURL_MINT_OUTPUT='unauthorized' \
+    run bash -c '
+      printf "https://mfiles.test\n1\nbob\n{GUID-1}\nwrongpw\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not mint an M-Files token"* ]]
+  grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token: a failed verification never writes a bogus token to .env by default" {
+  # Regression test: minting can succeed (the vault issues a session token)
+  # while the credentials are still wrong for the resource actually checked,
+  # surfacing only as a failed verify (e.g. a 403 on objecttypes). That must
+  # not land an unverified token in .env silently.
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"bogus-tok"}' FAKE_CURL_VERIFY_RC=22 \
+    run bash -c '
+      printf "https://mfiles.test\n1\nwrongUsername\n{GUID-1}\nwrongpw\nn\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"verification call failed"* ]]
+  [[ "$output" != *"bogus-tok"* ]]
+  grep -q '^MFILES_PAT=$' "$SANDBOX/.env"
+}
+
+@test "--mfiles-token: an unverified token is written when the user explicitly opts in" {
+  seed_env
+  FAKE_CURL_MINT_OUTPUT='{"Value":"unverified-tok"}' FAKE_CURL_VERIFY_RC=22 \
+    run bash -c '
+      printf "https://mfiles.test\n1\nbob\n{GUID-1}\nsecretpw\ny\n" |
+        bash "'"$SANDBOX"'/start.sh" --mfiles-token
+    '
+  [ "$status" -eq 0 ]
+  grep -q '^MFILES_PAT=unverified-tok$' "$SANDBOX/.env"
 }
 
 # --- --logs -------------------------------------------------------------------

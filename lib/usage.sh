@@ -21,6 +21,7 @@ Usage:
   ./start.sh --reconfigure
   ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
+  ./start.sh --mfiles-token
   ./start.sh --version
   ./start.sh --help
 
@@ -76,6 +77,13 @@ needed):
              allowlist (LLM, Bitbucket, Jira, GitLab) is enforced in the squid
              image; this shows your configured LLM/Bitbucket hosts plus any
              local extra-allowlist.d/*.conf extensions.
+  --mfiles-token
+             Mint an M-Files authentication token from your vault credentials
+             (prompts for base URL, username, domain, vault GUID, and your
+             password, input hidden) and write it straight into
+             MFILES_BASE_URL/MFILES_PAT in .env — no copy-paste. The setup
+             wizard and --reconfigure offer the same mint on a real terminal;
+             this is for rotating an expired token on its own.
   --version  Print the launcher version (from the VERSION file). Alias: -V.
   --help     Show this help.
 

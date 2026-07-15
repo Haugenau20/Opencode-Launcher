@@ -55,6 +55,41 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.15.0] — 2026-07-15
+
+**Action required:** edit `.env` (add the M-Files keys — `./start.sh --reconfigure`
+offers them) if you want the M-Files MCP; otherwise none.
+
+### Added
+
+- **M-Files service integration** (sixth read-only MCP server, matching the
+  image). `.env.example` gains an M-Files block (`MFILES_BASE_URL`,
+  `MFILES_PAT`, `DISABLE_MFILES_MCP`); the setup wizard, `--reconfigure`,
+  `--doctor`, and `--show-allowlist` all now cover M-Files alongside the other
+  five services.
+- **Automatic M-Files token minting.** M-Files is the one service where the
+  token isn't copied from a web UI — its `X-Authentication` value is a session
+  token exchanged for vault credentials. The `MFILES_PAT` prompt in the setup
+  wizard/`--reconfigure` (on a real terminal) now offers to mint it inline —
+  username, a pick-one Windows domain, vault GUID, and a silently-read
+  password — and writes the result straight into `.env`, with no copy-paste.
+  The same flow is also available on its own via **`./start.sh
+  --mfiles-token`**, for rotating an expired token without touring the whole
+  wizard. Every mint auto-verifies the token against the vault; a failed
+  verification (almost always wrong credentials) is never saved silently — it
+  asks "save it anyway? [y/N]" first. See
+  [`docs/CUSTOMIZING.md`](docs/CUSTOMIZING.md#m-files-authentication-token)
+  for the full flow, including how to read the vault GUID from **M-Files
+  Desktop Settings** and the manual `curl` fallback.
+
+### Changed
+
+- The M-Files setup wizard now shows a status line while the mint/verify
+  network calls run, instead of the terminal going silent for however long
+  they take. The Windows domain field is a pick-one between the two domains
+  set via `MFILES_DOMAIN_1`/`MFILES_DOMAIN_2` (placeholder names — set them to
+  your real domains) rather than free text.
+
 ## [0.14.0] — 2026-07-10
 
 ### Added
@@ -385,6 +420,35 @@ _Changes to the launcher itself._
 
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
+
+## [0.2.0] — 2026-07-15
+
+**Action required:** re-pull image + recreate the stack (the Squid allowlist
+change rides the images); edit `.env` (new M-Files credentials) + update
+launcher (≥ 0.15.0) if you want the M-Files MCP — otherwise none beyond the
+re-pull.
+
+- **Read-only M-Files integration** (sixth MCP server, alongside
+  Bitbucket/Jira/GitLab/JFrog/Confluence): browse object types and classes,
+  search objects, fetch an object with its properties and files, and download
+  file content. Auto-enables once `MFILES_BASE_URL` + `MFILES_PAT` are set
+  (force off with `DISABLE_MFILES_MCP=1`). M-Files is the first service
+  authenticated via a custom `X-Authentication` header instead of
+  Bearer/Basic — no username needed — and, unlike every other service, the
+  PAT is a **session token you mint from your vault credentials** rather than
+  one copied from a web UI. The launcher (≥ 0.15.0) can mint it for you
+  automatically; see the launcher's `0.15.0` entry above.
+- New bundled **`mfiles-fetch`** skill driving the M-Files tools for
+  document-management lookups.
+- New "Getting an M-Files authentication token" section in the image's
+  `docs/MCP_SERVERS.md` — the manual fallback for minting `MFILES_PAT` if you'd
+  rather not use the launcher's built-in flow.
+- Docs and the bundled agent instructions now cover six MCP servers instead
+  of five.
+- **`pty-sessions` skill clarified:** `pty_spawn`'s `command` must be
+  something that keeps the terminal open (e.g. `bash`, not `echo hello`,
+  which exits immediately), and driving a session via `pty_write` requires a
+  trailing newline (`\n`) to act as pressing Enter.
 
 ## [0.1.0] — 2026-07-10
 

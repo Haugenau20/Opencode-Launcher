@@ -36,6 +36,7 @@ _opencode_launcher() {
     '--reconfigure:re-run the secrets setup wizard'
     '--config:print a read-only dashboard of every .env setting'
     '--show-allowlist:print the configured outbound egress allowlist'
+    '--mfiles-token:mint an M-Files auth token and write it into .env'
     '--help:show usage'
     '-h:show usage'
   )
