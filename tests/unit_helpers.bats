@@ -918,6 +918,13 @@ REALISTIC_MANIFEST='{
   [ -z "$output" ]
 }
 
+@test "manifest_missing_keys: the GitLab/git safety keys are known, not reported missing" {
+  local manifest='{"env_keys": [ {"key": "ALLOW_REMOTE_GIT", "required": false}, {"key": "GIT_REMOTE_ALLOWLIST", "required": false}, {"key": "ALLOW_CONFLUENCE_WRITE", "required": false}, {"key": "ALLOW_GITLAB_WRITE", "required": false}, {"key": "GITLAB_WRITE_PROJECTS", "required": false}, {"key": "GITLAB_QUEUE_LABEL_PREFIX", "required": false} ]}'
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$manifest"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # --- image_version_label ----------------------------------------------------
 
 @test "image_version_label: echoes the OCI version label when present" {
@@ -1024,6 +1031,19 @@ older"
   [ "$output" = "SECRET_KEY" ]
 }
 
+# --- wizard_keys ---------------------------------------------------------------
+
+@test "wizard_keys: the safety switches are opt-in, not prompted on first run" {
+  run wizard_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ALLOW_REMOTE_GIT"* ]]
+  [[ "$output" != *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" != *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" != *"ALLOW_GITLAB_WRITE"* ]]
+  [[ "$output" != *"GITLAB_WRITE_PROJECTS"* ]]
+  [[ "$output" != *"GITLAB_QUEUE_LABEL_PREFIX"* ]]
+}
+
 # --- editable_schema_keys ----------------------------------------------------
 
 @test "editable_schema_keys: excludes internal-typed keys" {
@@ -1042,6 +1062,16 @@ older"
   [[ "$output" == *"USER_LAYER_PATH"* ]]
   [[ "$output" == *"LLM_API_BASE"* ]]
   [[ "$output" == *"IMAGE_REGISTRY"* ]]
+}
+
+@test "editable_schema_keys: includes the GitLab/git write-and-remote safety keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" == *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" == *"ALLOW_GITLAB_WRITE"* ]]
+  [[ "$output" == *"GITLAB_WRITE_PROJECTS"* ]]
+  [[ "$output" == *"GITLAB_QUEUE_LABEL_PREFIX"* ]]
 }
 
 @test "editable_schema_keys: every line is a real config_schema key, in schema order" {
@@ -1094,6 +1124,17 @@ older"
   [ ! -f "$ENV_FILE" ]
 }
 
+@test "cmd_config_show: the GitLab/git safety keys show up under the Safety group" {
+  printf 'ALLOW_GITLAB_WRITE=1\nGITLAB_WRITE_PROJECTS=mygroup/sandbox\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Safety"* ]]
+  [[ "$output" == *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" == *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" == *"[set]"*"ALLOW_GITLAB_WRITE"*"1"* ]]
+  [[ "$output" == *"[set]"*"GITLAB_WRITE_PROJECTS"*"mygroup/sandbox"* ]]
+}
+
 @test "cmd_config_show: groups keys under their field_group section header" {
   printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
   run cmd_config_show
@@ -1142,6 +1183,34 @@ older"
   run field_help_text BITBUCKET_LEGACY_URL
   [ "$status" -eq 0 ]
   [[ "$output" == *"BITBUCKET_BASE_URL"* ]]
+}
+
+@test "field_help_text: GIT_REMOTE_ALLOWLIST states it is defence in depth, not a boundary" {
+  run field_help_text GIT_REMOTE_ALLOWLIST
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Defence in depth"* ]]
+  [[ "$output" == *"NOT a security boundary"* ]]
+  [[ "$output" == *"ALLOW_REMOTE_GIT=1"* ]]
+}
+
+@test "field_help_text: GITLAB_WRITE_PROJECTS states it is defence in depth, not a boundary" {
+  run field_help_text GITLAB_WRITE_PROJECTS
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Defence in depth"* ]]
+  [[ "$output" == *"NOT a security boundary"* ]]
+  [[ "$output" == *"ALLOW_GITLAB_WRITE=1"* ]]
+}
+
+@test "field_help_text: ALLOW_GITLAB_WRITE notes there is no label/close/merge tool even at 1" {
+  run field_help_text ALLOW_GITLAB_WRITE
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no tool to set labels"* ]]
+}
+
+@test "field_help_text: ALLOW_CONFLUENCE_WRITE notes deleting pages is never possible" {
+  run field_help_text ALLOW_CONFLUENCE_WRITE
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deleting pages is never possible"* ]]
 }
 
 # --- prompt_one_key -----------------------------------------------------------

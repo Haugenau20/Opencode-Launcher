@@ -59,6 +59,11 @@ Git identity|GIT_USER_EMAIL|text|Git user email for container commits|optional
 User layer|HOST_UID|internal|Host UID|auto-filled from `id -u` on first run
 User layer|HOST_GID|internal|Host GID|auto-filled from `id -g` on first run
 Safety|ALLOW_REMOTE_GIT|bool|Allow remote git (push/fetch/pull/clone)|1 enables, 0 disables
+Safety|GIT_REMOTE_ALLOWLIST|list|Git remote allowlist|optional; only applies when ALLOW_REMOTE_GIT=1; defence in depth, not a boundary
+Safety|ALLOW_CONFLUENCE_WRITE|bool|Allow Confluence writes|1 enables page create/edit, 0 keeps read-only
+Safety|ALLOW_GITLAB_WRITE|bool|Allow GitLab writes|1 enables MRs/comments/issues, 0 keeps read-only
+Safety|GITLAB_WRITE_PROJECTS|list|GitLab write projects allowlist|optional; only applies when ALLOW_GITLAB_WRITE=1; defence in depth, not a boundary
+Safety|GITLAB_QUEUE_LABEL_PREFIX|text|GitLab label prefix the MCP may never set|optional; only if another process owns labels under this prefix
 Safety|DISABLE_BITBUCKET_MCP|bool|Force-disable the Bitbucket MCP|
 Safety|DISABLE_JIRA_MCP|bool|Force-disable the Jira MCP|
 Safety|DISABLE_GITLAB_MCP|bool|Force-disable the GitLab MCP|
@@ -165,6 +170,21 @@ field_help_text() {
       ;;
     ALLOW_REMOTE_GIT)
       printf 'Allow git push/fetch/pull/clone to remote hosts. 1 enables, 0 disables.'
+      ;;
+    GIT_REMOTE_ALLOWLIST)
+      printf 'Optional second gate, applied only when ALLOW_REMOTE_GIT=1: whitespace- or comma-separated host/path prefixes remote git may target, matched on a path-segment boundary. Empty = no restriction.\nDefence in depth, NOT a security boundary — an agent with a shell can call git directly. The real boundary is the token'"'"'s own scope and role.'
+      ;;
+    ALLOW_CONFLUENCE_WRITE)
+      printf 'Allow the Confluence MCP to create and edit pages instead of only reading them. Only the exact value 1 enables writes. Deleting pages is never possible either way.'
+      ;;
+    ALLOW_GITLAB_WRITE)
+      printf 'Allow the GitLab MCP to open merge requests, comment, and create issues instead of only reading. Only the exact value 1 enables writes.\nEven at 1 there is deliberately no tool to set labels, close an issue, or merge an MR.'
+      ;;
+    GITLAB_WRITE_PROJECTS)
+      printf 'Optional narrowing, applied only when ALLOW_GITLAB_WRITE=1: whitespace- or comma-separated project paths or numeric ids writes are restricted to, same segment-boundary rule as GIT_REMOTE_ALLOWLIST. Empty = no restriction.\nDefence in depth, NOT a security boundary — an agent with a shell can call the GitLab API directly. The real boundary is the token'"'"'s own scope and role.'
+      ;;
+    GITLAB_QUEUE_LABEL_PREFIX)
+      printf 'Optional label namespace/prefix the GitLab MCP is never allowed to set, even at ALLOW_GITLAB_WRITE=1. Only relevant if some other process (a workflow queue, an orchestrator) owns labels under that prefix as its own state. Leave blank if that doesn'"'"'t apply to you.'
       ;;
     DISABLE_BITBUCKET_MCP)
       printf 'Force-disable the Bitbucket MCP even if Bitbucket credentials are present in .env.'
