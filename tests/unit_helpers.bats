@@ -2229,3 +2229,66 @@ git_repo_pair() {
   OC_EXEC_TTY="$BATS_TEST_TMPDIR/spin.tty" run exec_spinner_stop
   [ "$status" -eq 0 ]
 }
+
+# --- per-project overrides ----------------------------------------------------
+# PROJECT_ENV_FILE made the per-project env file reach inside the container, but
+# that file is regenerated from $ENV_FILE on every boot — so without a separate,
+# hand-edited source there was nowhere a user could put a per-project value that
+# survived. These cover the layer that closes it.
+
+@test "project_overrides_file: names the hand-edited file next to the generated one" {
+  [ "$(project_overrides_file demo)" = "${ENVS_DIR}/demo.overrides.env" ]
+}
+
+@test "write_project_env: an overrides value beats the shared .env" {
+  printf 'GITLAB_PAT=shared\nLLM_API_KEY=shared-llm\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'GITLAB_PAT=scoped-to-demo\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  # Last wins, so the override must come AFTER the shared value.
+  [ "$(grep -n '^GITLAB_PAT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "GITLAB_PAT=scoped-to-demo" ]
+  # Unrelated shared keys are still inherited.
+  grep -q '^LLM_API_KEY=shared-llm$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: a blank overrides value drops an inherited credential" {
+  # Blank is not cosmetic: each MCP server auto-enables on credential presence,
+  # so an empty value keeps that server out of this stack entirely.
+  printf 'CONFLUENCE_PAT=inherited\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'CONFLUENCE_PAT=\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  [ "$(grep -n '^CONFLUENCE_PAT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "CONFLUENCE_PAT=" ]
+}
+
+@test "write_project_env: overrides cannot hijack the launcher's own identity keys" {
+  # The generated block is written LAST so a stale hand-edited port cannot fight
+  # resolve_project_port and leave the stack unreachable at the port it printed.
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4097 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'OPENCODE_PORT=9999\nPROJECT_SLUG=impostor\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  [ "$(grep -n '^OPENCODE_PORT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "OPENCODE_PORT=4097" ]
+  [ "$(grep -n '^PROJECT_SLUG=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "PROJECT_SLUG=demo" ]
+}
+
+@test "write_project_env: no overrides file is not an error" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  run write_project_env "/some/repo"
+  [ "$status" -eq 0 ]
+  grep -q '^FOO=bar$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: the generated file points at the file to edit instead" {
+  # The generated one says "do not edit by hand"; it has to say where to go.
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  write_project_env "/some/repo"
+  grep -q 'demo.overrides.env' "$PROJECT_ENV"
+}
