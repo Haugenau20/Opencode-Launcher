@@ -62,6 +62,10 @@ You only ever invoke `./start.sh` and `./install.sh` directly — they reach int
 - **Podman** (rootless, with the `podman-docker` shim) works too — `start.sh`
   auto-detects it and applies a `keep-id` userns overlay so bind-mount ownership
   stays correct. Force it with `--podman` if detection misses.
+- **A git credential helper** (or an SSH remote) for this launcher's own
+  checkout. Every boot runs `git fetch` on it to check for updates, so an HTTPS
+  remote with nothing to authenticate for git prompts for a username/password
+  and looks like a hang. `OC_SKIP_UPDATE_CHECK=1` skips the check instead.
 
 ## Install
 
