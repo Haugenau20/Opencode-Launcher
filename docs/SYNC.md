@@ -96,66 +96,6 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    default — the point of mirroring it now is so the block matches the
    maintainer repo byte-for-byte, not that this launcher exposes a new knob.
 
-7. **`docker/docker-compose.symphony.yml`** — the opt-in unattended-orchestrator
-   overlay, a pull-only mirror of the maintainer repo's
-   `docker-compose.symphony.yml` (same pull-only rule as the header note above:
-   no `build:` block, and none should ever be added — this repo carries no
-   `symphony/Dockerfile` or vendored `symphony-queue` source tree). Keep these
-   block-for-block in sync:
-   - The image expression: `${IMAGE_REGISTRY:-opencode-workplace}-symphony:${IMAGE_TAG:-local}`.
-   - Every `:z` SELinux flag on the three symphony bind mounts (queue,
-     workspaces `:z`; config `:ro,z`) — same reasoning as block 1 above.
-   - `OPENCODE_EXTRA_ALLOWED_DIRS: /workspaces/**` on the `opencode` service.
-     Without it, `permission.external_directory` defaulting to `"ask"` blocks
-     the very first file operation of every unattended run forever — nobody
-     is there to answer the prompt.
-   - `SYMPHONY_OPENCODE_URL: http://opencode:${OPENCODE_INTERNAL_PORT:-4096}` —
-     follows block 6's `OPENCODE_INTERNAL_PORT` parameterization (a
-     container-to-container URL on an internal network, so the host
-     publication/`OPENCODE_PORT` is irrelevant to it).
-   - `ALLOW_REMOTE_GIT`/`GIT_REMOTE_ALLOWLIST` re-asserted via the overlay's
-     own `environment:` block on `opencode` (`${ALLOW_REMOTE_GIT:-0}` /
-     `${GIT_REMOTE_ALLOWLIST:-}`) — both keys already exist in
-     `.env.example` (they are agent-visible safety switches, not symphony
-     additions), so this is a defence-in-depth reaffirmation rather than a
-     new setting.
-
-   **What intentionally diverges — do not "fix" these to match upstream:**
-   the maintainer repo's per-project symphony state lives at
-   `projects/<slug>/{queue,workspaces,config}` (siblings of `projects/<slug>/
-   .env`); this launcher's lives at **`.symphony/<slug>/{queue,workspaces,
-   config}`**, a sibling of `.envs/<slug>.env` rather than of it. The
-   volume-mount env-var *names* the compose file reads
-   (`SYMPHONY_QUEUE_PATH`/`SYMPHONY_WORKSPACES_PATH`/`SYMPHONY_CONFIG_PATH`)
-   are identical to upstream's; only the values (and who computes them —
-   `lib/symphony.sh`'s `symphony_derive_settings`, the counterpart of the
-   maintainer's `./scripts/symphony`) differ, matching this repo's existing
-   `.envs/` vs. `projects/<slug>/.env` presentation split (see "File
-   location" below). The CLI shape is also an intentional, unmirrored
-   delta: `./start.sh --symphony <verb> <host-repo-path>` (verb first, one
-   flag) rather than `./scripts/symphony -p <slug> <verb>`, to match this
-   launcher's existing `--down`/`--logs`/`--shell <host-repo-path>`
-   convention. Do not port the CLI shape back, and do not rename the launcher
-   side to `scripts/symphony` — `lib/symphony.sh` + `start.sh --symphony`
-   follows this repo's module/dispatch convention (see `lib/commands.sh`),
-   not the maintainer's standalone-script convention.
-
-8. **`symphony/WORKFLOW.md.example` and `symphony/WORKFLOW.gitlab.md.example`**
-   — byte-for-byte copies of the maintainer repo's files at the same
-   relative path. These are the two workflow templates `--symphony init`
-   points a user at (`cp symphony/WORKFLOW.md.example
-   .symphony/<slug>/config/WORKFLOW.md`, etc.) and `symphony_preflight`
-   (`lib/symphony.sh`) names in its "no WORKFLOW.md" error. Recopy them
-   whenever the maintainer repo changes either file — the prompt bodies,
-   the front-matter shape (`symphony_tracker_kind`/`symphony_wf_scalar` in
-   `lib/symphony.sh` parse that shape), and the safety guidance in the
-   comments are all load-bearing here, not just documentation. This repo
-   does **not** carry `symphony/.env.example`, `symphony/Dockerfile`, or
-   `symphony/entrypoint.sh` — those are maintainer-only (respectively: this
-   launcher's equivalent settings are `.symphony/<slug>/symphony.env`, see
-   `lib/symphony.sh`; the Dockerfile/entrypoint back a `build:` this
-   pull-only stack never performs).
-
 ## Shared env-var contracts (launcher sets, image consumes)
 
 These are behavioural contracts, not compose blocks to compare line-for-line:
@@ -227,10 +167,10 @@ the name and semantics in sync across both repos.
 ## File location (a presentation-only delta)
 
 The launcher keeps its compose stack under **`docker/`** (`docker/docker-compose.yml`,
-`docker/docker-compose.symphony.yml`, `docker/docker-compose.podman.yml`,
-`docker/docker-compose.user-layer.yml`, `docker/docker-compose.user-packages.yml`,
-`docker/Dockerfile.user-packages`) to keep the repo root uncluttered. The maintainer
-repo may keep them at its root — that's fine. **Only the folder differs; the contents of the synced files must still match
+`docker/docker-compose.podman.yml`, `docker/docker-compose.user-layer.yml`,
+`docker/docker-compose.user-packages.yml`, `docker/Dockerfile.user-packages`) to keep
+the repo root uncluttered. The maintainer repo may keep them at its root — that's
+fine. **Only the folder differs; the contents of the synced files must still match
 block-for-block.** `start.sh` invokes them with `--project-directory <repo-root>`,
 so every relative path inside (build `context: .`, the `:z` bind mounts, `env_file`)
 still resolves from the root exactly as before. When you mirror a change, compare

@@ -58,10 +58,7 @@ _Changes to the launcher itself._
 ## [0.16.0] — 2026-08-10
 
 **Action required:** none to keep working as before. To give a project its own
-credentials, create `.envs/<slug>.overrides.env` (see README). To run the
-unattended orchestrator, `./start.sh --symphony init <repo>` and read
-`docs/SYMPHONY.md` in the maintainer repo first — it needs an image tag your
-registry may not carry yet.
+credentials, create `.envs/<slug>.overrides.env` (see README).
 
 ### Added
 
@@ -86,30 +83,6 @@ registry may not carry yet.
   while `PROJECT_SLUG`/`OPENCODE_PORT`/`REPO_PATH` stay the launcher's (a
   stale hand-written port would otherwise leave the stack unreachable at the
   port it just printed). Projects without one are unaffected.
-- **Symphony: opt-in unattended runs** (`./start.sh --symphony <verb> <repo>`,
-  verbs `init check up logs status stop down add`). An orchestrator watches a
-  queue of work items and runs an agent per item until each is ready for a
-  human. Off unless you ask for it; nothing about a normal boot changes.
-
-  Its per-project state lives in `.symphony/<slug>/` — `config/WORKFLOW.md`
-  (the tracker choice and the agent's prompt), plus `queue/` and `workspaces/`.
-  `symphony.env` beside them holds the orchestrator's own GitLab token, and is
-  deliberately NOT one of the files handed to the agent's container: the
-  orchestrator gets a Reporter token that can move issues but not push code,
-  the agent a Developer token that can push but not relabel its own work.
-  Neither can do the other's job, and that split is the containment — read
-  `docs/SYMPHONY.md` in the maintainer repo before the first run.
-
-  `--symphony check` is a preflight that refuses to start on the mistakes that
-  otherwise surface as an unattended agent doing something unintended: a
-  missing workflow, a GitLab tracker with no token, a workspaces mount pointing
-  at your real repo, or a credential file readable from inside the orchestrator
-  container. It also cross-checks `GIT_REMOTE_ALLOWLIST` against
-  `GITLAB_WRITE_PROJECTS`, which gate different protocols in different
-  processes and so cannot check each other at runtime.
-
-  Requires the `-symphony` image tag in your registry; it is pulled, never
-  built here.
 - Five safety keys the image already read are now known to `.env.example`,
   `--config`, and `--reconfigure`: `GIT_REMOTE_ALLOWLIST`,
   `ALLOW_CONFLUENCE_WRITE`, `ALLOW_GITLAB_WRITE`, `GITLAB_WRITE_PROJECTS`,

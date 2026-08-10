@@ -28,14 +28,7 @@ _opencode_launcher_flags=(
   --config
   --show-allowlist
   --mfiles-token
-  --symphony
   --help -h
-)
-
-# Verbs --symphony accepts as its immediately-following argument. Keep in
-# sync with cmd_symphony's case in ../lib/symphony.sh.
-_opencode_launcher_symphony_verbs=(
-  check up logs status stop down add init
 )
 
 _opencode_launcher_complete() {
@@ -43,15 +36,6 @@ _opencode_launcher_complete() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]:-}"
-
-  # Right after --symphony, offer its verbs instead of directories/flags —
-  # everything past the verb is that verb's own argument shape (a repo path,
-  # then for `add` free text), which generic completion can't usefully help
-  # with, so no further special-casing beyond this one slot.
-  if [[ "$prev" == "--symphony" ]]; then
-    COMPREPLY=($(compgen -W "${_opencode_launcher_symphony_verbs[*]}" -- "$cur"))
-    return 0
-  fi
 
   # Only start.sh itself takes a flag right after it; once a non-flag word
   # (the repo path) has been typed, just keep offering directories.

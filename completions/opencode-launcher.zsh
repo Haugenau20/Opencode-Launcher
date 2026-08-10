@@ -37,7 +37,6 @@ _opencode_launcher() {
     '--config:print a read-only dashboard of every .env setting'
     '--show-allowlist:print the configured outbound egress allowlist'
     '--mfiles-token:mint an M-Files auth token and write it into .env'
-    '--symphony:opt-in unattended orchestrator — check|up|logs|status|stop|down|add|init <host-repo-path>'
     '--help:show usage'
     '-h:show usage'
   )
