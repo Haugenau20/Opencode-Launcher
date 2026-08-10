@@ -20,6 +20,11 @@ ENV_FILE="${ENV_FILE:-.env}"
 ENV_EXAMPLE="${ENV_EXAMPLE:-.env.example}"
 ENVS_DIR="${ENVS_DIR:-.envs}"
 EXTRA_PACKAGES_FILE="${EXTRA_PACKAGES_FILE:-extra-packages.txt}"
+# Per-project symphony state (queue/, workspaces/, config/WORKFLOW.md, and the
+# launcher-only symphony.env — see lib/symphony.sh). Lives outside .envs/
+# deliberately: .envs/<slug>.env is the AGENT's container environment
+# (PROJECT_ENV_FILE), and symphony.env must never be handed to that container.
+SYMPHONY_DIR="${SYMPHONY_DIR:-.symphony}"
 
 # Plugins baked into the image, all OFF by default. Shown as a hint during
 # first-run setup so users can opt in interactively. This is only a convenience
@@ -35,7 +40,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace opencode-pty}
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config mfiles usage project also packages allowlist digest manifest update doctor commands exec; do
+for __lib in core config mfiles usage project also packages allowlist digest manifest update doctor commands symphony exec; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -248,6 +253,9 @@ main() {
   local EXEC_PROMPT=""
   local ALSO_ARGS=()
   local REPO_ARG=""
+  local WANT_SYMPHONY=0
+  local SYMPHONY_VERB=""
+  local SYMPHONY_ARGS=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --detach|--no-tui) ATTACH_TUI=0; PERSIST=1; shift ;;
@@ -262,6 +270,20 @@ main() {
       --exec)
         [ $# -gt 1 ] || { usage; die "--exec requires a <prompt> argument"; }
         WANT_EXEC=1; EXEC_PROMPT="$2"; shift 2 ;;
+      --symphony)
+        # Grabs the verb PLUS every remaining argument verbatim (the repo path
+        # and, for `add`, its own trailing text/options) — a self-contained
+        # sub-dispatch, the same shape as --exec's one-argument grab, just
+        # wider. Ends the flag-parsing loop entirely (the case falls through
+        # with $# left at 0), so nothing after --symphony is reinterpreted as
+        # a top-level flag.
+        [ $# -ge 2 ] || { usage; die "--symphony requires a verb: check|up|logs|status|stop|down|add|init"; }
+        WANT_SYMPHONY=1
+        SYMPHONY_VERB="$2"
+        shift 2
+        SYMPHONY_ARGS=("$@")
+        shift "$#"
+        ;;
       --doctor) WANT_DOCTOR=1; shift ;;
       --status) WANT_STATUS=1; shift ;;
       --down|--stop) WANT_DOWN=1; shift ;;
@@ -289,6 +311,14 @@ main() {
     esac
   done
   [ $# -gt 0 ] && [ -z "$REPO_ARG" ] && { REPO_ARG="$1"; shift; }
+
+  # --symphony short-circuits everything else, same spirit as --doctor below:
+  # its own verbs (check/up/logs/status/stop/down/add/init) each validate
+  # their own <host-repo-path>/args and exit with that verb's own status.
+  if [ "$WANT_SYMPHONY" -eq 1 ]; then
+    cmd_symphony "$SYMPHONY_VERB" ${SYMPHONY_ARGS[@]+"${SYMPHONY_ARGS[@]}"}
+    exit $?
+  fi
 
   # --doctor short-circuits everything else: no secrets prompt, no image pull,
   # no TUI attach. <host-repo-path> is OPTIONAL here (it only adds a check that

@@ -2230,6 +2230,213 @@ git_repo_pair() {
   [ "$status" -eq 0 ]
 }
 
+# --- symphony (lib/symphony.sh): path derivation ----------------------------
+
+@test "symphony path helpers: derive .symphony/<slug>/{config,queue,workspaces,symphony.env,config/WORKFLOW.md}" {
+  run symphony_root_dir myslug
+  [ "$output" = ".symphony/myslug" ]
+  run symphony_config_dir myslug
+  [ "$output" = ".symphony/myslug/config" ]
+  run symphony_queue_dir myslug
+  [ "$output" = ".symphony/myslug/queue" ]
+  run symphony_workspaces_dir myslug
+  [ "$output" = ".symphony/myslug/workspaces" ]
+  run symphony_env_file myslug
+  [ "$output" = ".symphony/myslug/symphony.env" ]
+  run symphony_workflow_file myslug
+  [ "$output" = ".symphony/myslug/config/WORKFLOW.md" ]
+  run symphony_container_name myslug
+  [ "$output" = "opencode-symphony-myslug" ]
+}
+
+@test "symphony path helpers: config_dir is a SUBDIRECTORY of root, one level below symphony.env" {
+  # Load-bearing: config_dir is what gets bind-mounted into the symphony
+  # container, and symphony.env (holding SYMPHONY_GITLAB_TOKEN) must sit
+  # outside it.
+  run symphony_root_dir x
+  local root="$output"
+  run symphony_config_dir x
+  [[ "$output" == "$root/config" ]]
+  run symphony_env_file x
+  [[ "$output" == "$root/symphony.env" ]]
+  [[ "$output" != "$root/config"* ]]
+}
+
+# --- symphony: WORKFLOW.md front-matter parsing -----------------------------
+
+@test "symphony_tracker_kind: reads tracker.kind from the front matter" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n---\nbody\n' > "$wf"
+  run symphony_tracker_kind "$wf"
+  [ "$output" = "gitlab" ]
+}
+
+@test "symphony_tracker_kind: empty for a missing file" {
+  run symphony_tracker_kind "$BATS_TEST_TMPDIR/does-not-exist.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "symphony_tracker_kind: a commented-out kind line never matches" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  # kind: gitlab\n  kind: file_queue\n---\nbody\n' > "$wf"
+  run symphony_tracker_kind "$wf"
+  [ "$output" = "file_queue" ]
+}
+
+@test "symphony_wf_scalar: reads a top-level key, strips trailing comments and quotes" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n  project_id: "mygroup/myproject"  # comment\n---\nbody\n' > "$wf"
+  run symphony_wf_scalar "$wf" project_id
+  [ "$output" = "mygroup/myproject" ]
+}
+
+@test "symphony_wf_scalar: empty when the key is absent" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  run symphony_wf_scalar "$wf" project_id
+  [ -z "$output" ]
+}
+
+# --- symphony: generic file-scoped env reader -------------------------------
+
+@test "env_file_get: reads a KEY=VALUE line from an arbitrary file" {
+  local f="$BATS_TEST_TMPDIR/some.env"
+  printf 'FOO=bar\nSYMPHONY_GITLAB_TOKEN=secret123\n' > "$f"
+  run env_file_get "$f" SYMPHONY_GITLAB_TOKEN
+  [ "$output" = "secret123" ]
+}
+
+@test "env_file_get: empty for a missing key or a missing file" {
+  local f="$BATS_TEST_TMPDIR/some.env"
+  printf 'FOO=bar\n' > "$f"
+  run env_file_get "$f" NOPE
+  [ -z "$output" ]
+  run env_file_get "$BATS_TEST_TMPDIR/no-such-file.env" FOO
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- symphony: allowlist normalization/covering (ported from the maintainer's
+# ./scripts/symphony — same three helpers, same test intent) ----------------
+
+@test "symphony_norm_dest: strips scheme/userinfo/port/.git and lowercases" {
+  run symphony_norm_dest "https://user@GitLab.Example.com:8443/MyGroup/MyProject.git"
+  [ "$output" = "gitlab.example.com/mygroup/myproject" ]
+}
+
+@test "symphony_norm_dest: normalizes an scp-style git@host:path remote" {
+  run symphony_norm_dest "git@gitlab.example.com:mygroup/myproject.git"
+  [ "$output" = "gitlab.example.com/mygroup/myproject" ]
+}
+
+@test "symphony_norm_dest: a bare host/path (no scheme) passes through, slashes trimmed" {
+  run symphony_norm_dest "/gitlab.example.com/mygroup/myproject/"
+  [ "$output" = "gitlab.example.com/mygroup/myproject" ]
+}
+
+@test "symphony_path_of: the path part after the first slash, empty for a host-only entry" {
+  run symphony_path_of "gitlab.example.com/mygroup/myproject"
+  [ "$output" = "mygroup/myproject" ]
+  run symphony_path_of "gitlab.example.com"
+  [ -z "$output" ]
+}
+
+@test "symphony_covered_by: exact match and a deeper path both covered" {
+  symphony_covered_by "mygroup/myproject" "mygroup/myproject"
+  symphony_covered_by "mygroup/myproject/sub" "mygroup/myproject"
+}
+
+@test "symphony_covered_by: a path-segment boundary — 'a/b-evil' is NOT covered by 'a/b'" {
+  ! symphony_covered_by "mygroup/myproject-evil" "mygroup/myproject"
+}
+
+@test "symphony_covered_by: a host-only (empty) entry covers everything" {
+  symphony_covered_by "anything/at/all" ""
+}
+
+@test "symphony_covered_by: false when nothing matches" {
+  ! symphony_covered_by "othergroup/otherproject" "mygroup/myproject"
+}
+
+# --- symphony: allowlist agreement cross-check ------------------------------
+
+@test "symphony_allowlist_agreement: warns when GITLAB_WRITE_PROJECTS has no covering GIT_REMOTE_ALLOWLIST entry" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  run symphony_allowlist_agreement "$wf" 1 "gitlab.example.com/othergroup/otherproject" 1 "mygroup/myproject"
+  [[ "$output" == *"mygroup/myproject is in GITLAB_WRITE_PROJECTS but no GIT_REMOTE_ALLOWLIST entry covers it"* ]]
+  [[ "$output" == *"othergroup/otherproject is pushable per GIT_REMOTE_ALLOWLIST but not in GITLAB_WRITE_PROJECTS"* ]]
+}
+
+@test "symphony_allowlist_agreement: silent when both allowlists already agree" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  # GIT_REMOTE_ALLOWLIST entries are full host/path remotes; GITLAB_WRITE_PROJECTS
+  # entries are bare group/project paths — norm_dest+path_of is what makes
+  # "gitlab.example.com/mygroup/myproject" and "mygroup/myproject" comparable.
+  run symphony_allowlist_agreement "$wf" 1 "gitlab.example.com/mygroup/myproject" 1 "mygroup/myproject"
+  [ -z "$output" ]
+}
+
+@test "symphony_allowlist_agreement: silent when either gate is off" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  run symphony_allowlist_agreement "$wf" 0 "" 1 "mygroup/myproject"
+  [ -z "$output" ]
+}
+
+@test "symphony_allowlist_agreement: cross-checks the gitlab tracker's own project against both allowlists" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n  base_url: https://gitlab.example.com\n  project_id: mygroup/myproject\n---\nbody\n' > "$wf"
+  run symphony_allowlist_agreement "$wf" 1 "gitlab.example.com/mygroup/myproject" 1 "mygroup/myproject"
+  [[ "$output" == *"tracker project gitlab.example.com/mygroup/myproject is git-reachable and API-writable"* ]]
+}
+
+@test "symphony_allowlist_agreement: warns when the tracker project itself is not covered" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n  base_url: https://gitlab.example.com\n  project_id: mygroup/myproject\n---\nbody\n' > "$wf"
+  run symphony_allowlist_agreement "$wf" 1 "gitlab.example.com/othergroup/otherproject" 0 ""
+  [[ "$output" == *"tracker project gitlab.example.com/mygroup/myproject is not covered by GIT_REMOTE_ALLOWLIST"* ]]
+}
+
+@test "symphony_allowlist_agreement: a numeric project_id has no path to compare, so no tracker cross-check fires" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n  base_url: https://gitlab.example.com\n  project_id: "12345"\n---\nbody\n' > "$wf"
+  run symphony_allowlist_agreement "$wf" 1 "gitlab.example.com/mygroup/myproject" 0 ""
+  [[ "$output" != *"tracker project"* ]]
+}
+
+# --- symphony: symphony_http_proxy (egress derivation) ----------------------
+
+@test "symphony_http_proxy: empty for the file queue (no egress at all)" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  ( unset SYMPHONY_HTTP_PROXY; run symphony_http_proxy "$wf"; [ -z "$output" ] )
+}
+
+@test "symphony_http_proxy: defaults to http://squid:3128 for the gitlab tracker" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: gitlab\n---\nbody\n' > "$wf"
+  ( unset SYMPHONY_HTTP_PROXY; run symphony_http_proxy "$wf"; [ "$output" = "http://squid:3128" ] )
+}
+
+@test "symphony_http_proxy: an explicit SYMPHONY_HTTP_PROXY always wins" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  SYMPHONY_HTTP_PROXY="http://custom:8080" run symphony_http_proxy "$wf"
+  [ "$output" = "http://custom:8080" ]
+}
+
+# --- symphony: preflight ------------------------------------------------------
+
+@test "symphony_preflight: fatal on a missing WORKFLOW.md" {
+  run symphony_preflight "$BATS_TEST_TMPDIR/repo" myslug "$BATS_TEST_TMPDIR/agent.env"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no .symphony/myslug/config/WORKFLOW.md"* ]]
+}
+
+
 # --- per-project overrides ----------------------------------------------------
 # PROJECT_ENV_FILE made the per-project env file reach inside the container, but
 # that file is regenerated from $ENV_FILE on every boot — so without a separate,

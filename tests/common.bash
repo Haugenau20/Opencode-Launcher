@@ -21,6 +21,7 @@ make_sandbox() {
   mkdir -p "$SANDBOX/docker"
   cp "$REPO_ROOT"/docker/docker-compose*.yml "$SANDBOX/docker/" 2>/dev/null || true
   cp -r "$REPO_ROOT/extra-allowlist.d" "$SANDBOX/" 2>/dev/null || true
+  cp -r "$REPO_ROOT/symphony" "$SANDBOX/" 2>/dev/null || true
 
   export FAKE_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
   : > "$FAKE_DOCKER_LOG"

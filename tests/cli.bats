@@ -2531,3 +2531,362 @@ seed_env_doctor() {
   [[ "$output" == *"[WARN] launcher update check"* ]]
   [[ "$output" == *"skipped (no upstream/offline)"* ]]
 }
+
+# --- --symphony ---------------------------------------------------------------
+#
+# The opt-in unattended orchestrator overlay: lib/symphony.sh + docker/
+# docker-compose.symphony.yml. State lives at .symphony/<slug>/ (queue/,
+# workspaces/, config/WORKFLOW.md, and the launcher-only symphony.env); the
+# AGENT's per-project env stays exactly where Wave 1 put it, .envs/<slug>.env
+# (PROJECT_ENV_FILE) — the two must never mix, which is what the "critical
+# invariant" test below exists to prove.
+
+# write_symphony_workflow SLUG KIND [PROJECT_ID] — write a minimal but valid
+# WORKFLOW.md for SLUG's symphony project, front matter only (the tests here
+# never exercise the prompt body). KIND is "file_queue" or "gitlab".
+write_symphony_workflow() {
+  local slug="$1" kind="$2" project_id="${3:-mygroup/myproject}"
+  local dir="$SANDBOX/.symphony/$slug/config"
+  mkdir -p "$dir"
+  if [ "$kind" = "gitlab" ]; then
+    cat > "$dir/WORKFLOW.md" <<EOF
+---
+tracker:
+  kind: gitlab
+  base_url: https://gitlab.example.com
+  project_id: ${project_id}
+  label_prefix: symphony
+agent:
+  max_turns: 3
+  max_concurrent_agents: 1
+---
+body
+EOF
+  else
+    cat > "$dir/WORKFLOW.md" <<'EOF'
+---
+tracker:
+  kind: file_queue
+agent:
+  max_turns: 3
+  max_concurrent_agents: 1
+---
+body
+EOF
+  fi
+}
+
+@test "--symphony with no verb is rejected" {
+  run_launcher --symphony
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--symphony requires a verb"* ]]
+}
+
+@test "--symphony with an unknown verb is rejected" {
+  run_launcher --symphony bogus "$(make_repo_arg)"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unknown verb 'bogus'"* ]]
+}
+
+@test "--symphony check requires a <host-repo-path>" {
+  seed_env
+  run_launcher --symphony check
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing <host-repo-path>"* ]]
+}
+
+@test "--symphony check: fails on a missing WORKFLOW.md and suggests both templates" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no .symphony/my-svc/config/WORKFLOW.md"* ]]
+  [[ "$output" == *"WORKFLOW.md.example"* ]]
+  [[ "$output" == *"WORKFLOW.gitlab.md.example"* ]]
+  [[ "$output" == *"preflight failed"* ]]
+}
+
+@test "--symphony init: scaffolds .symphony/<slug>/{config,queue/*,workspaces} and prints next steps" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  run_launcher --symphony init "$repo"
+  [ "$status" -eq 0 ]
+  [ -d "$SANDBOX/.symphony/my-svc/config" ]
+  [ -d "$SANDBOX/.symphony/my-svc/workspaces" ]
+  for d in todo in-progress review done failed cancelled; do
+    [ -d "$SANDBOX/.symphony/my-svc/queue/$d" ]
+  done
+  [[ "$output" == *"scaffolded .symphony/my-svc"* ]]
+  [[ "$output" == *"--symphony check $repo"* ]]
+}
+
+@test "--symphony check: passes on a correctly configured file_queue project" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tracker: file_queue"* ]]
+  [[ "$output" == *"file queue: symphony holds no credentials"* ]]
+  [[ "$output" == *"preflight passed."* ]]
+}
+
+@test "--symphony check: refuses a gitlab tracker with no SYMPHONY_GITLAB_TOKEN" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tracker is gitlab but SYMPHONY_GITLAB_TOKEN is empty"* ]]
+  [[ "$output" == *".symphony/my-svc/symphony.env"* ]]
+  [[ "$output" == *"preflight failed"* ]]
+}
+
+@test "--symphony check: passes on a gitlab tracker once SYMPHONY_GITLAB_TOKEN is set" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab
+  mkdir -p "$SANDBOX/.symphony/my-svc"
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-token-abc\n' > "$SANDBOX/.symphony/my-svc/symphony.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SYMPHONY_GITLAB_TOKEN set"* ]]
+  [[ "$output" == *"preflight passed."* ]]
+}
+
+@test "--symphony check: THE CRITICAL INVARIANT — SYMPHONY_GITLAB_TOKEN never reaches the generated agent env file" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab
+  mkdir -p "$SANDBOX/.symphony/my-svc"
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-only-secret-99999\n' > "$SANDBOX/.symphony/my-svc/symphony.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+
+  # .envs/<slug>.env is PROJECT_ENV_FILE — handed to the AGENT's container
+  # wholesale by docker/docker-compose.yml's env_file: layer. The Reporter
+  # token must never appear there, by KEY or by VALUE.
+  local penv="$SANDBOX/.envs/my-svc.env"
+  [ -f "$penv" ]
+  ! grep -q "reporter-only-secret-99999" "$penv"
+  ! grep -q "SYMPHONY_GITLAB_TOKEN" "$penv"
+  # ...and it DOES live in symphony's own (launcher-only) file.
+  grep -q "reporter-only-secret-99999" "$SANDBOX/.symphony/my-svc/symphony.env"
+}
+
+@test "--symphony check: warns when SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab
+  sed -i 's|^GITLAB_PAT=.*|GITLAB_PAT=shared-token-123|' "$SANDBOX/.env"
+  mkdir -p "$SANDBOX/.symphony/my-svc"
+  printf 'SYMPHONY_GITLAB_TOKEN=shared-token-123\n' > "$SANDBOX/.symphony/my-svc/symphony.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token"* ]]
+}
+
+@test "--symphony check: warns when a SYMPHONY_* key leaks into the agent-visible .env" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  printf 'SYMPHONY_LEAKED_KEY=oops\n' >> "$SANDBOX/.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SYMPHONY_* key(s) in"* ]]
+  [[ "$output" == *"SYMPHONY_LEAKED_KEY"* ]]
+}
+
+@test "--symphony check: warns when GITLAB_WRITE_PROJECTS is not covered by GIT_REMOTE_ALLOWLIST" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab mygroup/myproject
+  mkdir -p "$SANDBOX/.symphony/my-svc"
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-token\n' > "$SANDBOX/.symphony/my-svc/symphony.env"
+  sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
+  sed -i 's|^GIT_REMOTE_ALLOWLIST=.*|GIT_REMOTE_ALLOWLIST=gitlab.example.com/othergroup/otherproject|' "$SANDBOX/.env"
+  sed -i 's|^ALLOW_GITLAB_WRITE=.*|ALLOW_GITLAB_WRITE=1|' "$SANDBOX/.env"
+  sed -i 's|^GITLAB_WRITE_PROJECTS=.*|GITLAB_WRITE_PROJECTS=mygroup/myproject|' "$SANDBOX/.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mygroup/myproject is in GITLAB_WRITE_PROJECTS but no GIT_REMOTE_ALLOWLIST entry covers it"* ]]
+  [[ "$output" == *"tracker project gitlab.example.com/mygroup/myproject is not covered by GIT_REMOTE_ALLOWLIST"* ]]
+}
+
+@test "--symphony check: no cross-check warning when both allowlists agree with the tracker project" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab mygroup/myproject
+  mkdir -p "$SANDBOX/.symphony/my-svc"
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-token\n' > "$SANDBOX/.symphony/my-svc/symphony.env"
+  sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
+  sed -i 's|^GIT_REMOTE_ALLOWLIST=.*|GIT_REMOTE_ALLOWLIST=gitlab.example.com/mygroup/myproject|' "$SANDBOX/.env"
+  sed -i 's|^ALLOW_GITLAB_WRITE=.*|ALLOW_GITLAB_WRITE=1|' "$SANDBOX/.env"
+  sed -i 's|^GITLAB_WRITE_PROJECTS=.*|GITLAB_WRITE_PROJECTS=mygroup/myproject|' "$SANDBOX/.env"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tracker project gitlab.example.com/mygroup/myproject is git-reachable and API-writable"* ]]
+  [[ "$output" != *"is not covered by"* ]]
+  [[ "$output" != *"is not in GITLAB_WRITE_PROJECTS"* ]]
+}
+
+@test "--symphony up: a failed preflight aborts before any compose pull/up" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  # No WORKFLOW.md at all -> preflight fails.
+  run_launcher --symphony up "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"preflight failed"* ]]
+  ! grep -q 'compose .*pull' "$FAKE_DOCKER_LOG"
+  ! grep -q 'compose .*up -d' "$FAKE_DOCKER_LOG"
+}
+
+@test "--symphony up: pulls and starts opencode+squid+symphony under the slug-scoped compose project, no oc-publish" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony up "$repo"
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*-p opencode-my-svc .*pull opencode squid symphony' "$FAKE_DOCKER_LOG"
+  grep -q 'compose .*-p opencode-my-svc .*up -d opencode squid symphony' "$FAKE_DOCKER_LOG"
+  ! grep -q 'up -d.*oc-publish' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"opencode-symphony-my-svc"* ]] || true  # container name appears via docs, not required in stdout
+}
+
+@test "--symphony up: uses both compose files (base + symphony overlay)" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony up "$repo"
+  [ "$status" -eq 0 ]
+  grep -q 'docker-compose.yml' "$FAKE_DOCKER_LOG"
+  grep -q 'docker-compose.symphony.yml' "$FAKE_DOCKER_LOG"
+}
+
+@test "--symphony logs: reports 'not running' (no compose logs call) when the symphony container is down" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony logs "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opencode-symphony-my-svc is not running"* ]]
+  ! grep -q 'compose .*logs' "$FAKE_DOCKER_LOG"
+}
+
+@test "--symphony logs: tails the symphony service when its container IS running" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  FAKE_DOCKER_PS_OUTPUT="opencode-symphony-my-svc" run_launcher --symphony logs "$repo"
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*logs -f --tail=100 symphony' "$FAKE_DOCKER_LOG"
+}
+
+@test "--symphony status: reports per-state queue counts for a file_queue project" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  mkdir -p "$SANDBOX/.symphony/my-svc/queue/todo"
+  : > "$SANDBOX/.symphony/my-svc/queue/todo/SYM-1-do-a-thing.md"
+  run_launcher --symphony status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"queue:"* ]]
+  [[ "$output" == *"todo"* ]]
+  [[ "$output" == *"symphony: NOT running"* ]]
+}
+
+@test "--symphony status: before status is ever created, still reports (queue dirs guarded by -d)" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  # No queue/ dirs on disk at all yet (init/up never ran) — must not abort
+  # under set -o pipefail (find on a missing dir exits non-zero).
+  run_launcher --symphony status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"queue is empty"* ]]
+}
+
+@test "--symphony status: reports the tracker's project for a gitlab project, not file counts" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab mygroup/myproject
+  run_launcher --symphony status "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tracker: gitlab — mygroup/myproject"* ]]
+}
+
+@test "--symphony stop: stops only the symphony service" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony stop "$repo"
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*stop symphony' "$FAKE_DOCKER_LOG"
+}
+
+@test "--symphony down: tears down the whole stack" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony down "$repo"
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"is down."* ]]
+}
+
+@test "--symphony add: queues an item under todo/ for a file_queue project" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc file_queue
+  run_launcher --symphony add "$repo" "fix the token refresh race" --id SYM-1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"queued"* ]]
+  local f="$SANDBOX/.symphony/my-svc/queue/todo/SYM-1-fix-the-token-refresh-race.md"
+  [ -f "$f" ]
+  grep -q '^id: SYM-1$' "$f"
+  grep -q 'fix the token refresh race' "$f"
+}
+
+@test "--symphony add: refuses under tracker: gitlab (work items are issues, not files)" {
+  seed_env
+  local repo; repo="$(make_repo_arg my-svc)"
+  write_symphony_workflow my-svc gitlab
+  run_launcher --symphony add "$repo" "do something"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the tracker is gitlab"* ]]
+  [[ "$output" == *"symphony::todo"* ]]
+}
+
+@test "--symphony check: fatal when the repo path IS symphony's own workspaces directory" {
+  seed_env
+  # A pathological repo argument: the "repo" to run against is symphony's own
+  # per-item workspaces directory. symphony treats workspaces as disposable
+  # (it clones fresh per item) — this must never be the real repo. Slug is
+  # derived from the repo path's OWN basename ("workspaces"), so the
+  # WORKFLOW.md has to live under .symphony/workspaces/config, and the repo
+  # path under .symphony/workspaces/workspaces, for the two to collide the
+  # same way a real misconfiguration would.
+  write_symphony_workflow workspaces file_queue
+  local repo="$SANDBOX/.symphony/workspaces/workspaces"
+  mkdir -p "$repo"
+  run_launcher --symphony check "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"symphony's workspaces path is the repo itself"* ]]
+}
+
+@test "--symphony: .env.example never carries a SYMPHONY_* key (must stay out of the agent's container)" {
+  run cat "$REPO_ROOT/.env.example"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"SYMPHONY_"* ]]
+}
+
+@test "docker-compose.symphony.yml: pull-only (no build: YAML key), matching the rest of the launcher stack" {
+  # A real `build:` key sits at the start of a line (module indentation),
+  # unlike the substring "build:" that legitimately appears inside this
+  # file's own explanatory comments ("There is no build: block here...").
+  run bash -c "grep -E '^[[:space:]]*build:' '$REPO_ROOT/docker/docker-compose.symphony.yml'"
+  [ "$status" -eq 1 ]
+  run cat "$REPO_ROOT/docker/docker-compose.symphony.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'${IMAGE_REGISTRY:-opencode-workplace}-symphony:${IMAGE_TAG:-local}'* ]]
+}

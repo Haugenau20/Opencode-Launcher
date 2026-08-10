@@ -22,6 +22,9 @@ Usage:
   ./start.sh --config
   ./start.sh --show-allowlist [<host-repo-path>]
   ./start.sh --mfiles-token
+  ./start.sh --symphony init <host-repo-path>
+  ./start.sh --symphony check|up|logs|status|stop|down <host-repo-path>
+  ./start.sh --symphony add <host-repo-path> "what the agent should do" [--id ID] [--title TITLE]
   ./start.sh --version
   ./start.sh --help
 
@@ -86,6 +89,41 @@ needed):
              this is for rotating an expired token on its own.
   --version  Print the launcher version (from the VERSION file). Alias: -V.
   --help     Show this help.
+
+Symphony (opt-in unattended orchestrator — read docs/SYMPHONY.md in
+OpenCode-Setup before the first run, especially the GitLab-token scoping):
+  --symphony init <host-repo-path>
+             Scaffold .symphony/<slug>/{config,queue,workspaces} for this repo
+             and print the next steps (copy a WORKFLOW.md template, edit it).
+  --symphony check <host-repo-path>
+             Preflight only — changes nothing. Refuses on a missing
+             WORKFLOW.md, a gitlab tracker with no SYMPHONY_GITLAB_TOKEN, a
+             workspaces path that IS the repo, or an agent env file readable
+             from the config mount; warns on the quieter mistakes (a
+             SYMPHONY_* key leaked into an agent-visible file, the same token
+             used for symphony and the agent, GIT_REMOTE_ALLOWLIST and
+             GITLAB_WRITE_PROJECTS disagreeing).
+  --symphony up <host-repo-path>
+             Preflight, then start opencode + squid + symphony (headless — no
+             web UI is published; symphony runs unattended).
+  --symphony logs <host-repo-path>
+             Follow the symphony container's log. Ctrl-C detaches.
+  --symphony status <host-repo-path>
+             Per-state queue counts (file_queue) or the tracker's project
+             (gitlab), plus whether the symphony container is running.
+  --symphony stop <host-repo-path>
+             Stop the symphony container only; opencode/squid keep running.
+  --symphony down <host-repo-path>
+             Tear down the whole stack (opencode + squid + symphony).
+  --symphony add <host-repo-path> "<what the agent should do>" [--id ID] [--title TITLE]
+             Queue a new file_queue item in todo/. Refuses under tracker:
+             gitlab — there, work items are GitLab issues, not files.
+
+  Symphony's own settings (above all SYMPHONY_GITLAB_TOKEN) live in
+  .symphony/<slug>/symphony.env and are NEVER added to .env/.env.example —
+  that file must stay out of the agent's container environment
+  (.envs/<slug>.env). See docs/SYMPHONY.md ("two tokens, neither able to do
+  the other's job") for why.
 
 Notes:
   * Image: IMAGE_TAG in .env picks the version (default 'latest'; pin e.g.
