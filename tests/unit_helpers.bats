@@ -323,6 +323,45 @@ setup() {
   [ "$PORT" = "5555" ]
 }
 
+# --- PROJECT_ENV_FILE: the container-side half of per-project settings ------
+# `--env-file`/PROJECT_ENV only drives compose ${VAR} interpolation; the
+# opencode service's env_file: layer (docker/docker-compose.yml) is what
+# actually puts per-project credentials in the container, and it reads
+# PROJECT_ENV_FILE from the real process environment. These tests cover the
+# two things that make that work: the value is EXPORTED (visible to a child
+# process, not just a script-local shell variable), and it is ABSOLUTE
+# (env_file: paths resolve against --project-directory, not against
+# ENVS_DIR's own, typically CWD-relative, meaning).
+
+@test "derive_project_settings: exports PROJECT_ENV_FILE equal to the resolved-absolute PROJECT_ENV" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/some-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+  # exported, not merely assigned: a child process must see it too.
+  run bash -c 'printf %s "$PROJECT_ENV_FILE"'
+  [ "$output" = "$PROJECT_ENV_FILE" ]
+}
+
+@test "derive_project_settings: PROJECT_ENV_FILE stays absolute even with a relative ENVS_DIR" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local workdir="$BATS_TEST_TMPDIR/cwd"
+  mkdir -p "$workdir"
+  cd "$workdir"
+  ENVS_DIR="relative-envs"   # resolved against CWD, NOT __OCL_DIR — see lib/project.sh
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PROJECT_ENV_FILE" = "${workdir}/relative-envs/some-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+}
+
 # --- write_project_env / project_env_for_management -------------------------
 
 @test "write_project_env: writes PROJECT_SLUG/OPENCODE_PORT/REPO_PATH using the caller's SLUG/PORT/PROJECT_ENV" {
@@ -379,6 +418,32 @@ setup() {
   [ -f "$PROJECT_ENV" ]
   grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
   grep -q "^REPO_PATH=${repo}\$" "$PROJECT_ENV"
+}
+
+@test "project_env_for_management: exports absolute PROJECT_ENV_FILE on the reuse-existing-file branch" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/old/path\n' > "$ENVS_DIR/demo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }
+  local repo="$BATS_TEST_TMPDIR/demo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/demo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+  run bash -c 'printf %s "$PROJECT_ENV_FILE"'
+  [ "$output" = "$PROJECT_ENV_FILE" ]
+}
+
+@test "project_env_for_management: exports absolute PROJECT_ENV_FILE on the generate-fresh-file branch" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/fresh-repo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/fresh-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
 }
 
 # --- project_running (docker stubbed) ---------------------------------------

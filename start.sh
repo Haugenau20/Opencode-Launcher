@@ -660,6 +660,21 @@ cmd_run() {
 
   local PROJECT_NAME COMPOSE
   PROJECT_NAME="opencode-${SLUG}"
+  # PROJECT_ENV_FILE: the absolute path to the same file write_project_env
+  # just wrote, EXPORTED so `docker compose` (a child process) can see it.
+  # This is what actually gets per-project credentials INTO the container —
+  # the opencode service's `env_file:` directive layers
+  # `${PROJECT_ENV_FILE:-.env}` over the shared .env. Absolute for the reasons
+  # in lib/project.sh (derive_project_settings); the short version is that a
+  # miss here is silent, swallowed by env_file's `required: false`.
+  #
+  # This boot path assembles its own COMPOSE array rather than calling
+  # derive_project_settings, so the export has to be repeated. That
+  # duplication predates this change.
+  local PROJECT_ENV_FILE
+  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
+    || die "could not resolve ENVS_DIR"
+  export PROJECT_ENV_FILE
   # See the note in the management-command builder above: the compose files sit
   # under docker/, so --project-directory pins their relative paths to the root.
   COMPOSE=(docker compose

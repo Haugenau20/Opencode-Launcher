@@ -114,6 +114,44 @@ setup() {
   grep -q 'compose .*-p opencode-my-service .*up -d' "$FAKE_DOCKER_LOG"
 }
 
+@test "boot exports PROJECT_ENV_FILE, an absolute path to the per-project env file, for every compose call" {
+  # The opencode service's env_file: layer (docker/docker-compose.yml) reads
+  # PROJECT_ENV_FILE via compose ${VAR} interpolation — which only ever sees
+  # the real process environment, never a script-local shell variable. This
+  # is the mechanism that gets per-project credentials INTO the container;
+  # see docs/SYNC.md block 4 and lib/project.sh (derive_project_settings).
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher "$repo"
+  [ "$status" -eq 0 ]
+
+  local penv="$SANDBOX/.envs/my-service.env"
+  [ -f "$penv" ]
+  # every `docker compose ...` call (pull, up -d, ...) logs the value seen in
+  # its own environment (tests/fake-bin/docker) — assert it on every line,
+  # not just one, and that it is exactly the generated per-project file.
+  local hits
+  hits="$(grep -c "^ENV:PROJECT_ENV_FILE=${penv}\$" "$FAKE_DOCKER_LOG")"
+  [ "$hits" -ge 2 ]                      # at least the pull and the up -d
+  ! grep -q '^ENV:PROJECT_ENV_FILE=<unset>$' "$FAKE_DOCKER_LOG"
+  # absolute, not merely "happens to start with $SANDBOX" — reject anything
+  # that isn't rooted at /.
+  [[ "$penv" == /* ]]
+}
+
+@test "--down exports the SAME absolute PROJECT_ENV_FILE a prior boot generated" {
+  seed_env
+  local repo; repo="$(make_repo_arg "My Service")"
+  run_launcher --detach "$repo"
+  [ "$status" -eq 0 ]
+  local penv="$SANDBOX/.envs/my-service.env"
+
+  : > "$FAKE_DOCKER_LOG"
+  run_launcher --down "$repo"
+  [ "$status" -eq 0 ]
+  grep -q "^ENV:PROJECT_ENV_FILE=${penv}\$" "$FAKE_DOCKER_LOG"
+}
+
 @test "default boot uses the base compose file" {
   seed_env
   run_launcher "$(make_repo_arg)"

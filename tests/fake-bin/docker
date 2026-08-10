@@ -68,6 +68,14 @@
 
 : "${FAKE_DOCKER_LOG:=/dev/null}"
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+# `compose` invocations also log PROJECT_ENV_FILE's value from THIS process's
+# environment (never the caller's argv — that would only ever show the flag
+# name, not prove the value actually made it into the environment `docker
+# compose` inherits, which is what the real env_file:/${VAR} interpolation
+# mechanism depends on). Tests assert on this line to prove start.sh/
+# lib/project.sh exported it before invoking compose, not merely set a local
+# shell variable of the same name.
+[ "${1:-}" = compose ] && printf 'ENV:PROJECT_ENV_FILE=%s\n' "${PROJECT_ENV_FILE:-<unset>}" >> "$FAKE_DOCKER_LOG"
 
 sub="${1:-}"
 case "$sub" in

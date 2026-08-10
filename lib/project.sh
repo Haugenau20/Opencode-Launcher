@@ -197,6 +197,23 @@ _project_compose_files() {
 # env file to actually exist on disk must call write_project_env explicitly
 # (see below) — derive_project_settings alone is safe to call from read-only
 # commands (--status et al.) with no side effects.
+#
+# Also EXPORTS PROJECT_ENV_FILE, the absolute path to the same file PROJECT_ENV
+# names. This is what carries per-project credentials INTO the container: the
+# opencode service's `env_file:` directive (docker/docker-compose.yml) layers
+# `${PROJECT_ENV_FILE:-.env}` on top of the shared .env, and that is compose
+# `${VAR}` interpolation — it only ever reads the real process environment, so
+# the value must be exported, not merely assigned.
+#
+# It is resolved to an ABSOLUTE path deliberately, though a relative one would
+# work today: main() cd's to the launcher root, so ENVS_DIR's default `.envs`
+# and --project-directory ($__OCL_DIR) happen to share a base, and env_file
+# paths resolve against the latter. That agreement is a coincidence of two
+# independent facts, and ENVS_DIR is overridable (the test suite points it at a
+# sandbox). Resolving here costs nothing and removes the coupling — worth it
+# because the failure mode is SILENT: a path that misses is swallowed by
+# env_file's `required: false`, so the stack boots with no per-project
+# credentials instead of an error.
 derive_project_settings() {
   local repo_path="$1"
 
@@ -209,6 +226,9 @@ derive_project_settings() {
   mkdir -p "$ENVS_DIR"
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
   PROJECT_NAME="opencode-${SLUG}"
+  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
+    || die "could not resolve ENVS_DIR"
+  export PROJECT_ENV_FILE
   # The compose files live under docker/, but their relative paths (build
   # contexts, the :z bind mounts, env_file) must resolve from the repo root.
   # --project-directory pins that base so moving the files stays transparent.
@@ -263,6 +283,11 @@ write_project_env() {
 # fall back to derive_project_settings (fresh compute via resolve_project_port)
 # and persist it via write_project_env, purely so compose has a valid
 # --env-file to point at.
+#
+# Also EXPORTS PROJECT_ENV_FILE (absolute, same reasoning as
+# derive_project_settings above) on both branches, so --down/--logs/--shell
+# tear down or attach to the SAME per-project container environment the
+# stack was booted with.
 project_env_for_management() {
   local repo_path="$1"
 
@@ -276,6 +301,9 @@ project_env_for_management() {
     [ -n "$PORT" ] || PORT=4096
     local compose_files
     _project_compose_files "$SLUG"
+    PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
+      || die "could not resolve ENVS_DIR"
+    export PROJECT_ENV_FILE
     COMPOSE=(docker compose
       --project-directory "$__OCL_DIR"
       --env-file "$PROJECT_ENV"
