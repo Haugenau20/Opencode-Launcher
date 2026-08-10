@@ -21,6 +21,8 @@ allowlist, CA) lives in the images; this repo is just the glue.
 - [Extra folders for context (--also)](#extra-folders-for-context---also)
 - [Non-interactive one-shot runs (--exec)](#non-interactive-one-shot-runs---exec)
 - [Running more than one repo](#running-more-than-one-repo)
+  - [Per-project credentials](#per-project-credentials)
+- [Unattended runs (--symphony)](#unattended-runs---symphony)
 - [Known limitations](#known-limitations)
 - [Egress allowlist](#egress-allowlist)
 - [Image digest & reproducibility](#image-digest--reproducibility)
@@ -45,6 +47,7 @@ grouped into folders so a fresh clone isn't overwhelming.
 ├── lib/                  # start.sh's logic, split into sourced modules (core, config, doctor, …)
 ├── completions/          # bash/zsh tab-completion scripts
 ├── docs/                 # extra docs: customizing, models, compose-sync notes
+├── symphony/             # WORKFLOW.md templates for unattended runs (--symphony)
 ├── tests/                # bats test suite
 └── extra-allowlist.d/    # drop *.conf here to extend the Squid egress allowlist
 ```
@@ -245,6 +248,82 @@ they don't collide. If `opencode-pty` is enabled, its viewer port travels with
 the base port (base `4096` -> viewer `14096`, base `4097` -> viewer `14097`,
 etc.) — the two ranges stay disjoint, so multiple instances' viewers don't
 collide either.
+
+### Per-project credentials
+
+By default every project shares the credentials in `.env`. To give one project
+its own, create `.envs/<slug>.overrides.env`:
+
+```
+# .envs/myservice.overrides.env
+GITLAB_PAT=a-token-scoped-to-just-this-project
+CONFLUENCE_PAT=
+```
+
+That file is layered over the shared `.env` on every boot — last value wins — so
+the `GITLAB_PAT` above applies to this project only, while every other setting
+is still inherited. Projects without such a file are unaffected.
+
+The blank `CONFLUENCE_PAT=` is not a no-op. Each MCP server turns itself on only
+when its credentials are present, so blanking one keeps that server out of this
+project's stack entirely — absent, not disabled — while your other projects keep
+theirs.
+
+The slug is the one `start.sh` prints on boot (derived from the repo directory
+name). Edit **only** the `.overrides.env` file: the `.envs/<slug>.env` beside it
+is regenerated on every boot and anything written there is overwritten.
+`PROJECT_SLUG`, `OPENCODE_PORT` and `REPO_PATH` are the launcher's own and win
+over the overrides file — a stale hand-written port would otherwise leave the
+stack unreachable at the port it just told you to open.
+
+## Unattended runs (--symphony)
+
+Opt-in, and a different way of working rather than a new default: instead of you
+driving one session, an orchestrator watches a queue of work items and runs an
+agent per item until each one is ready for a human. Nothing about a normal boot
+changes while you don't use it.
+
+```
+./start.sh --symphony init  ~/code/myservice   # scaffold .symphony/<slug>/
+./start.sh --symphony check ~/code/myservice   # preflight — change nothing
+./start.sh --symphony up    ~/code/myservice
+./start.sh --symphony logs  ~/code/myservice
+```
+
+Per-project state lives in `.symphony/<slug>/`:
+
+```
+.symphony/myservice/
+├── symphony.env          the orchestrator's own GitLab token
+├── config/WORKFLOW.md    which tracker, and the agent's prompt
+├── queue/                work items, when using the file queue
+└── workspaces/           one per item — disposable, cloned fresh
+```
+
+**Read [`docs/SYMPHONY.md`](https://github.com/Haugenau20/OpenCode-Setup/blob/main/docs/SYMPHONY.md)
+in the maintainer repo before the first run.** An unattended agent with a shell
+and a push credential is a different risk from one you are watching, and that
+document is where the containment model is argued rather than summarised.
+
+The short version: the orchestrator and the agent get **two different GitLab
+tokens**, and that split is the containment. The orchestrator's is Reporter — it
+can move issues and cannot push code. The agent's is Developer, scoped to one
+project — it can push and open merge requests, and cannot relabel its own work
+to mark it reviewed. Neither can do the other's job. This is why
+`symphony.env` sits apart from the project's other settings: it is not one of
+the files handed to the agent's container.
+
+`--symphony check` is worth running on its own after any edit. It refuses to
+start on a missing workflow, a GitLab tracker with no token, a workspaces mount
+pointing at your real repo, or a credential file readable from inside the
+orchestrator's container — and warns on the quieter mistakes, like one token
+used for both roles, or `GIT_REMOTE_ALLOWLIST` and `GITLAB_WRITE_PROJECTS`
+disagreeing about where the agent may work. Those two gate different protocols
+in different processes, so nothing at runtime can make them agree.
+
+Symphony runs from its own image, pulled like the others. If your registry does
+not carry the `-symphony` tag yet, `up` will fail on the pull — ask whoever
+publishes your images for it.
 
 ## Known limitations
 
