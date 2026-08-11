@@ -502,12 +502,23 @@ cmd_run() {
 
     if have_tui; then
       # Real terminal + whiptail/dialog available: the ncurses editor, with
-      # its first-run Done gate (required_keys() must be field_satisfied
-      # before Done is allowed to finish). set_host_ids does what
+      # its first-run save gate (required_keys() must be field_satisfied
+      # before staged changes can be committed). set_host_ids does what
       # run_setup_wizard's own first-run branch does for the linear path —
       # the ncurses path must not skip it, bind-mount permissions depend on
-      # HOST_UID/HOST_GID being filled in.
-      run_tui_reconfigure --first-run
+      # HOST_UID/HOST_GID being filled in. Discard also removes the template
+      # copied above, leaving no partial .env behind.
+      local first_run_config_rc=0
+      run_tui_reconfigure --first-run --new-file || first_run_config_rc=$?
+      case "$first_run_config_rc" in
+        0) ;;
+        2)
+          echo
+          info "configuration discarded — no .env file was created."
+          return 0
+          ;;
+        *) return "$first_run_config_rc" ;;
+      esac
       set_host_ids
     else
       run_setup_wizard            # linear path — unchanged, still does its own first-run UID/GID autofill
@@ -866,4 +877,3 @@ cmd_run() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   main "$@"
 fi
-

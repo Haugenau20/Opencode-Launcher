@@ -269,7 +269,7 @@ editable_schema_keys() {
 # required_keys — the keys that MUST be a real (non-placeholder) value before
 # the launcher can boot, one per line. This mirrors doctor_check_env_keys'
 # required=(...) array in start.sh — the doctor's PASS/FAIL gate and the
-# ncurses first-run "Done" gate (below) must never drift apart, so both
+# ncurses first-run save gate (below) must never drift apart, so both
 # should ultimately read this single list.
 required_keys() {
   cat <<'EOF'
@@ -308,7 +308,7 @@ field_satisfied() {
 # unmet_required — every required_keys() entry that is not yet
 # field_satisfied, one per line. Empty output means every required field is
 # filled in with a real value. This is the unit-testable core of the
-# ncurses first-run "Done" gate: callers just check whether this is empty.
+# ncurses first-run save gate: callers just check whether this is empty.
 unmet_required() {
   local key
   while IFS= read -r key; do
@@ -399,7 +399,7 @@ tui_yesno() {
 
 # _tui_menu_with_labels OK_LABEL CANCEL_LABEL TITLE PROMPT TAG1 ITEM1 ... —
 # common menu implementation. Echo the selected tag only on confirmation and
-# preserve the backend status so Cancel/Done and Esc are never conflated with
+# preserve the backend status so Cancel/Back and Esc are never conflated with
 # a selected (or empty) tag.
 _tui_menu_with_labels() {
   local ok_label="$1" cancel_label="$2" title="$3" prompt="$4"; shift 4
@@ -416,13 +416,14 @@ _tui_menu_with_labels() {
 }
 
 # tui_menu is the generic nested picker: Select confirms a row and Back
-# returns to its caller. The configuration's top-level menu instead uses
-# Edit/Done, matching its immediate-save lifecycle.
+# returns to its caller. whiptail cannot hide a menu's primary button, so the
+# configuration menu calls that unavoidable action Select too (Enter does the
+# same thing); its cancel action has the session-level meaning Discard & Exit.
 tui_menu() { _tui_menu_with_labels Select Back "$@"; }
-tui_config_menu() { _tui_menu_with_labels Edit Done "$@"; }
+tui_config_menu() { _tui_menu_with_labels Select "Discard & Exit" "$@"; }
 
 # tui_msgbox TITLE TEXT — show a plain dismiss-only message box (whiptail/
-# dialog --msgbox). Used to surface information (e.g. the first-run "Done"
+# dialog --msgbox). Used to surface information (e.g. the first-run save
 # gate's unmet-required-fields notice) rather than ask a question, so unlike
 # tui_yesno there is no meaningful Yes/No/Cancel result to report — a
 # dismissal (Esc/Cancel/Enter) is never an error, it just closes the box (rc
@@ -494,26 +495,69 @@ config_set_if_changed() {
   return 0
 }
 
-# run_tui_reconfigure [--first-run] — immediate-save ncurses editor. The menu
-# contains only settings; its buttons are Edit and Done, so there is no third,
-# overlapping Done row and no misleading session-level Cancel. Field dialogs
-# use Save/Back, and only an explicit Save/Enable/Disable action writes.
+# _restore_tui_trap SIGNAL SAVED_TRAP — reinstate a caller's signal handler
+# after the transactional editor temporarily installs its own cleanup trap.
+_restore_tui_trap() {
+  local signal="$1" saved_trap="$2"
+  if [ -n "$saved_trap" ]; then
+    # trap -p emits a complete, shell-quoted trap command.
+    # shellcheck disable=SC2294
+    eval "$saved_trap"
+  else
+    trap - "$signal"
+  fi
+}
+
+# run_tui_reconfigure [--first-run] [--new-file] — transactional ncurses
+# editor. Every field action writes only to a private staged copy. Selecting
+# the "Save changes and exit" row atomically replaces the real .env; choosing
+# Discard & Exit, pressing Esc, or interrupting with Ctrl+C removes the stage
+# and leaves an existing .env untouched. --new-file additionally removes the
+# just-created template on discard/interruption, so canceled first-run setup
+# never leaves a partial configuration behind.
+#
+# whiptail always renders a menu's primary button, so it is labelled Select
+# rather than Edit; Enter selects the highlighted setting or save row too.
+# Field dialogs use Save/Back, and only Save/Enable/Disable changes the stage.
 #
 # First run uses wizard_keys() (the same intentionally smaller scope as the
 # linear wizard); normal --reconfigure uses every editable_schema_keys() key.
-# Done/Esc is gated on first run until every required field is satisfied.
-# TUI_CONFIG_CHANGED is set to 1 only when this flow actually writes a change.
-#
-# Ctrl+C is deliberately NOT trapped here: SIGINT still kills the whole
-# process immediately, same as every other interactive prompt in this
-# script. The gate only ever blocks finishing the menu — it is not a
-# substitute for providing credentials, just a nudge before declaring
-# first-run setup finished.
+# Save is gated on first run until every required field is satisfied; discard
+# is always available. TUI_CONFIG_CHANGED is 1 only after staged changes are
+# committed, and TUI_CONFIG_RESULT reports saved, unchanged, or discarded.
 # shellcheck disable=SC2120  # called with no args for plain --reconfigure
 run_tui_reconfigure() {
-  local first_run=0
-  [ "${1:-}" = "--first-run" ] && first_run=1
+  local first_run=0 new_file=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --first-run) first_run=1 ;;
+      --new-file)  new_file=1 ;;
+      *) warn "unknown configuration UI option: $arg"; return 2 ;;
+    esac
+  done
+
   TUI_CONFIG_CHANGED=0
+  TUI_CONFIG_RESULT=unchanged
+
+  local original_env_file="$ENV_FILE" staged_env_file
+  staged_env_file="$(mktemp "${original_env_file}.staged.XXXXXX")" || {
+    warn "could not create a staged configuration beside $original_env_file."
+    [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+    return 1
+  }
+  if ! cp -p -- "$original_env_file" "$staged_env_file"; then
+    warn "could not stage $original_env_file for editing."
+    rm -f -- "$staged_env_file"
+    [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+    return 1
+  fi
+
+  local old_int_trap old_term_trap
+  old_int_trap="$(trap -p INT)"
+  old_term_trap="$(trap -p TERM)"
+  trap 'ENV_FILE="$original_env_file"; rm -f -- "$staged_env_file"; if [ "$new_file" -eq 1 ]; then rm -f -- "$original_env_file"; fi; exit 130' INT
+  trap 'ENV_FILE="$original_env_file"; rm -f -- "$staged_env_file"; if [ "$new_file" -eq 1 ]; then rm -f -- "$original_env_file"; fi; exit 143' TERM
+  ENV_FILE="$staged_env_file"
 
   local keys=() key
   if [ "$first_run" -eq 1 ]; then
@@ -534,35 +578,72 @@ run_tui_reconfigure() {
       desc="$label $state"
       menu_args+=("$k" "$desc")
     done
+    menu_args+=("__SAVE__" "Save changes and exit")
 
     local choice="" menu_rc=0
     choice="$(tui_config_menu \
       "OpenCode Launcher — configuration" \
-      "Choose a setting to edit. Changes are saved when you press Save." \
+      "Choose a setting. Edits are staged until you select Save changes and exit." \
       "${menu_args[@]}")" || menu_rc=$?
 
     case "$menu_rc" in
       1|255)
-        if [ "$first_run" -eq 1 ]; then
-          local unmet=() ukey
-          while IFS= read -r ukey; do
-            [ -n "$ukey" ] && unmet+=("$ukey")
-          done < <(unmet_required)
-
-          if [ "${#unmet[@]}" -gt 0 ]; then
-            local msg="These are required before you can finish:"$'\n'
-            for ukey in "${unmet[@]}"; do
-              msg+=$'\n'"  - $(field_label "$ukey")"
-            done
-            msg+=$'\n\n'"Fill them in, or press Ctrl+C to abort."
-            tui_msgbox "OpenCode Launcher — configuration" "$msg"
-            continue
-          fi
-        fi
-        break
+        ENV_FILE="$original_env_file"
+        rm -f -- "$staged_env_file"
+        [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+        _restore_tui_trap INT "$old_int_trap"
+        _restore_tui_trap TERM "$old_term_trap"
+        TUI_CONFIG_CHANGED=0
+        TUI_CONFIG_RESULT=discarded
+        return 2
         ;;
       0)
         [ -n "$choice" ] || continue
+
+        if [ "$choice" = "__SAVE__" ]; then
+          if [ "$first_run" -eq 1 ]; then
+            local unmet=() ukey
+            while IFS= read -r ukey; do
+              [ -n "$ukey" ] && unmet+=("$ukey")
+            done < <(unmet_required)
+
+            if [ "${#unmet[@]}" -gt 0 ]; then
+              local msg="These are required before you can save:"$'\n'
+              for ukey in "${unmet[@]}"; do
+                msg+=$'\n'"  - $(field_label "$ukey")"
+              done
+              msg+=$'\n\n'"Fill them in, or choose Discard & Exit to abort."
+              tui_msgbox "OpenCode Launcher — configuration" "$msg"
+              continue
+            fi
+          fi
+
+          ENV_FILE="$original_env_file"
+          if cmp -s -- "$staged_env_file" "$original_env_file"; then
+            rm -f -- "$staged_env_file"
+            _restore_tui_trap INT "$old_int_trap"
+            _restore_tui_trap TERM "$old_term_trap"
+            TUI_CONFIG_CHANGED=0
+            TUI_CONFIG_RESULT=unchanged
+            return 0
+          fi
+          if ! mv -f -- "$staged_env_file" "$original_env_file"; then
+            warn "could not save the staged configuration to $original_env_file."
+            rm -f -- "$staged_env_file"
+            [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+            _restore_tui_trap INT "$old_int_trap"
+            _restore_tui_trap TERM "$old_term_trap"
+            TUI_CONFIG_CHANGED=0
+            TUI_CONFIG_RESULT=error
+            return 1
+          fi
+          _restore_tui_trap INT "$old_int_trap"
+          _restore_tui_trap TERM "$old_term_trap"
+          TUI_CONFIG_CHANGED=1
+          TUI_CONFIG_RESULT=saved
+          return 0
+        fi
+
         local type cur new help body input_rc bool_rc clear_rc secret_status
         type="$(field_type "$choice")"
         label="$(field_label "$choice")"
@@ -639,6 +720,13 @@ run_tui_reconfigure() {
         ;;
       *)
         warn "configuration UI exited unexpectedly (status $menu_rc)."
+        ENV_FILE="$original_env_file"
+        rm -f -- "$staged_env_file"
+        [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+        _restore_tui_trap INT "$old_int_trap"
+        _restore_tui_trap TERM "$old_term_trap"
+        TUI_CONFIG_CHANGED=0
+        TUI_CONFIG_RESULT=error
         return "$menu_rc"
         ;;
     esac
@@ -858,7 +946,7 @@ cmd_config_show() {
 #      always returns false here (no tty), so this path can never be
 #      hijacked by the ncurses editor.
 cmd_reconfigure() {
-  local used_tui=0 env_created=0
+  local used_tui=0 env_created=0 tui_rc=0
   if [ ! -f "$ENV_FILE" ]; then
     [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
     cp "$ENV_EXAMPLE" "$ENV_FILE"
@@ -869,9 +957,23 @@ cmd_reconfigure() {
   if have_tui; then
     used_tui=1
     # Interactive + whiptail/dialog available: ncurses menu editor (Layer 2).
-    # No --first-run here — plain --reconfigure's Done is never gated.
+    # The editor stages every field and commits only from its explicit save
+    # row. If this command created .env, discard removes that template too.
     # shellcheck disable=SC2119,SC2120
-    run_tui_reconfigure
+    if [ "$env_created" -eq 1 ]; then
+      run_tui_reconfigure --new-file || tui_rc=$?
+    else
+      run_tui_reconfigure || tui_rc=$?
+    fi
+    case "$tui_rc" in
+      0) ;;
+      2)
+        echo
+        info "configuration discarded — no changes were saved."
+        return 0
+        ;;
+      *) return "$tui_rc" ;;
+    esac
   elif [ -t 0 ] && [ -t 1 ]; then
     # Interactive, no ncurses backend (or OC_CONFIG_TUI=0): dashboard + a
     # plain-text menu (Layer 1). Editable set = editable_schema_keys() (every

@@ -129,7 +129,7 @@ doctor_check_env_file() {
 # set, so this output is safe to paste into a chat or ticket.
 #
 # The required set is required_keys() (lib/config.sh) — the single source of
-# truth shared with the ncurses first-run "Done" gate (run_tui_reconfigure
+# truth shared with the ncurses first-run save gate (run_tui_reconfigure
 # --first-run) — read into an array here rather than hardcoded, so the two
 # can't silently drift apart.
 doctor_check_env_keys() {

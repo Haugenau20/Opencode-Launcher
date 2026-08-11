@@ -59,11 +59,12 @@ _Changes to the launcher itself._
 
 ### Changed
 
-- Clarified the ncurses configuration workflow: the main menu now uses
-  **Edit/Done** with no duplicate Done row, field dialogs use **Save/Back**,
-  and Back or Esc never writes a field. Boolean settings show
-  **Enable/Disable** and Esc leaves their current value untouched. Menu states
-  now distinguish enabled, disabled, missing, placeholder, set, and unset
+- Clarified the ncurses configuration workflow: Enter selects the highlighted
+  setting, field dialogs use **Save/Back**, and boolean settings use
+  **Enable/Disable**. All edits are staged until **Save changes and exit**;
+  **Discard & Exit**, main-menu Esc, or Ctrl-C leaves the existing `.env`
+  untouched, and canceling first-run setup removes its new template. Menu
+  states distinguish enabled, disabled, missing, placeholder, set, and unset
   values without exposing secrets; first-run ncurses setup uses the same
   focused key set as the linear wizard.
 

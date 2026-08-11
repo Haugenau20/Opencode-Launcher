@@ -1694,7 +1694,7 @@ older"
   [ "$output" = "rc=1 value=" ]
 }
 
-@test "tui widgets: whiptail receives Save/Back, Edit/Done and custom boolean labels" {
+@test "tui widgets: whiptail receives Save/Back, Select/Discard and custom boolean labels" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" whiptail; }
@@ -1708,8 +1708,9 @@ older"
   grep -qxF -- 'Save' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- '--cancel-button' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Back' "$BATS_TEST_TMPDIR/whiptail-argv"
-  grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/whiptail-argv"
-  grep -qxF -- 'Done' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/whiptail-argv"
+  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- '--yes-button' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Enable' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- '--no-button' "$BATS_TEST_TMPDIR/whiptail-argv"
@@ -1792,14 +1793,18 @@ older"
   [[ "$output" != *"super-secret-value"* ]]
 }
 
-@test "run_tui_reconfigure: first-run menu has no Done row, uses wizard scope, and gates finishing" {
+@test "run_tui_reconfigure: first-run menu has a save row, uses wizard scope, and gates saving" {
   cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
   run bash -c '
     export ENV_FILE="'"$ENV_FILE"'"
     source "'"$REPO_ROOT"'/start.sh"
     tui_config_menu() {
       printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/first-run-menu-argv"
-      return 1
+      count="$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")"
+      printf "%s" "$((count + 1))" > "'"$BATS_TEST_TMPDIR"'/menu-count"
+      printf __SAVE__
+      return 0
     }
     tui_msgbox() {
       printf "%s" "$2" > "'"$BATS_TEST_TMPDIR"'/first-run-gate-message"
@@ -1813,8 +1818,12 @@ older"
   grep -qxF -- 'LLM_API_BASE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qxF -- 'IMAGE_REGISTRY' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qF -- 'required before you can finish' "$BATS_TEST_TMPDIR/first-run-gate-message"
+  grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
+  [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]
+  [ "$(get_env LLM_API_KEY)" = sk-test ]
 }
 
 @test "run_tui_reconfigure: Back from a text field does not write" {
@@ -1833,12 +1842,15 @@ older"
       return 1
     }
     tui_input() { printf "New Name"; return 1; }
-    run_tui_reconfigure
+    rc=0
+    run_tui_reconfigure || rc=$?
     printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
   '
   [ "$status" -eq 0 ]
   [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
   [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
 }
 
 @test "run_tui_reconfigure: Esc from a boolean leaves its value unchanged" {
@@ -1857,12 +1869,15 @@ older"
       return 1
     }
     tui_yesno() { return 255; }
-    run_tui_reconfigure
+    rc=0
+    run_tui_reconfigure || rc=$?
     printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
   '
   [ "$status" -eq 0 ]
   [ "$(get_env ALLOW_REMOTE_GIT)" = 1 ]
   [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
 }
 
 @test "run_tui_reconfigure: explicit Disable writes 0" {
@@ -1878,15 +1893,74 @@ older"
         printf ALLOW_REMOTE_GIT
         return 0
       fi
-      return 1
+      printf __SAVE__
+      return 0
     }
     tui_yesno() { return 1; }
     run_tui_reconfigure
     printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$TUI_CONFIG_RESULT" > "'"$BATS_TEST_TMPDIR"'/tui-result"
   '
   [ "$status" -eq 0 ]
   [ "$(get_env ALLOW_REMOTE_GIT)" = 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 1 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-result")" = saved ]
+}
+
+@test "run_tui_reconfigure: Discard & Exit rolls back a confirmed field edit" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env GIT_USER_NAME "Old Name"
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf GIT_USER_NAME
+        return 0
+      fi
+      return 1
+    }
+    tui_input() { printf "New Name"; return 0; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s|%s|%s" "$rc" "$TUI_CONFIG_CHANGED" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|0|discarded" ]
+  [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
+}
+
+@test "run_tui_reconfigure: discarding a new configuration removes the template" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() { return 255; }
+    rc=0
+    run_tui_reconfigure --first-run --new-file || rc=$?
+    printf "%s|%s" "$rc" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|discarded" ]
+  [ ! -e "$ENV_FILE" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
+}
+
+@test "run_tui_reconfigure: Ctrl-C cleans up the stage and preserves an existing configuration" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env GIT_USER_NAME "Old Name"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() { kill -INT "$$"; return 255; }
+    run_tui_reconfigure
+  '
+  [ "$status" -ne 0 ]
+  [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
 }
 
 @test "run_tui_reconfigure: Back keeps a secret and confirmed Clear removes it without printing it" {
@@ -1906,13 +1980,16 @@ older"
       return 1
     }
     tui_password() { return 1; }
-    run_tui_reconfigure
+    rc=0
+    run_tui_reconfigure || rc=$?
     printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
   '
   [ "$status" -eq 0 ]
   [[ "$output" != *"super-secret-value"* ]]
   [ "$(get_env JIRA_PAT)" = super-secret-value ]
   [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
 
   printf '0' > "$BATS_TEST_TMPDIR/menu-count"
   run bash -c '
@@ -1924,7 +2001,8 @@ older"
         printf JIRA_PAT
         return 0
       fi
-      return 1
+      printf __SAVE__
+      return 0
     }
     tui_password() { printf ""; return 0; }
     tui_yesno() { return 0; }

@@ -130,7 +130,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--down`/`--stop` `<repo>` | Tear down a repo's stack the clean way (re-derives the same project `docker compose down` would). |
 | `--logs <repo>` | Follow the running stack's logs (Ctrl-C detaches). |
 | `--shell <repo>` | Open a shell in the running container as the `dev` user at `/workspace` (falls back to `sh`). |
-| `--reconfigure` | Edit `.env` settings interactively; the ncurses menu saves individual fields with Save and closes with Done. |
+| `--reconfigure` | Edit `.env` settings interactively; the ncurses menu stages edits until you explicitly save or discard the session. |
 | `--config` | Read-only dashboard of every `.env` setting (secrets shown as set/unset only). |
 | `--show-allowlist [<repo>]` | Print what egress the agent is allowed — see [Egress allowlist](#egress-allowlist). |
 | `--mfiles-token` | Mint an M-Files auth token from your vault credentials and write it straight into `.env` — see [Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). |
@@ -142,12 +142,14 @@ never pull an image, attach the TUI, or need your LLM key, and they no-op
 gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.
 
-On a real terminal with `whiptail` or `dialog`, configuration uses a menu with
-**Edit** and **Done** actions. A field changes only when you choose **Save**,
-**Enable**, or **Disable**; **Back** or Esc returns without changing that field.
-Changes are saved field-by-field, so **Done** closes the editor rather than
-performing a second save. Set `OC_CONFIG_TUI=0` for the plain-text editor;
-piped input continues to walk every wizard prompt for scripting compatibility.
+On a real terminal with `whiptail` or `dialog`, press Enter to select the
+highlighted setting. A field is added to the staged configuration only when
+you choose **Save**, **Enable**, or **Disable**; **Back** or Esc returns without
+changing that field. Select **Save changes and exit** to commit the whole
+session. Choose **Discard & Exit**, press Esc in the main menu, or press Ctrl-C
+to leave the existing `.env` untouched. Canceling first-run setup removes its
+new `.env` template too. Set `OC_CONFIG_TUI=0` for the plain-text editor; piped
+input continues to walk every wizard prompt for scripting compatibility.
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
