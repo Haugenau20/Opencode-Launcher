@@ -26,7 +26,7 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    `:Z` (private) — the same host dir (e.g. `extra-allowlist.d`) is mounted
    across every project's stack.
    - `docker/docker-compose.yml`: `${REPO_PATH}:/workspace:z`
-   - `docker/docker-compose.yml`: `./extra-allowlist.d:/etc/squid/extra-allowlist.d:ro,z`
+   - `docker/docker-compose.yml`: `${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z`
      (short syntax, so the flag is expressible)
    - `docker/docker-compose.user-layer.yml`: `${USER_LAYER_PATH:?…}:/home/dev/.config/opencode:z`
    - Named volumes (`oc_state`, `oc_cfg`) are left alone — Docker auto-labels them.
@@ -53,6 +53,48 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    the same way an `oc-publish` tag drift breaks the main web UI (see #2) —
    `oc-publish` would either fail to bind the second port or forward it to a
    host/port the opencode-pty server isn't actually listening on.
+
+4. **`env_file` per-project layering (`opencode` service).** Two entries,
+   last-wins, order IS the mechanism:
+   ```yaml
+       env_file:
+         - .env
+         - path: ${PROJECT_ENV_FILE:-.env}
+           required: false
+   ```
+   `--env-file` (the `docker compose` CLI flag `start.sh`/`lib/project.sh`
+   already pass) only drives compose's `${VAR}` *interpolation* — it puts
+   nothing inside a container. Only an `env_file:` directive does that, and it
+   needs a literal path. Without this second layer every project's container
+   gets the exact same credentials as every other, no matter how many
+   `--env-file`s differ. `PROJECT_ENV_FILE` unset defaults to `.env`, so the
+   file is read twice and nothing changes — the single-project case, intact.
+   `required: false` keeps a project with no generated file yet from being an
+   error. See `PROJECT_ENV_FILE` under "Shared env-var contracts" below for
+   who sets it.
+
+5. **`EXTRA_ALLOWLIST_PATH` squid allowlist override.** Mirrors item 1's
+   `:ro,z` bind mount above — `${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}` —
+   but is listed separately here because the override itself (not just the
+   SELinux flag) must match: unset, it resolves to the same shared directory
+   every project used before; set, it points one project's squid at its own
+   allowlist directory instead.
+
+6. **`OPENCODE_INTERNAL_PORT` parameterization.** The in-container listen
+   port used to be a hardcoded `4096` in three spots; all three now read
+   `${OPENCODE_INTERNAL_PORT:-4096}`, keeping the default identical while
+   letting the maintainer repo's stacks (which decouple host and container
+   ports) and this launcher agree on the mechanism:
+   - `docker/docker-compose.yml` (`opencode` `environment:`):
+     `OPENCODE_INTERNAL_PORT: "${OPENCODE_INTERNAL_PORT:-4096}"`
+   - `docker/docker-compose.yml` (`oc-publish` `command:`, first socat leg):
+     `socat TCP-LISTEN:${OPENCODE_INTERNAL_PORT:-4096},fork,reuseaddr TCP:opencode:${OPENCODE_INTERNAL_PORT:-4096}`
+   - `docker/docker-compose.yml` (`oc-publish` `ports:`, first mapping):
+     `"127.0.0.1:${OPENCODE_PORT:-4096}:${OPENCODE_INTERNAL_PORT:-4096}"`
+
+   This launcher does not currently vary `OPENCODE_INTERNAL_PORT` from its
+   default — the point of mirroring it now is so the block matches the
+   maintainer repo byte-for-byte, not that this launcher exposes a new knob.
 
 ## Shared env-var contracts (launcher sets, image consumes)
 
@@ -87,6 +129,40 @@ the name and semantics in sync across both repos.
   them to either would either advertise internal plumbing as a user knob, or
   trip `manifest_missing_keys`' drift warning for a key `.env.example`
   deliberately never carries.
+
+- **`PROJECT_ENV_FILE`** — the absolute path to the generated per-project env
+  file (`.envs/<slug>.env`, produced by `write_project_env`/the boot flow's
+  own copy of it), passed to `docker/docker-compose.yml`'s `opencode`
+  `env_file:` layer (see block 4 above) so per-project credentials actually
+  reach the container instead of only driving `--env-file` interpolation.
+  Exported by `derive_project_settings` and `project_env_for_management` in
+  `lib/project.sh`, and by the equivalent inline step in `start.sh`'s boot
+  flow (`cmd_run`) — every code path that assembles the `COMPOSE` array sets
+  it. It must be **absolute**: `env_file:` paths resolve against
+  `--project-directory` (`$__OCL_DIR`), not against `$ENVS_DIR`'s own
+  (typically CWD-relative) meaning, so a relative value would resolve against
+  the wrong base and silently vanish behind `required: false` — no error, just
+  a project quietly back on shared credentials.
+
+  Same symmetric-exclusion invariant as `OPENCODE_EXTRA_INSTRUCTIONS` and
+  `PTY_WEB_HOSTNAME`/`PTY_WEB_PORT` above: this is **internal
+  launcher→container plumbing, computed by the launcher from `ENVS_DIR` +
+  the derived slug, not a user knob.** It must appear in **neither**
+  `.env.example` **nor** the image's `manifest.json`. A future contributor
+  will be tempted to add it to `.env.example` as "the var that controls which
+  env file loads" — don't; the launcher sets it per boot, and a user-set value
+  in `.env` would just be overwritten (or, worse, read back through the very
+  layering mechanism it's meant to select).
+
+- **`EXTRA_ALLOWLIST_PATH`** — optional per-project override of the squid
+  `extra-allowlist.d` bind-mount source (see block 5 above); unset, every
+  project shares the one committed `./extra-allowlist.d`. This launcher does
+  not currently generate or set a value for it anywhere (no per-project
+  allowlist-directory feature yet) — it exists in `docker/docker-compose.yml`
+  purely so the block matches the maintainer repo's contract, ready for that
+  feature to land. Same invariant as `PROJECT_ENV_FILE`: if/when a per-project
+  allowlist feature is added, this stays **launcher-computed, not a
+  `.env.example`/`manifest.json` entry** — do not add it to either.
 
 ## File location (a presentation-only delta)
 

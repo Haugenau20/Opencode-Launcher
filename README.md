@@ -21,6 +21,7 @@ allowlist, CA) lives in the images; this repo is just the glue.
 - [Extra folders for context (--also)](#extra-folders-for-context---also)
 - [Non-interactive one-shot runs (--exec)](#non-interactive-one-shot-runs---exec)
 - [Running more than one repo](#running-more-than-one-repo)
+  - [Per-project credentials](#per-project-credentials)
 - [Known limitations](#known-limitations)
 - [Egress allowlist](#egress-allowlist)
 - [Image digest & reproducibility](#image-digest--reproducibility)
@@ -245,6 +246,33 @@ they don't collide. If `opencode-pty` is enabled, its viewer port travels with
 the base port (base `4096` -> viewer `14096`, base `4097` -> viewer `14097`,
 etc.) — the two ranges stay disjoint, so multiple instances' viewers don't
 collide either.
+
+### Per-project credentials
+
+By default every project shares the credentials in `.env`. To give one project
+its own, create `.envs/<slug>.overrides.env`:
+
+```
+# .envs/myservice.overrides.env
+GITLAB_PAT=a-token-scoped-to-just-this-project
+CONFLUENCE_PAT=
+```
+
+That file is layered over the shared `.env` on every boot — last value wins — so
+the `GITLAB_PAT` above applies to this project only, while every other setting
+is still inherited. Projects without such a file are unaffected.
+
+The blank `CONFLUENCE_PAT=` is not a no-op. Each MCP server turns itself on only
+when its credentials are present, so blanking one keeps that server out of this
+project's stack entirely — absent, not disabled — while your other projects keep
+theirs.
+
+The slug is the one `start.sh` prints on boot (derived from the repo directory
+name). Edit **only** the `.overrides.env` file: the `.envs/<slug>.env` beside it
+is regenerated on every boot and anything written there is overwritten.
+`PROJECT_SLUG`, `OPENCODE_PORT` and `REPO_PATH` are the launcher's own and win
+over the overrides file — a stale hand-written port would otherwise leave the
+stack unreachable at the port it just told you to open.
 
 ## Known limitations
 

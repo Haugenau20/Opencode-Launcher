@@ -323,6 +323,45 @@ setup() {
   [ "$PORT" = "5555" ]
 }
 
+# --- PROJECT_ENV_FILE: the container-side half of per-project settings ------
+# `--env-file`/PROJECT_ENV only drives compose ${VAR} interpolation; the
+# opencode service's env_file: layer (docker/docker-compose.yml) is what
+# actually puts per-project credentials in the container, and it reads
+# PROJECT_ENV_FILE from the real process environment. These tests cover the
+# two things that make that work: the value is EXPORTED (visible to a child
+# process, not just a script-local shell variable), and it is ABSOLUTE
+# (env_file: paths resolve against --project-directory, not against
+# ENVS_DIR's own, typically CWD-relative, meaning).
+
+@test "derive_project_settings: exports PROJECT_ENV_FILE equal to the resolved-absolute PROJECT_ENV" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/some-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+  # exported, not merely assigned: a child process must see it too.
+  run bash -c 'printf %s "$PROJECT_ENV_FILE"'
+  [ "$output" = "$PROJECT_ENV_FILE" ]
+}
+
+@test "derive_project_settings: PROJECT_ENV_FILE stays absolute even with a relative ENVS_DIR" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local workdir="$BATS_TEST_TMPDIR/cwd"
+  mkdir -p "$workdir"
+  cd "$workdir"
+  ENVS_DIR="relative-envs"   # resolved against CWD, NOT __OCL_DIR — see lib/project.sh
+  local repo="$BATS_TEST_TMPDIR/some-repo"
+  mkdir -p "$repo"
+  derive_project_settings "$repo"
+  [ "$PROJECT_ENV_FILE" = "${workdir}/relative-envs/some-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+}
+
 # --- write_project_env / project_env_for_management -------------------------
 
 @test "write_project_env: writes PROJECT_SLUG/OPENCODE_PORT/REPO_PATH using the caller's SLUG/PORT/PROJECT_ENV" {
@@ -379,6 +418,32 @@ setup() {
   [ -f "$PROJECT_ENV" ]
   grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
   grep -q "^REPO_PATH=${repo}\$" "$PROJECT_ENV"
+}
+
+@test "project_env_for_management: exports absolute PROJECT_ENV_FILE on the reuse-existing-file branch" {
+  mkdir -p "$ENVS_DIR"
+  printf 'PROJECT_SLUG=demo\nOPENCODE_PORT=5555\nREPO_PATH=/old/path\n' > "$ENVS_DIR/demo.env"
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }
+  local repo="$BATS_TEST_TMPDIR/demo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/demo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
+  run bash -c 'printf %s "$PROJECT_ENV_FILE"'
+  [ "$output" = "$PROJECT_ENV_FILE" ]
+}
+
+@test "project_env_for_management: exports absolute PROJECT_ENV_FILE on the generate-fresh-file branch" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 1; }
+  local repo="$BATS_TEST_TMPDIR/fresh-repo"
+  mkdir -p "$repo"
+  project_env_for_management "$repo"
+  [ "$PROJECT_ENV_FILE" = "${ENVS_DIR}/fresh-repo.env" ]
+  [[ "$PROJECT_ENV_FILE" == /* ]]
 }
 
 # --- project_running (docker stubbed) ---------------------------------------
@@ -853,6 +918,13 @@ REALISTIC_MANIFEST='{
   [ -z "$output" ]
 }
 
+@test "manifest_missing_keys: the GitLab/git safety keys are known, not reported missing" {
+  local manifest='{"env_keys": [ {"key": "ALLOW_REMOTE_GIT", "required": false}, {"key": "GIT_REMOTE_ALLOWLIST", "required": false}, {"key": "ALLOW_CONFLUENCE_WRITE", "required": false}, {"key": "ALLOW_GITLAB_WRITE", "required": false}, {"key": "GITLAB_WRITE_PROJECTS", "required": false}, {"key": "GITLAB_QUEUE_LABEL_PREFIX", "required": false} ]}'
+  ENV_EXAMPLE="$REPO_ROOT/.env.example" run manifest_missing_keys "$manifest"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # --- image_version_label ----------------------------------------------------
 
 @test "image_version_label: echoes the OCI version label when present" {
@@ -959,6 +1031,19 @@ older"
   [ "$output" = "SECRET_KEY" ]
 }
 
+# --- wizard_keys ---------------------------------------------------------------
+
+@test "wizard_keys: the safety switches are opt-in, not prompted on first run" {
+  run wizard_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ALLOW_REMOTE_GIT"* ]]
+  [[ "$output" != *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" != *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" != *"ALLOW_GITLAB_WRITE"* ]]
+  [[ "$output" != *"GITLAB_WRITE_PROJECTS"* ]]
+  [[ "$output" != *"GITLAB_QUEUE_LABEL_PREFIX"* ]]
+}
+
 # --- editable_schema_keys ----------------------------------------------------
 
 @test "editable_schema_keys: excludes internal-typed keys" {
@@ -977,6 +1062,16 @@ older"
   [[ "$output" == *"USER_LAYER_PATH"* ]]
   [[ "$output" == *"LLM_API_BASE"* ]]
   [[ "$output" == *"IMAGE_REGISTRY"* ]]
+}
+
+@test "editable_schema_keys: includes the GitLab/git write-and-remote safety keys" {
+  run editable_schema_keys
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" == *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" == *"ALLOW_GITLAB_WRITE"* ]]
+  [[ "$output" == *"GITLAB_WRITE_PROJECTS"* ]]
+  [[ "$output" == *"GITLAB_QUEUE_LABEL_PREFIX"* ]]
 }
 
 @test "editable_schema_keys: every line is a real config_schema key, in schema order" {
@@ -1029,6 +1124,17 @@ older"
   [ ! -f "$ENV_FILE" ]
 }
 
+@test "cmd_config_show: the GitLab/git safety keys show up under the Safety group" {
+  printf 'ALLOW_GITLAB_WRITE=1\nGITLAB_WRITE_PROJECTS=mygroup/sandbox\n' > "$ENV_FILE"
+  run cmd_config_show
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Safety"* ]]
+  [[ "$output" == *"GIT_REMOTE_ALLOWLIST"* ]]
+  [[ "$output" == *"ALLOW_CONFLUENCE_WRITE"* ]]
+  [[ "$output" == *"[set]"*"ALLOW_GITLAB_WRITE"*"1"* ]]
+  [[ "$output" == *"[set]"*"GITLAB_WRITE_PROJECTS"*"mygroup/sandbox"* ]]
+}
+
 @test "cmd_config_show: groups keys under their field_group section header" {
   printf 'LLM_API_BASE=https://llm.test/v1\n' > "$ENV_FILE"
   run cmd_config_show
@@ -1077,6 +1183,34 @@ older"
   run field_help_text BITBUCKET_LEGACY_URL
   [ "$status" -eq 0 ]
   [[ "$output" == *"BITBUCKET_BASE_URL"* ]]
+}
+
+@test "field_help_text: GIT_REMOTE_ALLOWLIST states it is defence in depth, not a boundary" {
+  run field_help_text GIT_REMOTE_ALLOWLIST
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Defence in depth"* ]]
+  [[ "$output" == *"NOT a security boundary"* ]]
+  [[ "$output" == *"ALLOW_REMOTE_GIT=1"* ]]
+}
+
+@test "field_help_text: GITLAB_WRITE_PROJECTS states it is defence in depth, not a boundary" {
+  run field_help_text GITLAB_WRITE_PROJECTS
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Defence in depth"* ]]
+  [[ "$output" == *"NOT a security boundary"* ]]
+  [[ "$output" == *"ALLOW_GITLAB_WRITE=1"* ]]
+}
+
+@test "field_help_text: ALLOW_GITLAB_WRITE notes there is no label/close/merge tool even at 1" {
+  run field_help_text ALLOW_GITLAB_WRITE
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no tool to set labels"* ]]
+}
+
+@test "field_help_text: ALLOW_CONFLUENCE_WRITE notes deleting pages is never possible" {
+  run field_help_text ALLOW_CONFLUENCE_WRITE
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deleting pages is never possible"* ]]
 }
 
 # --- prompt_one_key -----------------------------------------------------------
@@ -2094,4 +2228,67 @@ git_repo_pair() {
   OC_EXEC_SPINNER_PID=""
   OC_EXEC_TTY="$BATS_TEST_TMPDIR/spin.tty" run exec_spinner_stop
   [ "$status" -eq 0 ]
+}
+
+# --- per-project overrides ----------------------------------------------------
+# PROJECT_ENV_FILE made the per-project env file reach inside the container, but
+# that file is regenerated from $ENV_FILE on every boot — so without a separate,
+# hand-edited source there was nowhere a user could put a per-project value that
+# survived. These cover the layer that closes it.
+
+@test "project_overrides_file: names the hand-edited file next to the generated one" {
+  [ "$(project_overrides_file demo)" = "${ENVS_DIR}/demo.overrides.env" ]
+}
+
+@test "write_project_env: an overrides value beats the shared .env" {
+  printf 'GITLAB_PAT=shared\nLLM_API_KEY=shared-llm\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'GITLAB_PAT=scoped-to-demo\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  # Last wins, so the override must come AFTER the shared value.
+  [ "$(grep -n '^GITLAB_PAT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "GITLAB_PAT=scoped-to-demo" ]
+  # Unrelated shared keys are still inherited.
+  grep -q '^LLM_API_KEY=shared-llm$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: a blank overrides value drops an inherited credential" {
+  # Blank is not cosmetic: each MCP server auto-enables on credential presence,
+  # so an empty value keeps that server out of this stack entirely.
+  printf 'CONFLUENCE_PAT=inherited\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'CONFLUENCE_PAT=\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  [ "$(grep -n '^CONFLUENCE_PAT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "CONFLUENCE_PAT=" ]
+}
+
+@test "write_project_env: overrides cannot hijack the launcher's own identity keys" {
+  # The generated block is written LAST so a stale hand-edited port cannot fight
+  # resolve_project_port and leave the stack unreachable at the port it printed.
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4097 PROJECT_ENV="$ENVS_DIR/demo.env"
+  printf 'OPENCODE_PORT=9999\nPROJECT_SLUG=impostor\n' > "$(project_overrides_file demo)"
+  write_project_env "/some/repo"
+  [ "$(grep -n '^OPENCODE_PORT=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "OPENCODE_PORT=4097" ]
+  [ "$(grep -n '^PROJECT_SLUG=' "$PROJECT_ENV" | tail -n1 | cut -d: -f2-)" = "PROJECT_SLUG=demo" ]
+}
+
+@test "write_project_env: no overrides file is not an error" {
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  run write_project_env "/some/repo"
+  [ "$status" -eq 0 ]
+  grep -q '^FOO=bar$' "$PROJECT_ENV"
+}
+
+@test "write_project_env: the generated file points at the file to edit instead" {
+  # The generated one says "do not edit by hand"; it has to say where to go.
+  printf 'FOO=bar\n' > "$ENV_FILE"
+  mkdir -p "$ENVS_DIR"
+  local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
+  write_project_env "/some/repo"
+  grep -q 'demo.overrides.env' "$PROJECT_ENV"
 }

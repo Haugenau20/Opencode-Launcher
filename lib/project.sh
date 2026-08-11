@@ -197,6 +197,23 @@ _project_compose_files() {
 # env file to actually exist on disk must call write_project_env explicitly
 # (see below) — derive_project_settings alone is safe to call from read-only
 # commands (--status et al.) with no side effects.
+#
+# Also EXPORTS PROJECT_ENV_FILE, the absolute path to the same file PROJECT_ENV
+# names. This is what carries per-project credentials INTO the container: the
+# opencode service's `env_file:` directive (docker/docker-compose.yml) layers
+# `${PROJECT_ENV_FILE:-.env}` on top of the shared .env, and that is compose
+# `${VAR}` interpolation — it only ever reads the real process environment, so
+# the value must be exported, not merely assigned.
+#
+# It is resolved to an ABSOLUTE path deliberately, though a relative one would
+# work today: main() cd's to the launcher root, so ENVS_DIR's default `.envs`
+# and --project-directory ($__OCL_DIR) happen to share a base, and env_file
+# paths resolve against the latter. That agreement is a coincidence of two
+# independent facts, and ENVS_DIR is overridable (the test suite points it at a
+# sandbox). Resolving here costs nothing and removes the coupling — worth it
+# because the failure mode is SILENT: a path that misses is swallowed by
+# env_file's `required: false`, so the stack boots with no per-project
+# credentials instead of an error.
 derive_project_settings() {
   local repo_path="$1"
 
@@ -209,6 +226,9 @@ derive_project_settings() {
   mkdir -p "$ENVS_DIR"
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
   PROJECT_NAME="opencode-${SLUG}"
+  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
+    || die "could not resolve ENVS_DIR"
+  export PROJECT_ENV_FILE
   # The compose files live under docker/, but their relative paths (build
   # contexts, the :z bind mounts, env_file) must resolve from the repo root.
   # --project-directory pins that base so moving the files stays transparent.
@@ -219,22 +239,52 @@ derive_project_settings() {
     "${compose_files[@]}")
 }
 
+# project_overrides_file SLUG — echo the path to SLUG's hand-edited per-project
+# overrides file (whether or not it exists). This is the ONE file in $ENVS_DIR a
+# user is meant to edit: everything else there is generated and truncated on
+# every boot.
+#
+# It exists because PROJECT_ENV_FILE would otherwise be plumbing with nothing
+# feeding it. The generated .envs/<slug>.env reaches inside the container now,
+# but it is rebuilt from $ENV_FILE on every run, so a value hand-written into it
+# never survives to a second boot — which left "give this project its own
+# credentials" expressible by the compose layer and unreachable by a user.
+project_overrides_file() {
+  printf '%s/%s.overrides.env' "$ENVS_DIR" "$1"
+}
+
 # write_project_env REPO_PATH — (re)generate .envs/<slug>.env for REPO_PATH:
-# the per-project superset of $ENV_FILE plus PROJECT_SLUG/OPENCODE_PORT/
-# REPO_PATH/USER_LAYER_PATH. Must be called AFTER derive_project_settings
-# (uses SLUG/PORT/PROJECT_ENV already set in the caller's scope). This is the
-# ONLY function that writes the per-project env file — the boot flow calls it
-# unconditionally on every run; --down/--logs/--shell only call it once, via
-# project_env_for_management (below), when the file doesn't exist yet.
+# the per-project superset of $ENV_FILE plus this project's own overrides plus
+# PROJECT_SLUG/OPENCODE_PORT/REPO_PATH/USER_LAYER_PATH. Must be called AFTER
+# derive_project_settings (uses SLUG/PORT/PROJECT_ENV already set in the
+# caller's scope). This is the ONLY function that writes the per-project env
+# file — the boot flow calls it unconditionally on every run; --down/--logs/
+# --shell only call it once, via project_env_for_management (below), when the
+# file doesn't exist yet.
+#
+# Three layers, in this order, because the file is read last-wins:
+#
+#   1. $ENV_FILE            what every project shares
+#   2. <slug>.overrides.env what THIS project differs on — above all scoped
+#                           credentials, which cannot be shared even in
+#                           principle (a GitLab project access token reaches
+#                           exactly one project). A blank value here drops an
+#                           inherited credential, which removes that MCP server
+#                           from this stack entirely rather than disabling it.
+#   3. generated identity   PROJECT_SLUG/OPENCODE_PORT/REPO_PATH — LAST on
+#                           purpose, so a stale hand-edited port cannot fight
+#                           resolve_project_port's sticky assignment and leave
+#                           a stack unreachable at the port it printed.
 write_project_env() {
   local repo_path="$1"
-  local user_layer_path
+  local user_layer_path overrides
   user_layer_path="$(get_env USER_LAYER_PATH)"
   if [ -n "$user_layer_path" ]; then
     mkdir -p "$user_layer_path"
     user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
       || die "could not resolve USER_LAYER_PATH"
   fi
+  overrides="$(project_overrides_file "$SLUG")"
 
   mkdir -p "$ENVS_DIR"
   # NOTE: the last statement inside this group must never be a bare
@@ -243,8 +293,14 @@ write_project_env() {
   # whole script. `if ... fi` returns 0 on a false condition, `&&` does not.
   {
     cat "$ENV_FILE"
+    if [ -f "$overrides" ]; then
+      echo
+      echo "# --- from $(basename "$overrides") ---"
+      cat "$overrides"
+    fi
     echo
     echo "# --- per-project (generated by start.sh; do not edit by hand) ---"
+    echo "# To override a value for this project, edit ${overrides}"
     echo "PROJECT_SLUG=${SLUG}"
     echo "OPENCODE_PORT=${PORT}"
     echo "REPO_PATH=${repo_path}"
@@ -263,6 +319,11 @@ write_project_env() {
 # fall back to derive_project_settings (fresh compute via resolve_project_port)
 # and persist it via write_project_env, purely so compose has a valid
 # --env-file to point at.
+#
+# Also EXPORTS PROJECT_ENV_FILE (absolute, same reasoning as
+# derive_project_settings above) on both branches, so --down/--logs/--shell
+# tear down or attach to the SAME per-project container environment the
+# stack was booted with.
 project_env_for_management() {
   local repo_path="$1"
 
@@ -276,6 +337,9 @@ project_env_for_management() {
     [ -n "$PORT" ] || PORT=4096
     local compose_files
     _project_compose_files "$SLUG"
+    PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
+      || die "could not resolve ENVS_DIR"
+    export PROJECT_ENV_FILE
     COMPOSE=(docker compose
       --project-directory "$__OCL_DIR"
       --env-file "$PROJECT_ENV"

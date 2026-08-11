@@ -55,6 +55,64 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [0.16.0] — 2026-08-10
+
+**Action required:** none to keep working as before. To give a project its own
+credentials, create `.envs/<slug>.overrides.env` (see README).
+
+### Added
+
+- **Per-project credentials now actually reach inside the container.**
+  `start.sh` already generated a per-project env file (`.envs/<slug>.env`)
+  and pointed `docker compose --env-file` at it, but `--env-file` only ever
+  drives compose's own `${VAR}` interpolation — it puts nothing inside a
+  container. The `opencode` service's `env_file:` now layers that
+  per-project file **on top of** the shared `.env` (last value wins), so a
+  project's env file — once it diverges from `.env` — is what the agent
+  inside the container actually sees, not just what compose resolves
+  variables from. A blank value there (e.g. `CONFLUENCE_PAT=`) drops that
+  credential, and with it that MCP server (each one only turns on when its
+  credentials are present), from the stack entirely rather than merely
+  disabling it.
+- **A place to put per-project values that survives a boot:**
+  `.envs/<slug>.overrides.env`. The generated `.envs/<slug>.env` is rebuilt
+  from `.env` on every run, so a value hand-written into it never survived to
+  a second boot — which left the layering above expressible by compose and
+  unreachable by a user. The overrides file is read between the shared `.env`
+  and the launcher's own generated settings, so its values win over `.env`
+  while `PROJECT_SLUG`/`OPENCODE_PORT`/`REPO_PATH` stay the launcher's (a
+  stale hand-written port would otherwise leave the stack unreachable at the
+  port it just printed). Projects without one are unaffected.
+- Five safety keys the image already read are now known to `.env.example`,
+  `--config`, and `--reconfigure`: `GIT_REMOTE_ALLOWLIST`,
+  `ALLOW_CONFLUENCE_WRITE`, `ALLOW_GITLAB_WRITE`, `GITLAB_WRITE_PROJECTS`,
+  `GITLAB_QUEUE_LABEL_PREFIX`. The image consumed them already; the launcher
+  just didn't list them, so `--doctor` and every boot's manifest check were
+  spuriously warning the launcher was behind. All are opt-in and default to
+  today's behaviour — nothing to do unless you want to turn one on:
+  - `GIT_REMOTE_ALLOWLIST` (applies only when `ALLOW_REMOTE_GIT=1`) and
+    `GITLAB_WRITE_PROJECTS` (only when `ALLOW_GITLAB_WRITE=1`) restrict
+    where remote git / the GitLab MCP may write, as comma- or
+    whitespace-separated host or project-path prefixes. **Both are defence
+    in depth, not a security boundary** — an agent with a shell can call
+    git or the GitLab API directly, bypassing either. They turn a mistake
+    (a stale remote, a hallucinated project) into a clear local error
+    instead of a confusing 403; the real boundary is what the token itself
+    is scoped and permissioned to do, so scope your tokens accordingly —
+    these settings are not a substitute for that.
+  - `ALLOW_CONFLUENCE_WRITE` / `ALLOW_GITLAB_WRITE` gate whether their MCPs
+    can write at all (create/edit Confluence pages; open MRs, comment,
+    create GitLab issues) instead of only reading. Deleting a Confluence
+    page is never possible either way, and even with GitLab writes on there
+    is deliberately no tool to set labels, close an issue, or merge an MR.
+  - `GITLAB_QUEUE_LABEL_PREFIX` is the one key here that is **not**
+    off-by-default: it ships as `symphony`, a label namespace the GitLab
+    MCP is never allowed to set (relevant only if something else — a
+    workflow queue, an orchestrator — owns labels under that prefix as its
+    own state). Blanking it doesn't remove the protection, since the MCP
+    falls back to that same `symphony` default — set it only if you need to
+    protect a *different* namespace.
+
 ## [0.15.0] — 2026-07-15
 
 **Action required:** edit `.env` (add the M-Files keys — `./start.sh --reconfigure`
