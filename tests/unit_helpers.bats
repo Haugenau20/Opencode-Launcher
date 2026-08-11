@@ -1836,6 +1836,7 @@ older"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'Ctrl-D activates it' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
   [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]

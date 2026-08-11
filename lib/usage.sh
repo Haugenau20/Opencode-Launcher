@@ -67,7 +67,8 @@ needed):
   --reconfigure
              Edit .env settings interactively. On a real terminal, the
              dialog menu has only Save & Exit and Discard & Exit; Enter edits
-             the highlighted setting. Field Save/Enable/Disable actions are
+             the highlighted setting. Tab reaches the actions and Ctrl-D
+             activates the focused one. Field Save/Enable/Disable actions are
              staged. Discard, main-menu Esc, or Ctrl-C leaves .env untouched.
              A whiptail-only host uses the dashboard plus plain-text editor
              because whiptail cannot provide those independent actions. Piped

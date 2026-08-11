@@ -435,8 +435,10 @@ tui_menu() { _tui_menu_with_labels Select Back "$@"; }
 # menu. --no-ok keeps Enter as the implicit row-edit action without rendering
 # a redundant button. The Extra and Cancel buttons are the two session-level
 # actions and have distinct return codes: 3=Save & Exit, 1=Discard & Exit,
-# 255=Esc. Normalize dialog's configurable exit-code environment variables so
-# callers can rely on those values.
+# 255=Esc. With --no-ok, dialog reserves Enter for the implicit row action;
+# Tab moves focus to the button row and Ctrl-D activates the focused button.
+# Normalize dialog's configurable exit-code environment variables so callers
+# can rely on those values.
 tui_config_menu() {
   local title="$1" prompt="$2"; shift 2
   local backend rc=0 result
@@ -610,7 +612,7 @@ run_tui_reconfigure() {
     local choice="" menu_rc=0
     choice="$(tui_config_menu \
       "OpenCode Launcher — configuration" \
-      "Press Enter to edit the highlighted setting. Changes are staged until Save & Exit." \
+      "Enter edits the highlighted setting. Tab moves to an exit action; Ctrl-D activates it. Changes are staged." \
       "${menu_args[@]}")" || menu_rc=$?
 
     case "$menu_rc" in
