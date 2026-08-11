@@ -59,14 +59,16 @@ _Changes to the launcher itself._
 
 ### Changed
 
-- Clarified the ncurses configuration workflow: Enter selects the highlighted
-  setting, field dialogs use **Save/Back**, and boolean settings use
-  **Enable/Disable**. All edits are staged until **Save changes and exit**;
-  **Discard & Exit**, main-menu Esc, or Ctrl-C leaves the existing `.env`
-  untouched, and canceling first-run setup removes its new template. Menu
-  states distinguish enabled, disabled, missing, placeholder, set, and unset
-  values without exposing secrets; first-run ncurses setup uses the same
-  focused key set as the linear wizard.
+- Clarified the ncurses configuration workflow: Enter edits the highlighted
+  setting and the main screen has exactly two actions, **Save & Exit** and
+  **Discard & Exit**, with no Select/Edit button or synthetic save row. Field
+  dialogs use **Save/Back** and booleans use **Enable/Disable**. All edits are
+  staged until Save & Exit; discard, main-menu Esc, or Ctrl-C leaves the
+  existing `.env` untouched, and canceling first-run setup removes its new
+  template. Menu states distinguish enabled, disabled, missing, placeholder,
+  set, and unset values without exposing secrets. The full-screen editor uses
+  `dialog`; whiptail-only hosts use the plain-text fallback because whiptail
+  cannot provide independent Enter/edit and session-save actions.
 
 ## [0.16.0] — 2026-08-10
 

@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 #
 # lib/config.sh — the config subsystem: schema, accessors, the setup wizard,
-# the read-only dashboard, and the optional ncurses (whiptail/dialog) editor.
+# the read-only dashboard, and the optional ncurses dialog editor.
 #
 # Sourced by start.sh (not meant to be run standalone). Depends on the
 # shared low-level helpers start.sh defines before sourcing this file:
@@ -95,7 +95,7 @@ is_secret() { [ "$(field_type "$1")" = "secret" ]; }
 
 # field_help_text KEY — a short, human-readable description (1-3 lines) of
 # what KEY is for, condensed from the comment block above that key in
-# .env.example. Used ONLY by the ncurses (whiptail/dialog) editor
+# .env.example. Used ONLY by the ncurses dialog editor
 # (run_tui_reconfigure below) to show context inside the edit dialog itself —
 # the linear wizard (prompt_one_key) gets this same information from its own
 # hand-written info/warn lines and hint text, and is NOT touched by this
@@ -317,36 +317,48 @@ unmet_required() {
   done < <(required_keys)
 }
 
-# --- optional ncurses (whiptail/dialog) config editor ------------------------
-# Layer 2 of the config UX: when a real terminal AND whiptail/dialog are
-# available, --reconfigure drives a small ncurses menu instead of the
-# plain-text dashboard+menu (Layer 1) or the linear wizard (Layer 0). Both
-# backends are optional; everything degrades gracefully to the pure-bash
-# flows when neither is installed, when there's no tty (piped/CI input), or
-# when the OC_CONFIG_TUI=0 escape hatch is set.
+# --- optional ncurses configuration editor ----------------------------------
+# Layer 2 of the config UX: when a real terminal and dialog are available,
+# --reconfigure drives a small ncurses menu instead of the plain-text
+# dashboard+menu (Layer 1) or the linear wizard (Layer 0). dialog is required
+# for this layer because its --no-ok + --extra-button combination is what lets
+# Enter edit a highlighted row while Save & Exit and Discard & Exit remain two
+# independent bottom actions. whiptail cannot represent that interaction, so
+# a whiptail-only host uses the pure-bash fallback rather than showing a
+# misleading Select/Edit button.
 
-# tui_backend — echo "whiptail" or "dialog", whichever is found first on
-# PATH (whiptail preferred — it's the Debian/Ubuntu default and what most
-# users will have); echo nothing if neither is installed. Pure detection, no
-# tty required, so this is directly unit-testable.
+# tui_backend — echo "dialog" or "whiptail", preferring dialog when both are
+# on PATH. whiptail remains supported by the generic field wrappers, but the
+# full-screen configuration editor is enabled only for dialog (see have_tui).
+# Pure detection, no tty required, so this is directly unit-testable.
 tui_backend() {
-  if command -v whiptail >/dev/null 2>&1; then
-    printf '%s' "whiptail"
-  elif command -v dialog >/dev/null 2>&1; then
+  if command -v dialog >/dev/null 2>&1; then
     printf '%s' "dialog"
+  elif command -v whiptail >/dev/null 2>&1; then
+    printf '%s' "whiptail"
   fi
 }
 
-# have_tui — return 0 iff the ncurses editor should be used: a backend is
+# have_tui — return 0 iff the ncurses editor should be used: dialog is
 # installed, stdin AND stdout are a real terminal, and the OC_CONFIG_TUI=0
 # escape hatch has not been set. Set OC_CONFIG_TUI=0 to force the pure-bash
-# path even when whiptail/dialog is present (documented in usage()/README).
+# path even when dialog is present (documented in usage()/README).
 # The tty check is also what keeps this from ever hijacking a piped/CI
 # --reconfigure run (bats included): stdin is never a tty there.
 have_tui() {
   [ "${OC_CONFIG_TUI:-}" = "0" ] && return 1
-  [ -n "$(tui_backend)" ] || return 1
+  [ "$(tui_backend)" = "dialog" ] || return 1
   [ -t 0 ] && [ -t 1 ]
+}
+
+# config_tui_fallback_notice — explain why a host that has whiptail but not
+# dialog gets the plain-text editor. No warning is shown when the user
+# explicitly selected that path with OC_CONFIG_TUI=0.
+config_tui_fallback_notice() {
+  [ "${OC_CONFIG_TUI:-}" = "0" ] && return 0
+  if command -v whiptail >/dev/null 2>&1 && ! command -v dialog >/dev/null 2>&1; then
+    info "full-screen configuration needs 'dialog' for separate Save & Exit and Discard & Exit actions; using the plain-text editor."
+  fi
 }
 
 # tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT,
@@ -416,11 +428,27 @@ _tui_menu_with_labels() {
 }
 
 # tui_menu is the generic nested picker: Select confirms a row and Back
-# returns to its caller. whiptail cannot hide a menu's primary button, so the
-# configuration menu calls that unavoidable action Select too (Enter does the
-# same thing); its cancel action has the session-level meaning Discard & Exit.
+# returns to its caller.
 tui_menu() { _tui_menu_with_labels Select Back "$@"; }
-tui_config_menu() { _tui_menu_with_labels Select "Discard & Exit" "$@"; }
+
+# tui_config_menu TITLE PROMPT TAG1 ITEM1 ... — dialog-only top-level editor
+# menu. --no-ok keeps Enter as the implicit row-edit action without rendering
+# a redundant button. The Extra and Cancel buttons are the two session-level
+# actions and have distinct return codes: 3=Save & Exit, 1=Discard & Exit,
+# 255=Esc. Normalize dialog's configurable exit-code environment variables so
+# callers can rely on those values.
+tui_config_menu() {
+  local title="$1" prompt="$2"; shift 2
+  local backend rc=0 result
+  backend="$(tui_backend)"
+  [ "$backend" = "dialog" ] || return 127
+  result="$(DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_EXTRA=3 DIALOG_ESC=255 \
+    "$backend" --no-ok --extra-button --extra-label "Save & Exit" \
+      --cancel-label "Discard & Exit" --visit-items \
+      --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] && printf '%s' "$result"
+  return "$rc"
+}
 
 # tui_msgbox TITLE TEXT — show a plain dismiss-only message box (whiptail/
 # dialog --msgbox). Used to surface information (e.g. the first-run save
@@ -509,16 +537,16 @@ _restore_tui_trap() {
 }
 
 # run_tui_reconfigure [--first-run] [--new-file] — transactional ncurses
-# editor. Every field action writes only to a private staged copy. Selecting
-# the "Save changes and exit" row atomically replaces the real .env; choosing
-# Discard & Exit, pressing Esc, or interrupting with Ctrl+C removes the stage
+# editor. Every field action writes only to a private staged copy. Choosing
+# Save & Exit atomically replaces the real .env; choosing Discard & Exit,
+# pressing Esc, or interrupting with Ctrl+C removes the stage
 # and leaves an existing .env untouched. --new-file additionally removes the
 # just-created template on discard/interruption, so canceled first-run setup
 # never leaves a partial configuration behind.
 #
-# whiptail always renders a menu's primary button, so it is labelled Select
-# rather than Edit; Enter selects the highlighted setting or save row too.
-# Field dialogs use Save/Back, and only Save/Enable/Disable changes the stage.
+# The top-level dialog renders only Save & Exit and Discard & Exit; Enter edits
+# the highlighted setting without a visible Select/Edit button. Field dialogs
+# use Save/Back, and only Save/Enable/Disable changes the stage.
 #
 # First run uses wizard_keys() (the same intentionally smaller scope as the
 # linear wizard); normal --reconfigure uses every editable_schema_keys() key.
@@ -578,12 +606,11 @@ run_tui_reconfigure() {
       desc="$label $state"
       menu_args+=("$k" "$desc")
     done
-    menu_args+=("__SAVE__" "Save changes and exit")
 
     local choice="" menu_rc=0
     choice="$(tui_config_menu \
       "OpenCode Launcher — configuration" \
-      "Choose a setting. Edits are staged until you select Save changes and exit." \
+      "Press Enter to edit the highlighted setting. Changes are staged until Save & Exit." \
       "${menu_args[@]}")" || menu_rc=$?
 
     case "$menu_rc" in
@@ -597,52 +624,51 @@ run_tui_reconfigure() {
         TUI_CONFIG_RESULT=discarded
         return 2
         ;;
-      0)
-        [ -n "$choice" ] || continue
+      3)
+        if [ "$first_run" -eq 1 ]; then
+          local unmet=() ukey
+          while IFS= read -r ukey; do
+            [ -n "$ukey" ] && unmet+=("$ukey")
+          done < <(unmet_required)
 
-        if [ "$choice" = "__SAVE__" ]; then
-          if [ "$first_run" -eq 1 ]; then
-            local unmet=() ukey
-            while IFS= read -r ukey; do
-              [ -n "$ukey" ] && unmet+=("$ukey")
-            done < <(unmet_required)
+          if [ "${#unmet[@]}" -gt 0 ]; then
+            local msg="These are required before you can save:"$'\n'
+            for ukey in "${unmet[@]}"; do
+              msg+=$'\n'"  - $(field_label "$ukey")"
+            done
+            msg+=$'\n\n'"Fill them in, or choose Discard & Exit to abort."
+            tui_msgbox "OpenCode Launcher — configuration" "$msg"
+            continue
+          fi
+        fi
 
-            if [ "${#unmet[@]}" -gt 0 ]; then
-              local msg="These are required before you can save:"$'\n'
-              for ukey in "${unmet[@]}"; do
-                msg+=$'\n'"  - $(field_label "$ukey")"
-              done
-              msg+=$'\n\n'"Fill them in, or choose Discard & Exit to abort."
-              tui_msgbox "OpenCode Launcher — configuration" "$msg"
-              continue
-            fi
-          fi
-
-          ENV_FILE="$original_env_file"
-          if cmp -s -- "$staged_env_file" "$original_env_file"; then
-            rm -f -- "$staged_env_file"
-            _restore_tui_trap INT "$old_int_trap"
-            _restore_tui_trap TERM "$old_term_trap"
-            TUI_CONFIG_CHANGED=0
-            TUI_CONFIG_RESULT=unchanged
-            return 0
-          fi
-          if ! mv -f -- "$staged_env_file" "$original_env_file"; then
-            warn "could not save the staged configuration to $original_env_file."
-            rm -f -- "$staged_env_file"
-            [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
-            _restore_tui_trap INT "$old_int_trap"
-            _restore_tui_trap TERM "$old_term_trap"
-            TUI_CONFIG_CHANGED=0
-            TUI_CONFIG_RESULT=error
-            return 1
-          fi
+        ENV_FILE="$original_env_file"
+        if cmp -s -- "$staged_env_file" "$original_env_file"; then
+          rm -f -- "$staged_env_file"
           _restore_tui_trap INT "$old_int_trap"
           _restore_tui_trap TERM "$old_term_trap"
-          TUI_CONFIG_CHANGED=1
-          TUI_CONFIG_RESULT=saved
+          TUI_CONFIG_CHANGED=0
+          TUI_CONFIG_RESULT=unchanged
           return 0
         fi
+        if ! mv -f -- "$staged_env_file" "$original_env_file"; then
+          warn "could not save the staged configuration to $original_env_file."
+          rm -f -- "$staged_env_file"
+          [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+          _restore_tui_trap INT "$old_int_trap"
+          _restore_tui_trap TERM "$old_term_trap"
+          TUI_CONFIG_CHANGED=0
+          TUI_CONFIG_RESULT=error
+          return 1
+        fi
+        _restore_tui_trap INT "$old_int_trap"
+        _restore_tui_trap TERM "$old_term_trap"
+        TUI_CONFIG_CHANGED=1
+        TUI_CONFIG_RESULT=saved
+        return 0
+        ;;
+      0)
+        [ -n "$choice" ] || continue
 
         local type cur new help body input_rc bool_rc clear_rc secret_status
         type="$(field_type "$choice")"
@@ -935,7 +961,7 @@ cmd_config_show() {
 }
 
 # cmd_reconfigure — re-run the secrets setup, picking one of three flows:
-#   1. have_tui (real terminal + whiptail/dialog installed, and
+#   1. have_tui (real terminal + dialog installed, and
 #      OC_CONFIG_TUI != 0): run_tui_reconfigure, the ncurses menu editor.
 #   2. real terminal but no ncurses backend (or OC_CONFIG_TUI=0): a read-only
 #      dashboard (cmd_config_show) followed by a small plain-text menu so the
@@ -956,7 +982,7 @@ cmd_reconfigure() {
 
   if have_tui; then
     used_tui=1
-    # Interactive + whiptail/dialog available: ncurses menu editor (Layer 2).
+    # Interactive + dialog available: ncurses menu editor (Layer 2).
     # The editor stages every field and commits only from its explicit save
     # row. If this command created .env, discard removes that template too.
     # shellcheck disable=SC2119,SC2120
@@ -979,6 +1005,7 @@ cmd_reconfigure() {
     # plain-text menu (Layer 1). Editable set = editable_schema_keys() (every
     # non-"internal" schema key); HOST_UID/HOST_GID/IMAGE_TAG are "internal"
     # and stay out of the menu (hand-edited only).
+    config_tui_fallback_notice
     local keys=() key
     while IFS= read -r key; do
       [ -n "$key" ] && keys+=("$key")

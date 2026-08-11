@@ -1604,22 +1604,23 @@ older"
 # the pure detection/gating logic (tui_backend, have_tui), never an actual
 # interactive ncurses screen, since bats has no tty.
 
-@test "tui_backend: echoes whiptail when it is on PATH" {
+@test "tui_backend: prefers dialog when both dialog and whiptail are on PATH" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
-  [ "$output" = "whiptail" ]
+  [ "$output" = "dialog" ]
 }
 
-@test "tui_backend: falls back to dialog when whiptail is absent" {
-  local bin="$BATS_TEST_TMPDIR/dialog-only-bin"
+@test "tui_backend: reports whiptail when dialog is absent" {
+  local bin="$BATS_TEST_TMPDIR/whiptail-only-bin"
   mkdir -p "$bin"
-  cp "$FAKE_BIN/dialog" "$bin/dialog"
-  chmod +x "$bin/dialog"
-  run env PATH="$bin:/usr/bin:/bin" \
-    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  cp "$FAKE_BIN/whiptail" "$bin/whiptail"
+  cp "$(command -v dirname)" "$bin/dirname"
+  chmod +x "$bin/whiptail"
+  run env PATH="$bin" \
+    /bin/bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
-  [ "$output" = "dialog" ]
+  [ "$output" = "whiptail" ]
 }
 
 @test "tui_backend: empty when neither whiptail nor dialog is on PATH" {
@@ -1629,13 +1630,13 @@ older"
   [ -z "$output" ]
 }
 
-@test "have_tui: false when not a tty, even with whiptail present (bats is never a tty)" {
+@test "have_tui: false when not a tty, even with dialog present (bats is never a tty)" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
 }
 
-@test "have_tui: false when OC_CONFIG_TUI=0, even with whiptail present" {
+@test "have_tui: false when OC_CONFIG_TUI=0, even with dialog present" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" OC_CONFIG_TUI=0 \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
@@ -1694,13 +1695,13 @@ older"
   [ "$output" = "rc=1 value=" ]
 }
 
-@test "tui widgets: whiptail receives Save/Back, Select/Discard and custom boolean labels" {
+@test "generic whiptail widgets receive Save/Back, Select/Back and custom boolean labels" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" whiptail; }
     whiptail() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/whiptail-argv"; printf selected >&2; }
     tui_input "Title" "Label" "Default" >/dev/null
-    tui_config_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
+    tui_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
     tui_yesno "Title" "Question" Enable Disable >/dev/null
   '
   [ "$status" -eq 0 ]
@@ -1709,28 +1710,44 @@ older"
   grep -qxF -- '--cancel-button' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Back' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/whiptail-argv"
-  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/whiptail-argv"
-  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- '--yes-button' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Enable' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- '--no-button' "$BATS_TEST_TMPDIR/whiptail-argv"
   grep -qxF -- 'Disable' "$BATS_TEST_TMPDIR/whiptail-argv"
 }
 
-@test "tui widgets: dialog receives its backend-specific button label flags" {
+@test "dialog configuration menu has only Save & Exit and Discard & Exit buttons" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" dialog; }
     dialog() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/dialog-argv"; printf selected >&2; }
-    tui_input "Title" "Label" "Default" >/dev/null
     tui_config_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
-    tui_yesno "Title" "Question" Enable Disable >/dev/null
   '
   [ "$status" -eq 0 ]
-  grep -qxF -- '--ok-label' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- '--no-ok' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- '--extra-button' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- '--extra-label' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- 'Save & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
   grep -qxF -- '--cancel-label' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--yes-label' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--no-label' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
+  grep -qxF -- '--visit-items' "$BATS_TEST_TMPDIR/dialog-argv"
+  ! grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/dialog-argv"
+  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/dialog-argv"
+  ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/dialog-argv"
+}
+
+@test "dialog configuration menu returns Save & Exit as status 3 without a row value" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" dialog; }
+    dialog() { printf ignored-row >&2; return 3; }
+    set -euo pipefail
+    rc=0
+    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "rc=3 value=" ]
 }
 
 @test "tui_yesno: propagates Yes (0) and No (1) without tripping set -e" {
@@ -1793,7 +1810,7 @@ older"
   [[ "$output" != *"super-secret-value"* ]]
 }
 
-@test "run_tui_reconfigure: first-run menu has a save row, uses wizard scope, and gates saving" {
+@test "run_tui_reconfigure: first-run menu has no save row, uses wizard scope, and gates Save & Exit" {
   cp "$REPO_ROOT/.env.example" "$ENV_FILE"
   printf '0' > "$BATS_TEST_TMPDIR/menu-count"
   run bash -c '
@@ -1803,8 +1820,7 @@ older"
       printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/first-run-menu-argv"
       count="$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")"
       printf "%s" "$((count + 1))" > "'"$BATS_TEST_TMPDIR"'/menu-count"
-      printf __SAVE__
-      return 0
+      return 3
     }
     tui_msgbox() {
       printf "%s" "$2" > "'"$BATS_TEST_TMPDIR"'/first-run-gate-message"
@@ -1818,8 +1834,8 @@ older"
   grep -qxF -- 'LLM_API_BASE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qxF -- 'IMAGE_REGISTRY' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
   [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]
@@ -1893,8 +1909,7 @@ older"
         printf ALLOW_REMOTE_GIT
         return 0
       fi
-      printf __SAVE__
-      return 0
+      return 3
     }
     tui_yesno() { return 1; }
     run_tui_reconfigure
@@ -2001,8 +2016,7 @@ older"
         printf JIRA_PAT
         return 0
       fi
-      printf __SAVE__
-      return 0
+      return 3
     }
     tui_password() { printf ""; return 0; }
     tui_yesno() { return 0; }

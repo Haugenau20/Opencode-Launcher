@@ -62,7 +62,7 @@ mfiles_prompt_domain_plain() {
 }
 
 # mfiles_prompt_domain_tui TITLE — same choice as mfiles_prompt_domain_plain,
-# via a whiptail/dialog menu instead of a plain 1/2 read. Tags are "1"/"2"
+# via a dialog menu instead of a plain 1/2 read. Tags are "1"/"2"
 # (not the domain name itself) so the menu shows "1  <domain>" / "2  <domain>"
 # instead of the domain name appearing twice per row.
 mfiles_prompt_domain_tui() {
