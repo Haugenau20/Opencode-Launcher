@@ -66,10 +66,11 @@ mfiles_prompt_domain_plain() {
 # (not the domain name itself) so the menu shows "1  <domain>" / "2  <domain>"
 # instead of the domain name appearing twice per row.
 mfiles_prompt_domain_tui() {
-  local title="$1" choice
+  local title="$1" choice rc=0
   choice="$(tui_menu "$title" 'Windows domain:' \
     1 "$MFILES_DOMAIN_1" \
-    2 "$MFILES_DOMAIN_2")"
+    2 "$MFILES_DOMAIN_2")" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   case "$choice" in
     2) printf '%s' "$MFILES_DOMAIN_2" ;;
     *) printf '%s' "$MFILES_DOMAIN_1" ;;
@@ -243,18 +244,18 @@ mfiles_tui_mint() {
   local base user domain vault_guid password token mint_rc verify_rc
 
   base="$(get_env MFILES_BASE_URL)"
-  base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")"
+  base="$(tui_input "$title" 'M-Files base URL (https://…, no trailing slash)' "$base")" || return 1
   base="${base%/}"
-  domain="$(mfiles_prompt_domain_tui "$title")"
-  user="$(tui_input "$title" 'M-Files username' '')"
-  vault_guid="$(tui_input "$title" 'Vault GUID (M-Files Desktop Settings -> Document Vault on Server)' '')"
+  domain="$(mfiles_prompt_domain_tui "$title")" || return 1
+  user="$(tui_input "$title" 'M-Files username' '')" || return 1
+  vault_guid="$(tui_input "$title" 'Vault GUID (M-Files Desktop Settings -> Document Vault on Server)' '')" || return 1
 
   if [ -z "$base" ] || [ -z "$user" ] || [ -z "$vault_guid" ]; then
     tui_msgbox "$title" 'Base URL, username and vault GUID are all required — try again from the menu.'
     return 1
   fi
 
-  password="$(tui_password 'M-Files Password' 'Enter your M-Files account password:')"
+  password="$(tui_password 'M-Files Password' 'Enter your M-Files account password:')" || return 1
 
   info "minting M-Files token…" >&2
   exec_spinner_start

@@ -349,53 +349,77 @@ have_tui() {
   [ -t 0 ] && [ -t 1 ]
 }
 
-# tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT;
-# echo whatever the user confirmed. Echoes DEFAULT unchanged on Cancel/Esc
-# (rc captured locally so a non-zero whiptail/dialog exit under
-# set -euo pipefail never kills the script).
+# tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT,
+# with explicit Save/Back buttons. Echo the confirmed value and preserve the
+# backend status: 0=Save, 1=Back, 255=Esc. Callers MUST handle the non-zero
+# statuses (normally by returning to the parent menu without writing).
 tui_input() {
   local title="$1" label="$2" default="$3" backend rc=0 result
+  local button_args=()
   backend="$(tui_backend)"
-  result="$("$backend" --inputbox "$label" 0 0 "$default" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf '%s' "$default"
-  else
-    printf '%s' "$result"
-  fi
+  case "$backend" in
+    whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
+    dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
+  esac
+  result="$("$backend" "${button_args[@]}" --inputbox "$label" 0 0 "$default" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] && printf '%s' "$result"
+  return "$rc"
 }
 
 # tui_password TITLE LABEL — show a passwordbox (input not echoed to the
-# screen); echo whatever the user typed, or empty on Cancel/Esc. NEVER
-# pre-fills with the current secret (mirrors prompt_one_key's masked
-# handling) — the caller is responsible for treating empty as "keep current".
+# screen), with explicit Save/Back buttons. Echo the confirmed value and
+# preserve the backend status just like tui_input. NEVER pre-fill the current
+# secret; callers decide whether a confirmed blank means clear or no change.
 tui_password() {
   local title="$1" label="$2" backend rc=0 result
+  local button_args=()
   backend="$(tui_backend)"
-  result="$("$backend" --passwordbox "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
-  [ "$rc" -eq 0 ] || result=""
-  printf '%s' "$result"
+  case "$backend" in
+    whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
+    dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
+  esac
+  result="$("$backend" "${button_args[@]}" --passwordbox "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] && printf '%s' "$result"
+  return "$rc"
 }
 
-# tui_yesno TITLE LABEL — show a yes/no box; return 0 for Yes, 1 for both No
-# and Cancel/Esc (whiptail/dialog already exit non-zero for "No", so this
-# just passes that through rather than treating it as a script error).
+# tui_yesno TITLE LABEL [YES_LABEL] [NO_LABEL] — show a yes/no box, optionally
+# with clearer action labels. Preserve the backend status: 0=Yes, 1=No,
+# 255=Esc. Callers that mutate state must distinguish No from Esc.
 tui_yesno() {
-  local title="$1" label="$2" backend
+  local title="$1" label="$2" yes_label="${3:-Yes}" no_label="${4:-No}" backend
+  local button_args=()
   backend="$(tui_backend)"
-  "$backend" --yesno "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3
+  case "$backend" in
+    whiptail) button_args=(--yes-button "$yes_label" --no-button "$no_label") ;;
+    dialog)   button_args=(--yes-label "$yes_label" --no-label "$no_label") ;;
+  esac
+  "$backend" "${button_args[@]}" --yesno "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3
 }
 
-# tui_menu TITLE PROMPT TAG1 ITEM1 [TAG2 ITEM2 ...] — show a menu of
-# tag/description pairs; echo the chosen TAG, or empty on Cancel/Esc (rc
-# captured locally, never fatal under set -e).
-tui_menu() {
-  local title="$1" prompt="$2"; shift 2
+# _tui_menu_with_labels OK_LABEL CANCEL_LABEL TITLE PROMPT TAG1 ITEM1 ... —
+# common menu implementation. Echo the selected tag only on confirmation and
+# preserve the backend status so Cancel/Done and Esc are never conflated with
+# a selected (or empty) tag.
+_tui_menu_with_labels() {
+  local ok_label="$1" cancel_label="$2" title="$3" prompt="$4"; shift 4
   local backend rc=0 result
+  local button_args=()
   backend="$(tui_backend)"
-  result="$("$backend" --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
-  [ "$rc" -eq 0 ] || result=""
-  printf '%s' "$result"
+  case "$backend" in
+    whiptail) button_args=(--ok-button "$ok_label" --cancel-button "$cancel_label") ;;
+    dialog)   button_args=(--ok-label "$ok_label" --cancel-label "$cancel_label") ;;
+  esac
+  result="$("$backend" "${button_args[@]}" --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  [ "$rc" -eq 0 ] && printf '%s' "$result"
+  return "$rc"
 }
+
+# tui_menu is the generic nested picker: Select confirms a row and Back
+# returns to its caller. The configuration's top-level menu instead uses
+# Edit/Done, matching its immediate-save lifecycle.
+tui_menu() { _tui_menu_with_labels Select Back "$@"; }
+tui_config_menu() { _tui_menu_with_labels Edit Done "$@"; }
 
 # tui_msgbox TITLE TEXT — show a plain dismiss-only message box (whiptail/
 # dialog --msgbox). Used to surface information (e.g. the first-run "Done"
@@ -419,69 +443,106 @@ tui_msgbox() {
 # plain status line + spinner written directly to the terminal, the same
 # mechanism the non-whiptail mint path already used successfully.
 
-# run_tui_reconfigure [--first-run] — the ncurses editor loop: a tui_menu of
-# editable_schema_keys() (the same authoritative editable set Layer 1 uses),
-# each item tagged by KEY with a description of its label plus a
-# set/unset hint (secrets show only (set)/(unset), never the value), plus a
-# trailing "Done" entry. Selecting a key dispatches by field_type to the
-# matching wrapper above and writes the result via set_env (so sed_escape
-# still handles special characters); Cancel/Esc on the menu itself also
-# exits the loop. Loops until Done/Cancel, then falls through to the same
-# "wrote $ENV_FILE" line the other two flows print.
+# field_is_required KEY — true iff KEY participates in the first-run/doctor
+# required-field gate.
+field_is_required() {
+  local wanted="$1" key
+  while IFS= read -r key; do
+    [ "$key" = "$wanted" ] && return 0
+  done < <(required_keys)
+  return 1
+}
+
+# field_state_text KEY — concise, non-secret state for the ncurses menu.
+# Required placeholders are distinguished from real values; booleans say what
+# they mean instead of reporting both 0 and 1 as merely "set".
+field_state_text() {
+  local key="$1" value type
+  value="$(get_env "$key")"
+  type="$(field_type "$key")"
+
+  if field_is_required "$key" && ! field_satisfied "$key"; then
+    if [ -z "$value" ]; then
+      printf '%s' '(missing — REQUIRED)'
+    else
+      printf '%s' '(placeholder — REQUIRED)'
+    fi
+    return 0
+  fi
+
+  case "$type" in
+    bool)
+      case "$value" in
+        1)  printf '%s' '(enabled)' ;;
+        0)  printf '%s' '(disabled)' ;;
+        '') printf '%s' '(unset)' ;;
+        *)  printf '%s' '(invalid — expected 0 or 1)' ;;
+      esac
+      ;;
+    *)
+      if [ -n "$value" ]; then printf '%s' '(set)'; else printf '%s' '(unset)'; fi
+      ;;
+  esac
+}
+
+# config_set_if_changed KEY VALUE — write only a real change. Return 0 when a
+# write happened and 1 when VALUE already matched the current configuration.
+config_set_if_changed() {
+  local key="$1" value="$2"
+  [ "$(get_env "$key")" = "$value" ] && return 1
+  set_env "$key" "$value"
+  return 0
+}
+
+# run_tui_reconfigure [--first-run] — immediate-save ncurses editor. The menu
+# contains only settings; its buttons are Edit and Done, so there is no third,
+# overlapping Done row and no misleading session-level Cancel. Field dialogs
+# use Save/Back, and only an explicit Save/Enable/Disable action writes.
 #
-# --first-run additionally GATES the Done entry: required_keys() that are
-# not yet field_satisfied get a "(REQUIRED)" marker appended to their menu
-# description (so the user can see at a glance what's still missing — this
-# marker is shown in both modes, but only --first-run enforces it), and
-# selecting Done with unmet_required() non-empty shows a tui_msgbox listing
-# what's missing and CONTINUES the loop instead of exiting — the menu simply
-# reappears, it never force-opens the unmet field for editing. Without
-# --first-run (plain --reconfigure), Done is never gated, exactly as before.
+# First run uses wizard_keys() (the same intentionally smaller scope as the
+# linear wizard); normal --reconfigure uses every editable_schema_keys() key.
+# Done/Esc is gated on first run until every required field is satisfied.
+# TUI_CONFIG_CHANGED is set to 1 only when this flow actually writes a change.
 #
 # Ctrl+C is deliberately NOT trapped here: SIGINT still kills the whole
 # process immediately, same as every other interactive prompt in this
-# script. The gate only ever blocks the Done menu *action* — it is not a
+# script. The gate only ever blocks finishing the menu — it is not a
 # substitute for providing credentials, just a nudge before declaring
 # first-run setup finished.
 # shellcheck disable=SC2120  # called with no args for plain --reconfigure
 run_tui_reconfigure() {
   local first_run=0
   [ "${1:-}" = "--first-run" ] && first_run=1
+  TUI_CONFIG_CHANGED=0
 
   local keys=() key
-  while IFS= read -r key; do
-    [ -n "$key" ] && keys+=("$key")
-  done < <(editable_schema_keys)
-
-  local required=() rkey
-  while IFS= read -r rkey; do
-    [ -n "$rkey" ] && required+=("$rkey")
-  done < <(required_keys)
+  if [ "$first_run" -eq 1 ]; then
+    while IFS= read -r key; do
+      [ -n "$key" ] && keys+=("$key")
+    done < <(wizard_keys)
+  else
+    while IFS= read -r key; do
+      [ -n "$key" ] && keys+=("$key")
+    done < <(editable_schema_keys)
+  fi
 
   while true; do
-    local menu_args=() k label state desc is_required
+    local menu_args=() k label state desc
     for k in "${keys[@]}"; do
       label="$(field_label "$k")"
-      if [ -n "$(get_env "$k")" ]; then state="(set)"; else state="(unset)"; fi
+      state="$(field_state_text "$k")"
       desc="$label $state"
-
-      is_required=0
-      for rkey in "${required[@]}"; do
-        [ "$rkey" = "$k" ] && is_required=1 && break
-      done
-      if [ "$is_required" -eq 1 ] && ! field_satisfied "$k"; then
-        desc="$desc  (REQUIRED)"
-      fi
-
       menu_args+=("$k" "$desc")
     done
-    menu_args+=(DONE "Done — finish editing")
 
-    local choice
-    choice="$(tui_menu "OpenCode Launcher — configuration" "Choose a setting to edit:" "${menu_args[@]}")"
+    local choice="" menu_rc=0
+    choice="$(tui_config_menu \
+      "OpenCode Launcher — configuration" \
+      "Choose a setting to edit. Changes are saved when you press Save." \
+      "${menu_args[@]}")" || menu_rc=$?
 
-    case "$choice" in
-      ''|DONE)
+    case "$menu_rc" in
+      1|255)
         if [ "$first_run" -eq 1 ]; then
           local unmet=() ukey
           while IFS= read -r ukey; do
@@ -500,8 +561,9 @@ run_tui_reconfigure() {
         fi
         break
         ;;
-      *)
-        local type cur new help body
+      0)
+        [ -n "$choice" ] || continue
+        local type cur new help body input_rc bool_rc clear_rc secret_status
         type="$(field_type "$choice")"
         label="$(field_label "$choice")"
         help="$(field_help_text "$choice")"
@@ -516,33 +578,68 @@ run_tui_reconfigure() {
             # save-anyway, or a failed attempt) is final: it already reported
             # what happened via its own tui_msgbox, so this never ALSO shows
             # a manual-paste box asking for a raw token the user doesn't have.
-            if [ "$choice" = "MFILES_PAT" ] && tui_yesno "$label" "Mint an M-Files authentication token automatically instead of pasting one?"; then
-              new="$(mfiles_tui_mint)" || new="$cur"
-            else
-              body="$help"$'\n\n'"Current value: $(mask_secret "$cur")"$'\n'"Leave blank to keep the current value."
-              new="$(tui_password "$label" "$body")"
-              # Blank input keeps the current value, same rule prompt_one_key
-              # uses for masked secrets.
-              [ -n "$new" ] || new="$cur"
+            if [ "$choice" = "MFILES_PAT" ]; then
+              local mint_offer_rc=0 mint_rc=0 before_base after_base
+              tui_yesno "$label" "Mint an M-Files authentication token automatically instead of pasting one?" || mint_offer_rc=$?
+              if [ "$mint_offer_rc" -eq 0 ]; then
+                before_base="$(get_env MFILES_BASE_URL)"
+                new="$(mfiles_tui_mint)" || mint_rc=$?
+                after_base="$(get_env MFILES_BASE_URL)"
+                [ "$before_base" != "$after_base" ] && TUI_CONFIG_CHANGED=1
+                if [ "$mint_rc" -eq 0 ] && config_set_if_changed "$choice" "$new"; then
+                  TUI_CONFIG_CHANGED=1
+                fi
+                continue
+              elif [ "$mint_offer_rc" -ne 1 ]; then
+                # Esc backs out of the field; No deliberately continues to
+                # the manual password box.
+                continue
+              fi
             fi
-            set_env "$choice" "$new"
+
+            if [ -n "$cur" ]; then secret_status="(set)"; else secret_status="(empty)"; fi
+            body="$help"$'\n\n'"Current value: $secret_status"$'\n'"Enter a replacement, leave blank to clear it, or choose Back to keep it."
+            input_rc=0
+            new="$(tui_password "$label" "$body")" || input_rc=$?
+            [ "$input_rc" -eq 0 ] || continue
+
+            if [ -z "$new" ] && [ -n "$cur" ]; then
+              clear_rc=0
+              tui_yesno "$label" "Clear the currently saved secret?" Clear Keep || clear_rc=$?
+              [ "$clear_rc" -eq 0 ] || continue
+            fi
+            if config_set_if_changed "$choice" "$new"; then
+              TUI_CONFIG_CHANGED=1
+            fi
             ;;
           bool)
             body="$help"$'\n\n'"Enable $label?"
-            cur="$(get_env "$choice")"
-            if tui_yesno "$label" "$body"; then
-              set_env "$choice" 1
-            else
-              set_env "$choice" 0
+            bool_rc=0
+            tui_yesno "$label" "$body" Enable Disable || bool_rc=$?
+            case "$bool_rc" in
+              0) new=1 ;;
+              1) new=0 ;;
+              *) continue ;;  # Esc: return without changing the setting.
+            esac
+            if config_set_if_changed "$choice" "$new"; then
+              TUI_CONFIG_CHANGED=1
             fi
             ;;
           url|text|list)
             cur="$(get_env "$choice")"
             body="$help"$'\n\n'"$label:"
-            new="$(tui_input "$label" "$body" "$cur")"
-            set_env "$choice" "$new"
+            input_rc=0
+            new="$(tui_input "$label" "$body" "$cur")" || input_rc=$?
+            [ "$input_rc" -eq 0 ] || continue
+            if config_set_if_changed "$choice" "$new"; then
+              TUI_CONFIG_CHANGED=1
+            fi
             ;;
         esac
+        ;;
+      *)
+        warn "configuration UI exited unexpectedly (status $menu_rc)."
+        return "$menu_rc"
         ;;
     esac
   done
@@ -761,13 +858,16 @@ cmd_config_show() {
 #      always returns false here (no tty), so this path can never be
 #      hijacked by the ncurses editor.
 cmd_reconfigure() {
+  local used_tui=0 env_created=0
   if [ ! -f "$ENV_FILE" ]; then
     [ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE not found; cannot create $ENV_FILE."
     cp "$ENV_EXAMPLE" "$ENV_FILE"
+    env_created=1
     info "no $ENV_FILE found — created one from $ENV_EXAMPLE to reconfigure."
   fi
 
   if have_tui; then
+    used_tui=1
     # Interactive + whiptail/dialog available: ncurses menu editor (Layer 2).
     # No --first-run here — plain --reconfigure's Done is never gated.
     # shellcheck disable=SC2119,SC2120
@@ -817,5 +917,13 @@ cmd_reconfigure() {
   fi
 
   echo
-  info "wrote $ENV_FILE — changes apply on your next ./start.sh run."
+  if [ "$used_tui" -eq 1 ]; then
+    if [ "$env_created" -eq 1 ] || [ "${TUI_CONFIG_CHANGED:-0}" -eq 1 ]; then
+      info "configuration saved — changes apply on your next ./start.sh run."
+    else
+      info "configuration closed — no changes made."
+    fi
+  else
+    info "wrote $ENV_FILE — changes apply on your next ./start.sh run."
+  fi
 }

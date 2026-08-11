@@ -130,7 +130,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--down`/`--stop` `<repo>` | Tear down a repo's stack the clean way (re-derives the same project `docker compose down` would). |
 | `--logs <repo>` | Follow the running stack's logs (Ctrl-C detaches). |
 | `--shell <repo>` | Open a shell in the running container as the `dev` user at `/workspace` (falls back to `sh`). |
-| `--reconfigure` | Re-run the secrets wizard, pre-filled with your current `.env` (Enter keeps each value). |
+| `--reconfigure` | Edit `.env` settings interactively; the ncurses menu saves individual fields with Save and closes with Done. |
 | `--config` | Read-only dashboard of every `.env` setting (secrets shown as set/unset only). |
 | `--show-allowlist [<repo>]` | Print what egress the agent is allowed — see [Egress allowlist](#egress-allowlist). |
 | `--mfiles-token` | Mint an M-Files auth token from your vault credentials and write it straight into `.env` — see [Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). |
@@ -142,6 +142,13 @@ never pull an image, attach the TUI, or need your LLM key, and they no-op
 gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.
 
+On a real terminal with `whiptail` or `dialog`, configuration uses a menu with
+**Edit** and **Done** actions. A field changes only when you choose **Save**,
+**Enable**, or **Disable**; **Back** or Esc returns without changing that field.
+Changes are saved field-by-field, so **Done** closes the editor rather than
+performing a second save. Set `OC_CONFIG_TUI=0` for the plain-text editor;
+piped input continues to walk every wizard prompt for scripting compatibility.
+
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
 ./start.sh --detach  ~/code/your-repo    # headless, never attach the TUI
@@ -150,7 +157,7 @@ per-flag detail.
 ./start.sh --down    ~/code/your-repo    # tear that stack down
 ./start.sh --logs    ~/code/your-repo    # tail the running stack's logs
 ./start.sh --shell   ~/code/your-repo    # shell into the running container
-./start.sh --reconfigure                 # edit your secrets interactively
+./start.sh --reconfigure                 # edit configuration interactively
 ./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
 

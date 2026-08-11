@@ -65,11 +65,12 @@ needed):
   --shell    Open a shell in the running container for <host-repo-path> as the
              `dev` user at /workspace (falls back to sh). No-op if not running.
   --reconfigure
-             Re-run the secrets wizard, pre-filled with your current .env (Enter
-             keeps a value; secrets stay masked). On a real terminal it uses a
-             whiptail/dialog menu when available, otherwise a dashboard plus a
-             plain-text editor; piped input walks every key. OC_CONFIG_TUI=0
-             forces the plain-text path.
+             Edit .env settings interactively. On a real terminal, the
+             whiptail/dialog menu uses Edit/Done; field Save/Enable/Disable
+             actions write immediately, while Back/Esc leaves that field
+             unchanged. Without ncurses it uses a dashboard plus plain-text
+             editor; piped input walks every key. OC_CONFIG_TUI=0 forces the
+             plain-text path. Secrets stay masked in every mode.
   --config   Print a read-only dashboard of every .env setting, grouped by
              section. Secrets show as set/unset only. Edit with --reconfigure.
   --show-allowlist
