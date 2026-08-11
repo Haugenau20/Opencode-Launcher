@@ -68,10 +68,10 @@ needed):
              Edit .env settings interactively. On a real terminal, the
              Whiptail main menu shows required settings and groups optional
              settings into submenus. Enter/Select opens a field or submenu;
-             submenu Back/Esc returns one level. Field Save/Enable/Disable
-             actions are staged. Main-menu Save & Exit commits them; its final
-             Discard & Exit row, Esc, or Ctrl-C leaves .env untouched. Dialog
-             is the ncurses fallback; piped input walks every key.
+             submenu Back returns one level. Field Save/Enable/Disable actions
+             are staged. Main-menu Save & Exit commits them; its final Discard
+             & Exit row, or Esc/Ctrl-C from any menu, leaves .env untouched.
+             Dialog is the ncurses fallback; piped input walks every key.
              OC_CONFIG_TUI=0 forces plain text. Secrets stay masked in every
              mode.
   --config   Print a read-only dashboard of every .env setting, grouped by

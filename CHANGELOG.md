@@ -63,9 +63,11 @@ _Changes to the launcher itself._
   original appearance. Required settings remain on the main screen; optional
   settings are grouped into MCP, Git/repository, safety/permissions,
   user-layer/plugins, and advanced submenus. Enter or **Select** opens the
-  highlighted setting or submenu, and submenu **Back** or Esc returns one
-  level. The main menu's right-hand **Save & Exit** button commits all staged
-  edits, while its final **Discard & Exit** row, Esc, or Ctrl-C discards them.
+  highlighted setting or submenu, and submenu **Back** returns one level. The
+  main menu's right-hand **Save & Exit** button commits all staged edits, while
+  its final **Discard & Exit** row, or Esc/Ctrl-C from any menu, discards them.
+  Whiptail exposes Esc and Ctrl+C through the same cancellation path, so only
+  the visible **Back** button performs non-destructive submenu navigation.
   Field dialogs use **Save/Back** and booleans use **Enable/Disable**. Canceling
   first-run setup removes its new template. Menu states distinguish enabled,
   disabled, missing, placeholder, set, and unset values without exposing

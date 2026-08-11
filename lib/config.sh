@@ -562,7 +562,7 @@ config_tui_scope_has_key() {
   return 1
 }
 
-# config_tui_parent MENU — the Back/Esc destination for nested menus.
+# config_tui_parent MENU — the Back-button destination for nested menus.
 config_tui_parent() {
   case "$1" in
     mcp_bitbucket|mcp_jira|mcp_gitlab|mcp_jfrog|mcp_confluence|mcp_mfiles)
@@ -607,9 +607,10 @@ _restore_tui_trap() {
 # The top-level menu keeps required settings visible and links to focused
 # submenus for everything optional. It uses Select / Save & Exit; Enter and
 # Select open the highlighted field or submenu, and Discard & Exit is the
-# final row. Nested menus use Select / Back, with Esc also returning one
-# level. Field dialogs use Save/Back, and only Save/Enable/Disable changes the
-# stage.
+# final row. Nested menus use Select / Back. Esc and Ctrl+C discard the whole
+# staged session from every menu; they cannot be assigned different actions
+# because Whiptail reports both through the same cancellation path. Field
+# dialogs use Save/Back, and only Save/Enable/Disable changes the stage.
 #
 # First run uses wizard_keys() (the same intentionally smaller scope as the
 # linear wizard); normal --reconfigure uses every editable_schema_keys() key.
@@ -706,23 +707,23 @@ run_tui_reconfigure() {
         config_tui_has_bucket mcp_confluence "${keys[@]}" && menu_args+=(Confluence "Configure Confluence connection")
         config_tui_has_bucket mcp_mfiles "${keys[@]}" && menu_args+=(M-Files "Configure M-Files connection")
         menu_title="OpenCode Launcher — MCP integrations"
-        menu_prompt="Choose an integration. Back or Esc returns to the main configuration menu."
+        menu_prompt="Choose an integration. Back returns to the main menu; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       git)
         menu_title="OpenCode Launcher — Git & repository"
-        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        menu_prompt="Choose a setting to edit. Back returns to the main menu; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       safety)
         menu_title="OpenCode Launcher — Safety & permissions"
-        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        menu_prompt="Choose a setting to edit. Back returns to the main menu; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       user)
         menu_title="OpenCode Launcher — User layer & plugins"
-        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        menu_prompt="Choose a setting to edit. Back returns to the main menu; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       advanced)
         menu_title="OpenCode Launcher — Advanced"
-        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        menu_prompt="Choose a setting to edit. Back returns to the main menu; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       mcp_bitbucket|mcp_jira|mcp_gitlab|mcp_jfrog|mcp_confluence|mcp_mfiles)
         case "$menu_level" in
@@ -733,7 +734,7 @@ run_tui_reconfigure() {
           mcp_confluence) menu_title="OpenCode Launcher — Confluence" ;;
           mcp_mfiles) menu_title="OpenCode Launcher — M-Files" ;;
         esac
-        menu_prompt="Choose a setting to edit. Back or Esc returns to MCP integrations."
+        menu_prompt="Choose a setting to edit. Back returns to MCP integrations; Esc or Ctrl+C discards all staged changes and exits."
         ;;
       *)
         warn "unknown configuration menu level: $menu_level"
@@ -766,7 +767,7 @@ run_tui_reconfigure() {
     if [ "$menu_level" != top ]; then
       case "$menu_rc" in
         0) ;;
-        1|255)
+        1)
           menu_level="$(config_tui_parent "$menu_level")"
           continue
           ;;

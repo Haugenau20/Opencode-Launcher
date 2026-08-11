@@ -1902,7 +1902,7 @@ older"
           return 1
           ;;
         *)
-          return 255
+          return 1
           ;;
       esac
     }
@@ -1923,7 +1923,34 @@ older"
   grep -qxF -- 'GITLAB_USER' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
   grep -qxF -- 'GITLAB_PAT' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
   ! grep -qxF -- 'JIRA_BASE_URL' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
-  grep -qF -- 'Back or Esc returns to MCP integrations' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  grep -qF -- 'Back returns to MCP integrations' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  grep -qF -- 'Esc or Ctrl+C discards all staged changes and exits' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+}
+
+@test "run_tui_reconfigure: Esc or Ctrl-C status from a submenu discards the session" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  printf '0' > "$BATS_TEST_TMPDIR/top-menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      count="$(cat "'"$BATS_TEST_TMPDIR"'/top-menu-count")"
+      printf "%s" "$((count + 1))" > "'"$BATS_TEST_TMPDIR"'/top-menu-count"
+      if [ "$count" -eq 0 ]; then
+        printf "MCP integrations"
+        return 0
+      fi
+      return 99
+    }
+    tui_menu() { return 255; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s|%s|%s" "$rc" "$TUI_CONFIG_CHANGED" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|0|discarded" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/top-menu-count")" = 1 ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
 }
 
 @test "run_tui_reconfigure: Back from a text field does not write" {

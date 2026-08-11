@@ -148,14 +148,16 @@ look (`dialog` remains the fallback). The main menu keeps the required LLM and
 image-registry settings visible, with optional settings organized under MCP,
 Git/repository, safety/permissions, user-layer/plugins, and advanced submenus.
 Press Enter or choose **Select** to open the highlighted setting or submenu.
-Submenu **Back** or Esc returns one level; field **Save**, **Enable**, and
-**Disable** actions are staged, while field-level **Back** or Esc leaves that
-field unchanged. The main menu's right-hand **Save & Exit** button commits the
-whole session. Select its final **Discard & Exit** row, press main-menu Esc, or
-press Ctrl-C to leave the existing `.env` untouched; canceling first-run setup
-removes its new template too. Set `OC_CONFIG_TUI=0` to choose the unchanged
-plain-text path explicitly. Piped input continues to walk every wizard prompt
-for scripting compatibility.
+Submenu **Back** returns one level; field **Save**, **Enable**, and **Disable**
+actions are staged, while field-level **Back** leaves that field unchanged. The
+main menu's right-hand **Save & Exit** button commits the whole session. Select
+its final **Discard & Exit** row, or press Esc or Ctrl-C from any configuration
+menu, to leave the existing `.env` untouched; canceling first-run setup removes
+its new template too. Whiptail reports Esc and Ctrl-C through the same
+cancellation path, so only the visible **Back** button navigates without
+discarding. Set `OC_CONFIG_TUI=0` to choose the unchanged plain-text path
+explicitly. Piped input continues to walk every wizard prompt for scripting
+compatibility.
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
