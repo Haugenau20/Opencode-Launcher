@@ -55,6 +55,20 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
+## [Unreleased]
+
+### Changed
+
+- Clarified the ncurses configuration workflow while retaining Whiptail's
+  original appearance: Enter or **Select** edits the highlighted setting, the
+  right-hand **Save & Exit** button commits all staged edits, and the final
+  **Discard & Exit** row, main-menu Esc, or Ctrl-C discards them. Field dialogs
+  use **Save/Back** and booleans use **Enable/Disable**. Canceling first-run
+  setup removes its new template. Menu states distinguish enabled, disabled,
+  missing, placeholder, set, and unset values without exposing secrets.
+  Whiptail is preferred when both ncurses backends are installed; `dialog`
+  remains the fallback.
+
 ## [0.16.0] — 2026-08-10
 
 **Action required:** none to keep working as before. To give a project its own

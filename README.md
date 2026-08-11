@@ -100,8 +100,9 @@ cd opencode-launcher
 
 On the **first run**, `start.sh` copies `.env.example` → `.env` and prompts for
 the only required fields — your LLM endpoint/key and Artifactory path. At a real
-terminal it's a small ncurses editor (`whiptail`/`dialog`); piped input or CI
-gets a plain-text wizard. The service integrations (Bitbucket, Jira, GitLab,
+terminal with `whiptail` or `dialog` installed it's a small ncurses editor;
+piped input or CI gets a plain-text wizard. The service integrations
+(Bitbucket, Jira, GitLab,
 JFrog, Confluence, M-Files, git identity) are optional — press Enter to skip.
 M-Files needs a minted token rather than a pasted one — the prompt offers to
 mint it for you (see
@@ -130,7 +131,7 @@ The default is "attach the TUI, then tear down on exit." These change that:
 | `--down`/`--stop` `<repo>` | Tear down a repo's stack the clean way (re-derives the same project `docker compose down` would). |
 | `--logs <repo>` | Follow the running stack's logs (Ctrl-C detaches). |
 | `--shell <repo>` | Open a shell in the running container as the `dev` user at `/workspace` (falls back to `sh`). |
-| `--reconfigure` | Re-run the secrets wizard, pre-filled with your current `.env` (Enter keeps each value). |
+| `--reconfigure` | Edit `.env` settings interactively; the ncurses menu stages edits until you explicitly save or discard the session. |
 | `--config` | Read-only dashboard of every `.env` setting (secrets shown as set/unset only). |
 | `--show-allowlist [<repo>]` | Print what egress the agent is allowed — see [Egress allowlist](#egress-allowlist). |
 | `--mfiles-token` | Mint an M-Files auth token from your vault credentials and write it straight into `.env` — see [Service integrations](docs/CUSTOMIZING.md#m-files-authentication-token). |
@@ -142,6 +143,16 @@ never pull an image, attach the TUI, or need your LLM key, and they no-op
 gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.
 
+On a real terminal, `whiptail` is preferred to preserve the launcher's original
+look (`dialog` remains the fallback). Press Enter or choose **Select** to edit
+the highlighted setting. Field **Save**, **Enable**, and **Disable** actions are
+staged; **Back** or field-level Esc returns without changing that field. The
+right-hand **Save & Exit** button commits the whole session. Select the final
+**Discard & Exit** row, press main-menu Esc, or press Ctrl-C to leave the
+existing `.env` untouched; canceling first-run setup removes its new template
+too. Set `OC_CONFIG_TUI=0` to choose the plain-text path explicitly. Piped input
+continues to walk every wizard prompt for scripting compatibility.
+
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit
 ./start.sh --detach  ~/code/your-repo    # headless, never attach the TUI
@@ -150,7 +161,7 @@ per-flag detail.
 ./start.sh --down    ~/code/your-repo    # tear that stack down
 ./start.sh --logs    ~/code/your-repo    # tail the running stack's logs
 ./start.sh --shell   ~/code/your-repo    # shell into the running container
-./start.sh --reconfigure                 # edit your secrets interactively
+./start.sh --reconfigure                 # edit configuration interactively
 ./start.sh --show-allowlist              # see exactly what egress is permitted
 ```
 

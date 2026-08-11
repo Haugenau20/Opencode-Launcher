@@ -1468,16 +1468,16 @@ older"
   [[ "$(cat "$BATS_TEST_TMPDIR/tui_menu-argv")" != *NONE* ]]
 }
 
-@test "mfiles_prompt_domain_tui: Cancel/Esc (empty tui_menu result) defaults to domain 1" {
+@test "mfiles_prompt_domain_tui: Back returns without selecting a default domain" {
   run bash -c '
     export MFILES_DOMAIN_1="ACME-CORP"
     export MFILES_DOMAIN_2="ACME-CONTRACTORS"
     source "'"$REPO_ROOT"'/start.sh"
-    tui_menu() { printf ""; }
+    tui_menu() { return 1; }
     mfiles_prompt_domain_tui "Test Title"
   '
-  [ "$status" -eq 0 ]
-  [ "$output" = "ACME-CORP" ]
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
 }
 
 # --- mfiles_tui_mint (ncurses mint flow) -------------------------------------
@@ -1604,7 +1604,7 @@ older"
 # the pure detection/gating logic (tui_backend, have_tui), never an actual
 # interactive ncurses screen, since bats has no tty.
 
-@test "tui_backend: echoes whiptail when it is on PATH" {
+@test "tui_backend: prefers whiptail when both whiptail and dialog are on PATH" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
@@ -1615,9 +1615,10 @@ older"
   local bin="$BATS_TEST_TMPDIR/dialog-only-bin"
   mkdir -p "$bin"
   cp "$FAKE_BIN/dialog" "$bin/dialog"
+  cp "$(command -v dirname)" "$bin/dirname"
   chmod +x "$bin/dialog"
-  run env PATH="$bin:/usr/bin:/bin" \
-    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  run env PATH="$bin" \
+    /bin/bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
   [ "$output" = "dialog" ]
 }
@@ -1629,13 +1630,13 @@ older"
   [ -z "$output" ]
 }
 
-@test "have_tui: false when not a tty, even with whiptail present (bats is never a tty)" {
+@test "have_tui: false when not a tty, even with a backend present (bats is never a tty)" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
 }
 
-@test "have_tui: false when OC_CONFIG_TUI=0, even with whiptail present" {
+@test "have_tui: false when OC_CONFIG_TUI=0, even with a backend present" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" OC_CONFIG_TUI=0 \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
@@ -1647,46 +1648,104 @@ older"
   [ "$status" -ne 0 ]
 }
 
-# --- tui_* wrappers (Cancel/Esc safety) --------------------------------------
+# --- tui_* wrappers (button status + labels) ---------------------------------
 # Stub the backend directly (rather than relying on tui_backend's PATH probe)
 # so these stay lightweight and don't depend on which fake binary won the
-# PATH race. Each wrapper must survive a non-zero "Cancel" exit under
-# set -euo pipefail without killing the caller.
+# PATH race. Callers handle the preserved Back/Esc status under set -e.
 
-@test "tui_input: a Cancel (non-zero) exit falls back to the default, not a script error" {
+@test "tui_input: Back returns 1 and emits no fallback value" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" "fake-cancel-backend"; }
     fake-cancel-backend() { return 1; }
     set -euo pipefail
-    tui_input "Title" "Label" "the-default"
+    rc=0
+    value="$(tui_input "Title" "Label" "the-default")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
   '
   [ "$status" -eq 0 ]
-  [ "$output" = "the-default" ]
+  [ "$output" = "rc=1 value=" ]
 }
 
-@test "tui_password: a Cancel (non-zero) exit yields empty, not a script error" {
+@test "tui_password: Back returns 1 and emits no value" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" "fake-cancel-backend"; }
     fake-cancel-backend() { return 1; }
     set -euo pipefail
-    tui_password "Title" "Label"
+    rc=0
+    value="$(tui_password "Title" "Label")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
   '
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "rc=1 value=" ]
 }
 
-@test "tui_menu: a Cancel (non-zero) exit yields empty, not a script error" {
+@test "tui_menu: Back returns 1 and emits no selected tag" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" "fake-cancel-backend"; }
     fake-cancel-backend() { return 1; }
     set -euo pipefail
-    tui_menu "Title" "Prompt" KEY1 "Item 1" DONE "Done"
+    rc=0
+    value="$(tui_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
   '
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "rc=1 value=" ]
+}
+
+@test "generic whiptail widgets receive Save/Back, Select/Back and custom boolean labels" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" whiptail; }
+    whiptail() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/whiptail-argv"; printf selected >&2; }
+    tui_input "Title" "Label" "Default" >/dev/null
+    tui_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
+    tui_yesno "Title" "Question" Enable Disable >/dev/null
+  '
+  [ "$status" -eq 0 ]
+  grep -qxF -- '--ok-button' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Save' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- '--cancel-button' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Back' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- '--yes-button' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Enable' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- '--no-button' "$BATS_TEST_TMPDIR/whiptail-argv"
+  grep -qxF -- 'Disable' "$BATS_TEST_TMPDIR/whiptail-argv"
+}
+
+@test "whiptail configuration menu has Select left and Save & Exit right" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" whiptail; }
+    whiptail() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/config-menu-argv"; printf KEY1 >&2; }
+    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")"
+    printf "%s" "$value"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = KEY1 ]
+  grep -qxF -- '--ok-button' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- '--cancel-button' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- 'Save & Exit' "$BATS_TEST_TMPDIR/config-menu-argv"
+  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/config-menu-argv"
+  ! grep -qxF -- '--extra-button' "$BATS_TEST_TMPDIR/config-menu-argv"
+}
+
+@test "configuration menu maps Save & Exit to status 1 without a row value" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" fake-save-backend; }
+    fake-save-backend() { printf ignored-row >&2; return 1; }
+    set -euo pipefail
+    rc=0
+    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "rc=1 value=" ]
 }
 
 @test "tui_yesno: propagates Yes (0) and No (1) without tripping set -e" {
@@ -1722,6 +1781,257 @@ older"
   '
   [ "$status" -eq 0 ]
   [[ "$output" == *"SURVIVED"* ]]
+}
+
+# --- run_tui_reconfigure interaction semantics -------------------------------
+
+@test "field_state_text: distinguishes required gaps and boolean state without exposing secrets" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+
+  run field_state_text LLM_API_BASE
+  [ "$output" = "(placeholder — REQUIRED)" ]
+
+  run field_state_text LLM_API_KEY
+  [ "$output" = "(missing — REQUIRED)" ]
+
+  set_env ALLOW_REMOTE_GIT 1
+  run field_state_text ALLOW_REMOTE_GIT
+  [ "$output" = "(enabled)" ]
+
+  set_env ALLOW_REMOTE_GIT 0
+  run field_state_text ALLOW_REMOTE_GIT
+  [ "$output" = "(disabled)" ]
+
+  set_env JIRA_PAT super-secret-value
+  run field_state_text JIRA_PAT
+  [ "$output" = "(set)" ]
+  [[ "$output" != *"super-secret-value"* ]]
+}
+
+@test "run_tui_reconfigure: first-run menu has a discard row, uses wizard scope, and gates Save & Exit" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/first-run-menu-argv"
+      count="$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")"
+      printf "%s" "$((count + 1))" > "'"$BATS_TEST_TMPDIR"'/menu-count"
+      return 1
+    }
+    tui_msgbox() {
+      printf "%s" "$2" > "'"$BATS_TEST_TMPDIR"'/first-run-gate-message"
+      set_env LLM_API_BASE https://llm.test/v1
+      set_env LLM_API_KEY sk-test
+      set_env IMAGE_REGISTRY registry.test/opencode
+    }
+    run_tui_reconfigure --first-run
+  '
+  [ "$status" -eq 0 ]
+  grep -qxF -- 'LLM_API_BASE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'IMAGE_REGISTRY' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Discard all staged changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'Enter or Select to edit it' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
+  [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]
+  [ "$(get_env LLM_API_KEY)" = sk-test ]
+}
+
+@test "run_tui_reconfigure: Back from a text field does not write" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env GIT_USER_NAME "Old Name"
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf GIT_USER_NAME
+        return 0
+      fi
+      printf "Discard & Exit"
+      return 0
+    }
+    tui_input() { printf "New Name"; return 1; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
+  '
+  [ "$status" -eq 0 ]
+  [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
+}
+
+@test "run_tui_reconfigure: Esc from a boolean leaves its value unchanged" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env ALLOW_REMOTE_GIT 1
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf ALLOW_REMOTE_GIT
+        return 0
+      fi
+      printf "Discard & Exit"
+      return 0
+    }
+    tui_yesno() { return 255; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
+  '
+  [ "$status" -eq 0 ]
+  [ "$(get_env ALLOW_REMOTE_GIT)" = 1 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
+}
+
+@test "run_tui_reconfigure: explicit Disable writes 0" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env ALLOW_REMOTE_GIT 1
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf ALLOW_REMOTE_GIT
+        return 0
+      fi
+      return 1
+    }
+    tui_yesno() { return 1; }
+    run_tui_reconfigure
+    printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$TUI_CONFIG_RESULT" > "'"$BATS_TEST_TMPDIR"'/tui-result"
+  '
+  [ "$status" -eq 0 ]
+  [ "$(get_env ALLOW_REMOTE_GIT)" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 1 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-result")" = saved ]
+}
+
+@test "run_tui_reconfigure: Discard & Exit rolls back a confirmed field edit" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env GIT_USER_NAME "Old Name"
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf GIT_USER_NAME
+        return 0
+      fi
+      printf "Discard & Exit"
+      return 0
+    }
+    tui_input() { printf "New Name"; return 0; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s|%s|%s" "$rc" "$TUI_CONFIG_CHANGED" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|0|discarded" ]
+  [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
+}
+
+@test "run_tui_reconfigure: discarding a new configuration removes the template" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() { return 255; }
+    rc=0
+    run_tui_reconfigure --first-run --new-file || rc=$?
+    printf "%s|%s" "$rc" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|discarded" ]
+  [ ! -e "$ENV_FILE" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
+}
+
+@test "run_tui_reconfigure: Ctrl-C cleans up the stage and preserves an existing configuration" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env GIT_USER_NAME "Old Name"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() { kill -INT "$$"; return 255; }
+    run_tui_reconfigure
+  '
+  [ "$status" -ne 0 ]
+  [ "$(get_env GIT_USER_NAME)" = "Old Name" ]
+  ! compgen -G "${ENV_FILE}.staged.*" >/dev/null
+}
+
+@test "run_tui_reconfigure: Back keeps a secret and confirmed Clear removes it without printing it" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  set_env JIRA_PAT super-secret-value
+
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf JIRA_PAT
+        return 0
+      fi
+      printf "Discard & Exit"
+      return 0
+    }
+    tui_password() { return 1; }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+    printf "%s" "$rc" > "'"$BATS_TEST_TMPDIR"'/tui-rc"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-value"* ]]
+  [ "$(get_env JIRA_PAT)" = super-secret-value ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-rc")" = 2 ]
+
+  printf '0' > "$BATS_TEST_TMPDIR/menu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      if [ "$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")" = 0 ]; then
+        printf 1 > "'"$BATS_TEST_TMPDIR"'/menu-count"
+        printf JIRA_PAT
+        return 0
+      fi
+      return 1
+    }
+    tui_password() { printf ""; return 0; }
+    tui_yesno() { return 0; }
+    run_tui_reconfigure
+    printf "%s" "$TUI_CONFIG_CHANGED" > "'"$BATS_TEST_TMPDIR"'/tui-changed"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"super-secret-value"* ]]
+  [ -z "$(get_env JIRA_PAT)" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tui-changed")" = 1 ]
 }
 
 # --- required_keys / field_satisfied / unmet_required (first-run gate) ------
