@@ -490,6 +490,90 @@ field_state_text() {
   esac
 }
 
+# config_tui_bucket KEY — identify where an editable key appears in the
+# ncurses configuration hierarchy. Required settings deliberately bypass all
+# submenus so first-run gaps are visible immediately. Keep a conservative
+# advanced fallback so a newly added editable schema key can never disappear
+# from the UI while the explicit grouping catches up.
+config_tui_bucket() {
+  local key="$1"
+  if field_is_required "$key"; then
+    printf '%s' core
+    return 0
+  fi
+
+  case "$key" in
+    BITBUCKET_BASE_URL|BITBUCKET_USER|BITBUCKET_PAT)
+      printf '%s' mcp_bitbucket
+      ;;
+    JIRA_BASE_URL|JIRA_PAT)
+      printf '%s' mcp_jira
+      ;;
+    GITLAB_BASE_URL|GITLAB_USER|GITLAB_PAT)
+      printf '%s' mcp_gitlab
+      ;;
+    JFROG_BASE_URL|JFROG_PAT)
+      printf '%s' mcp_jfrog
+      ;;
+    CONFLUENCE_BASE_URL|CONFLUENCE_PAT)
+      printf '%s' mcp_confluence
+      ;;
+    MFILES_BASE_URL|MFILES_PAT)
+      printf '%s' mcp_mfiles
+      ;;
+    GIT_USER_NAME|GIT_USER_EMAIL|ALLOW_REMOTE_GIT|GIT_REMOTE_ALLOWLIST)
+      printf '%s' git
+      ;;
+    ALLOW_CONFLUENCE_WRITE|ALLOW_GITLAB_WRITE|GITLAB_WRITE_PROJECTS|DISABLE_BITBUCKET_MCP|DISABLE_JIRA_MCP|DISABLE_GITLAB_MCP|DISABLE_JFROG_MCP|DISABLE_CONFLUENCE_MCP|DISABLE_MFILES_MCP)
+      printf '%s' safety
+      ;;
+    USER_LAYER_PATH|ENABLED_PLUGINS)
+      printf '%s' user
+      ;;
+    BITBUCKET_LEGACY_URL|GITLAB_QUEUE_LABEL_PREFIX)
+      printf '%s' advanced
+      ;;
+    *)
+      printf '%s' advanced
+      ;;
+  esac
+}
+
+# config_tui_has_bucket BUCKET KEY... — true when the current editor scope
+# contains at least one key for BUCKET. First-run uses a smaller key scope, so
+# this prevents empty submenu rows from appearing there.
+config_tui_has_bucket() {
+  local wanted="$1" key
+  shift
+  for key in "$@"; do
+    [ "$(config_tui_bucket "$key")" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+# config_tui_scope_has_key KEY KEY... — true when KEY is available in the
+# active first-run or reconfiguration scope.
+config_tui_scope_has_key() {
+  local wanted="$1" key
+  shift
+  for key in "$@"; do
+    [ "$key" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+# config_tui_parent MENU — the Back/Esc destination for nested menus.
+config_tui_parent() {
+  case "$1" in
+    mcp_bitbucket|mcp_jira|mcp_gitlab|mcp_jfrog|mcp_confluence|mcp_mfiles)
+      printf '%s' mcp
+      ;;
+    *)
+      printf '%s' top
+      ;;
+  esac
+}
+
 # config_set_if_changed KEY VALUE — write only a real change. Return 0 when a
 # write happened and 1 when VALUE already matched the current configuration.
 config_set_if_changed() {
@@ -520,9 +604,12 @@ _restore_tui_trap() {
 # just-created template on discard/interruption, so canceled first-run setup
 # never leaves a partial configuration behind.
 #
-# The top-level menu uses Select / Save & Exit. Enter and Select edit the
-# highlighted setting; Discard & Exit is the final row. Field dialogs use
-# Save/Back, and only Save/Enable/Disable changes the stage.
+# The top-level menu keeps required settings visible and links to focused
+# submenus for everything optional. It uses Select / Save & Exit; Enter and
+# Select open the highlighted field or submenu, and Discard & Exit is the
+# final row. Nested menus use Select / Back, with Esc also returning one
+# level. Field dialogs use Save/Back, and only Save/Enable/Disable changes the
+# stage.
 #
 # First run uses wizard_keys() (the same intentionally smaller scope as the
 # linear wizard); normal --reconfigure uses every editable_schema_keys() key.
@@ -574,21 +661,118 @@ run_tui_reconfigure() {
     done < <(editable_schema_keys)
   fi
 
+  local menu_level=top
   while true; do
-    local menu_args=() k label state desc
-    for k in "${keys[@]}"; do
-      label="$(field_label "$k")"
-      state="$(field_state_text "$k")"
-      desc="$label $state"
-      menu_args+=("$k" "$desc")
-    done
-    menu_args+=("Discard & Exit" "Discard all staged changes and exit")
+    local menu_args=() k label state menu_title menu_prompt
+    case "$menu_level" in
+      top)
+        # Required keys are always first, independent of their schema/wizard
+        # ordering, so the main screen doubles as a concise readiness view.
+        while IFS= read -r k; do
+          [ -n "$k" ] || continue
+          if config_tui_scope_has_key "$k" "${keys[@]}"; then
+            label="$(field_label "$k")"
+            state="$(field_state_text "$k")"
+            menu_args+=("$k" "$label $state")
+          fi
+        done < <(required_keys)
+
+        if config_tui_has_bucket mcp_bitbucket "${keys[@]}" ||
+           config_tui_has_bucket mcp_jira "${keys[@]}" ||
+           config_tui_has_bucket mcp_gitlab "${keys[@]}" ||
+           config_tui_has_bucket mcp_jfrog "${keys[@]}" ||
+           config_tui_has_bucket mcp_confluence "${keys[@]}" ||
+           config_tui_has_bucket mcp_mfiles "${keys[@]}"; then
+          menu_args+=("MCP integrations" "Bitbucket, Jira, GitLab, JFrog, Confluence, and M-Files")
+        fi
+        config_tui_has_bucket git "${keys[@]}" &&
+          menu_args+=("Git & repository" "Git identity, remote access, and allowlist")
+        config_tui_has_bucket safety "${keys[@]}" &&
+          menu_args+=("Safety & permissions" "Write permissions and MCP enable/disable controls")
+        config_tui_has_bucket user "${keys[@]}" &&
+          menu_args+=("User layer & plugins" "Personal layer and plugin configuration")
+        config_tui_has_bucket advanced "${keys[@]}" &&
+          menu_args+=("Advanced" "Legacy and specialized settings")
+        menu_args+=("Discard & Exit" "Discard all staged changes and exit")
+
+        menu_title="OpenCode Launcher — configuration"
+        menu_prompt="Required settings are shown here. Enter or Select opens a setting or submenu; Save & Exit commits all staged changes."
+        ;;
+      mcp)
+        config_tui_has_bucket mcp_bitbucket "${keys[@]}" && menu_args+=(Bitbucket "Configure Bitbucket connection")
+        config_tui_has_bucket mcp_jira "${keys[@]}" && menu_args+=(Jira "Configure Jira connection")
+        config_tui_has_bucket mcp_gitlab "${keys[@]}" && menu_args+=(GitLab "Configure GitLab connection")
+        config_tui_has_bucket mcp_jfrog "${keys[@]}" && menu_args+=(JFrog "Configure JFrog connection")
+        config_tui_has_bucket mcp_confluence "${keys[@]}" && menu_args+=(Confluence "Configure Confluence connection")
+        config_tui_has_bucket mcp_mfiles "${keys[@]}" && menu_args+=(M-Files "Configure M-Files connection")
+        menu_title="OpenCode Launcher — MCP integrations"
+        menu_prompt="Choose an integration. Back or Esc returns to the main configuration menu."
+        ;;
+      git)
+        menu_title="OpenCode Launcher — Git & repository"
+        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        ;;
+      safety)
+        menu_title="OpenCode Launcher — Safety & permissions"
+        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        ;;
+      user)
+        menu_title="OpenCode Launcher — User layer & plugins"
+        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        ;;
+      advanced)
+        menu_title="OpenCode Launcher — Advanced"
+        menu_prompt="Choose a setting to edit. Back or Esc returns to the main configuration menu."
+        ;;
+      mcp_bitbucket|mcp_jira|mcp_gitlab|mcp_jfrog|mcp_confluence|mcp_mfiles)
+        case "$menu_level" in
+          mcp_bitbucket) menu_title="OpenCode Launcher — Bitbucket" ;;
+          mcp_jira) menu_title="OpenCode Launcher — Jira" ;;
+          mcp_gitlab) menu_title="OpenCode Launcher — GitLab" ;;
+          mcp_jfrog) menu_title="OpenCode Launcher — JFrog" ;;
+          mcp_confluence) menu_title="OpenCode Launcher — Confluence" ;;
+          mcp_mfiles) menu_title="OpenCode Launcher — M-Files" ;;
+        esac
+        menu_prompt="Choose a setting to edit. Back or Esc returns to MCP integrations."
+        ;;
+      *)
+        warn "unknown configuration menu level: $menu_level"
+        menu_level=top
+        continue
+        ;;
+    esac
+
+    # Direct setting submenus are populated from the active editor scope.
+    # The top and MCP picker already built their own rows above.
+    case "$menu_level" in
+      top|mcp) ;;
+      *)
+        for k in "${keys[@]}"; do
+          [ "$(config_tui_bucket "$k")" = "$menu_level" ] || continue
+          label="$(field_label "$k")"
+          state="$(field_state_text "$k")"
+          menu_args+=("$k" "$label $state")
+        done
+        ;;
+    esac
 
     local choice="" menu_rc=0
-    choice="$(tui_config_menu \
-      "OpenCode Launcher — configuration" \
-      "Choose a setting and press Enter or Select to edit it. Save & Exit commits all staged changes." \
-      "${menu_args[@]}")" || menu_rc=$?
+    if [ "$menu_level" = top ]; then
+      choice="$(tui_config_menu "$menu_title" "$menu_prompt" "${menu_args[@]}")" || menu_rc=$?
+    else
+      choice="$(tui_menu "$menu_title" "$menu_prompt" "${menu_args[@]}")" || menu_rc=$?
+    fi
+
+    if [ "$menu_level" != top ]; then
+      case "$menu_rc" in
+        0) ;;
+        1|255)
+          menu_level="$(config_tui_parent "$menu_level")"
+          continue
+          ;;
+        *) ;;
+      esac
+    fi
 
     case "$menu_rc" in
       255)
@@ -646,6 +830,20 @@ run_tui_reconfigure() {
         ;;
       0)
         [ -n "$choice" ] || continue
+
+        case "$choice" in
+          "MCP integrations") menu_level=mcp; continue ;;
+          "Git & repository") menu_level=git; continue ;;
+          "Safety & permissions") menu_level=safety; continue ;;
+          "User layer & plugins") menu_level=user; continue ;;
+          Advanced) menu_level=advanced; continue ;;
+          Bitbucket) menu_level=mcp_bitbucket; continue ;;
+          Jira) menu_level=mcp_jira; continue ;;
+          GitLab) menu_level=mcp_gitlab; continue ;;
+          JFrog) menu_level=mcp_jfrog; continue ;;
+          Confluence) menu_level=mcp_confluence; continue ;;
+          M-Files) menu_level=mcp_mfiles; continue ;;
+        esac
 
         if [ "$choice" = "Discard & Exit" ]; then
           ENV_FILE="$original_env_file"

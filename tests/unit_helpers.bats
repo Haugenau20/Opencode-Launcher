@@ -1808,6 +1808,29 @@ older"
   [[ "$output" != *"super-secret-value"* ]]
 }
 
+@test "config_tui_bucket: keeps required keys at the top and classifies every editable key" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    while IFS= read -r key; do
+      bucket="$(config_tui_bucket "$key")"
+      case "$bucket" in
+        core|mcp_bitbucket|mcp_jira|mcp_gitlab|mcp_jfrog|mcp_confluence|mcp_mfiles|git|safety|user|advanced) ;;
+        *) printf "unclassified:%s:%s\n" "$key" "$bucket"; exit 1 ;;
+      esac
+      printf "%s=%s\n" "$key" "$bucket"
+    done < <(editable_schema_keys)
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LLM_API_BASE=core"* ]]
+  [[ "$output" == *"IMAGE_REGISTRY=core"* ]]
+  [[ "$output" == *"GITLAB_PAT=mcp_gitlab"* ]]
+  [[ "$output" == *"ALLOW_REMOTE_GIT=git"* ]]
+  [[ "$output" == *"DISABLE_JIRA_MCP=safety"* ]]
+  [[ "$output" == *"ENABLED_PLUGINS=user"* ]]
+  [[ "$output" == *"BITBUCKET_LEGACY_URL=advanced"* ]]
+  [[ "$output" != *"unclassified:"* ]]
+}
+
 @test "run_tui_reconfigure: first-run menu has a discard row, uses wizard scope, and gates Save & Exit" {
   cp "$REPO_ROOT/.env.example" "$ENV_FILE"
   printf '0' > "$BATS_TEST_TMPDIR/menu-count"
@@ -1831,16 +1854,76 @@ older"
   [ "$status" -eq 0 ]
   grep -qxF -- 'LLM_API_BASE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qxF -- 'IMAGE_REGISTRY' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'MCP integrations' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Git & repository' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'User layer & plugins' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Advanced' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'Safety & permissions' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  ! grep -qxF -- 'BITBUCKET_BASE_URL' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qxF -- 'Discard all staged changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qF -- 'Enter or Select to edit it' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'Required settings are shown here' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
   [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]
   [ "$(get_env LLM_API_KEY)" = sk-test ]
+}
+
+@test "run_tui_reconfigure: MCP navigation scopes service fields and Back returns one level" {
+  cp "$REPO_ROOT/.env.example" "$ENV_FILE"
+  printf '0' > "$BATS_TEST_TMPDIR/top-menu-count"
+  printf '0' > "$BATS_TEST_TMPDIR/submenu-count"
+  run bash -c '
+    export ENV_FILE="'"$ENV_FILE"'"
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_config_menu() {
+      top_count="$(cat "'"$BATS_TEST_TMPDIR"'/top-menu-count")"
+      printf "%s" "$((top_count + 1))" > "'"$BATS_TEST_TMPDIR"'/top-menu-count"
+      if [ "$top_count" -eq 0 ]; then
+        printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/hierarchy-top-argv"
+        printf "MCP integrations"
+      else
+        printf "Discard & Exit"
+      fi
+    }
+    tui_menu() {
+      sub_count="$(cat "'"$BATS_TEST_TMPDIR"'/submenu-count")"
+      printf "%s" "$((sub_count + 1))" > "'"$BATS_TEST_TMPDIR"'/submenu-count"
+      case "$sub_count" in
+        0)
+          printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/hierarchy-mcp-argv"
+          printf GitLab
+          ;;
+        1)
+          printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/hierarchy-gitlab-argv"
+          return 1
+          ;;
+        *)
+          return 255
+          ;;
+      esac
+    }
+    rc=0
+    run_tui_reconfigure || rc=$?
+    printf "%s|%s" "$rc" "$TUI_CONFIG_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "2|discarded" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/top-menu-count")" = 2 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/submenu-count")" = 3 ]
+  grep -qxF -- 'LLM_API_BASE' "$BATS_TEST_TMPDIR/hierarchy-top-argv"
+  grep -qxF -- 'MCP integrations' "$BATS_TEST_TMPDIR/hierarchy-top-argv"
+  ! grep -qxF -- 'GITLAB_BASE_URL' "$BATS_TEST_TMPDIR/hierarchy-top-argv"
+  grep -qxF -- 'GitLab' "$BATS_TEST_TMPDIR/hierarchy-mcp-argv"
+  ! grep -qxF -- 'GITLAB_BASE_URL' "$BATS_TEST_TMPDIR/hierarchy-mcp-argv"
+  grep -qxF -- 'GITLAB_BASE_URL' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  grep -qxF -- 'GITLAB_USER' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  grep -qxF -- 'GITLAB_PAT' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  ! grep -qxF -- 'JIRA_BASE_URL' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
+  grep -qF -- 'Back or Esc returns to MCP integrations' "$BATS_TEST_TMPDIR/hierarchy-gitlab-argv"
 }
 
 @test "run_tui_reconfigure: Back from a text field does not write" {

@@ -144,14 +144,18 @@ gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.
 
 On a real terminal, `whiptail` is preferred to preserve the launcher's original
-look (`dialog` remains the fallback). Press Enter or choose **Select** to edit
-the highlighted setting. Field **Save**, **Enable**, and **Disable** actions are
-staged; **Back** or field-level Esc returns without changing that field. The
-right-hand **Save & Exit** button commits the whole session. Select the final
-**Discard & Exit** row, press main-menu Esc, or press Ctrl-C to leave the
-existing `.env` untouched; canceling first-run setup removes its new template
-too. Set `OC_CONFIG_TUI=0` to choose the plain-text path explicitly. Piped input
-continues to walk every wizard prompt for scripting compatibility.
+look (`dialog` remains the fallback). The main menu keeps the required LLM and
+image-registry settings visible, with optional settings organized under MCP,
+Git/repository, safety/permissions, user-layer/plugins, and advanced submenus.
+Press Enter or choose **Select** to open the highlighted setting or submenu.
+Submenu **Back** or Esc returns one level; field **Save**, **Enable**, and
+**Disable** actions are staged, while field-level **Back** or Esc leaves that
+field unchanged. The main menu's right-hand **Save & Exit** button commits the
+whole session. Select its final **Discard & Exit** row, press main-menu Esc, or
+press Ctrl-C to leave the existing `.env` untouched; canceling first-run setup
+removes its new template too. Set `OC_CONFIG_TUI=0` to choose the unchanged
+plain-text path explicitly. Piped input continues to walk every wizard prompt
+for scripting compatibility.
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit

@@ -66,12 +66,14 @@ needed):
              `dev` user at /workspace (falls back to sh). No-op if not running.
   --reconfigure
              Edit .env settings interactively. On a real terminal, the
-             Whiptail menu uses Select / Save & Exit; Enter also selects the
-             highlighted setting for editing. Field Save/Enable/Disable
-             actions are staged. The final Discard & Exit row, main-menu Esc,
-             or Ctrl-C leaves .env untouched. Dialog is the ncurses fallback;
-             piped input walks every key. OC_CONFIG_TUI=0 forces plain text.
-             Secrets stay masked in every mode.
+             Whiptail main menu shows required settings and groups optional
+             settings into submenus. Enter/Select opens a field or submenu;
+             submenu Back/Esc returns one level. Field Save/Enable/Disable
+             actions are staged. Main-menu Save & Exit commits them; its final
+             Discard & Exit row, Esc, or Ctrl-C leaves .env untouched. Dialog
+             is the ncurses fallback; piped input walks every key.
+             OC_CONFIG_TUI=0 forces plain text. Secrets stay masked in every
+             mode.
   --config   Print a read-only dashboard of every .env setting, grouped by
              section. Secrets show as set/unset only. Edit with --reconfigure.
   --show-allowlist
