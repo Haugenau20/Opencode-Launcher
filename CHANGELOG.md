@@ -62,9 +62,11 @@ _Changes to the launcher itself._
 - Clarified the ncurses configuration workflow: Enter edits the highlighted
   setting and the main screen has exactly two actions, **Save & Exit** and
   **Discard & Exit**, with no Select/Edit button or synthetic save row. Field
-  dialogs use **Save/Back** and booleans use **Enable/Disable**. Tab moves to
-  the main actions and Ctrl-D activates the focused one. All edits are staged
-  until Save & Exit; discard, main-menu Esc, or Ctrl-C leaves the
+  dialogs use **Save/Back** and booleans use **Enable/Disable**. Tab switches
+  the main action and Ctrl-D activates it. A launcher-owned Dialog theme keeps
+  the prior restrained appearance, prevents host key bindings from changing
+  Enter, and removes the flashing list cursor. All edits are staged until
+  Save & Exit; discard, main-menu Esc, or Ctrl-C leaves the
   existing `.env` untouched, and canceling first-run setup removes its new
   template. Menu states distinguish enabled, disabled, missing, placeholder,
   set, and unset values without exposing secrets. The full-screen editor uses

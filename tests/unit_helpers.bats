@@ -1720,7 +1720,11 @@ older"
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
     tui_backend() { printf "%s" dialog; }
-    dialog() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/dialog-argv"; printf selected >&2; }
+    dialog() {
+      printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/dialog-argv"
+      printf "%s" "$DIALOGRC" > "'"$BATS_TEST_TMPDIR"'/dialog-rc-path"
+      printf selected >&2
+    }
     tui_config_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
   '
   [ "$status" -eq 0 ]
@@ -1730,10 +1734,42 @@ older"
   grep -qxF -- 'Save & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
   grep -qxF -- '--cancel-label' "$BATS_TEST_TMPDIR/dialog-argv"
   grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--visit-items' "$BATS_TEST_TMPDIR/dialog-argv"
+  ! grep -qxF -- '--visit-items' "$BATS_TEST_TMPDIR/dialog-argv"
   ! grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/dialog-argv"
   ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/dialog-argv"
   ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/dialog-argv"
+  [ "$(cat "$BATS_TEST_TMPDIR/dialog-rc-path")" = "$REPO_ROOT/lib/dialogrc" ]
+  grep -qxF -- 'visit_items = OFF' "$REPO_ROOT/lib/dialogrc"
+
+  local title_line menu_line
+  title_line="$(grep -nxF -- '--title' "$BATS_TEST_TMPDIR/dialog-argv" | cut -d: -f1)"
+  menu_line="$(grep -nxF -- '--menu' "$BATS_TEST_TMPDIR/dialog-argv" | cut -d: -f1)"
+  [ "$title_line" -lt "$menu_line" ]
+}
+
+@test "dialog configuration menu ignores a hostile host DIALOGRC" {
+  run env DIALOGRC=/tmp/host-dialogrc bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" dialog; }
+    dialog() { printf "%s" "$DIALOGRC"; }
+    _tui_widget dialog --version
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "$REPO_ROOT/lib/dialogrc" ]
+}
+
+@test "dialog configuration menu returns the highlighted row for Enter status 0" {
+  run bash -c '
+    source "'"$REPO_ROOT"'/start.sh"
+    tui_backend() { printf "%s" dialog; }
+    dialog() { printf KEY1 >&2; return 0; }
+    set -euo pipefail
+    rc=0
+    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
+    printf "rc=%s value=%s" "$rc" "$value"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "rc=0 value=KEY1" ]
 }
 
 @test "dialog configuration menu returns Save & Exit as status 3 without a row value" {
@@ -1836,7 +1872,7 @@ older"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qF -- 'Ctrl-D activates it' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'Ctrl-D activates the focused one' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
   [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]

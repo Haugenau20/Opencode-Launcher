@@ -361,6 +361,19 @@ config_tui_fallback_notice() {
   fi
 }
 
+# _tui_widget BACKEND ARGS... — invoke one ncurses widget. Dialog is always
+# given the launcher's own small rc file so a host ~/.dialogrc cannot change
+# the menu key bindings or re-enable the in-list cursor. Whiptail has no
+# equivalent configuration file and is executed unchanged.
+_tui_widget() {
+  local backend="$1"; shift
+  if [ "$backend" = "dialog" ]; then
+    DIALOGRC="$__OCL_DIR/lib/dialogrc" "$backend" "$@"
+  else
+    "$backend" "$@"
+  fi
+}
+
 # tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT,
 # with explicit Save/Back buttons. Echo the confirmed value and preserve the
 # backend status: 0=Save, 1=Back, 255=Esc. Callers MUST handle the non-zero
@@ -373,7 +386,8 @@ tui_input() {
     whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
     dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
   esac
-  result="$("$backend" "${button_args[@]}" --inputbox "$label" 0 0 "$default" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+    --inputbox "$label" 0 0 "$default" 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
 }
@@ -390,7 +404,8 @@ tui_password() {
     whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
     dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
   esac
-  result="$("$backend" "${button_args[@]}" --passwordbox "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+    --passwordbox "$label" 0 0 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
 }
@@ -406,7 +421,8 @@ tui_yesno() {
     whiptail) button_args=(--yes-button "$yes_label" --no-button "$no_label") ;;
     dialog)   button_args=(--yes-label "$yes_label" --no-label "$no_label") ;;
   esac
-  "$backend" "${button_args[@]}" --yesno "$label" 0 0 --title "$title" 3>&1 1>&2 2>&3
+  _tui_widget "$backend" --title "$title" "${button_args[@]}" \
+    --yesno "$label" 0 0 3>&1 1>&2 2>&3
 }
 
 # _tui_menu_with_labels OK_LABEL CANCEL_LABEL TITLE PROMPT TAG1 ITEM1 ... —
@@ -422,7 +438,8 @@ _tui_menu_with_labels() {
     whiptail) button_args=(--ok-button "$ok_label" --cancel-button "$cancel_label") ;;
     dialog)   button_args=(--ok-label "$ok_label" --cancel-label "$cancel_label") ;;
   esac
-  result="$("$backend" "${button_args[@]}" --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+    --menu "$prompt" 0 0 0 "$@" 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
 }
@@ -435,19 +452,19 @@ tui_menu() { _tui_menu_with_labels Select Back "$@"; }
 # menu. --no-ok keeps Enter as the implicit row-edit action without rendering
 # a redundant button. The Extra and Cancel buttons are the two session-level
 # actions and have distinct return codes: 3=Save & Exit, 1=Discard & Exit,
-# 255=Esc. With --no-ok, dialog reserves Enter for the implicit row action;
-# Tab moves focus to the button row and Ctrl-D activates the focused button.
-# Normalize dialog's configurable exit-code environment variables so callers
-# can rely on those values.
+# 255=Esc. With --no-ok and the launcher's cursor-free Dialog configuration,
+# Enter is the implicit row action; Tab moves focus between the two visible
+# buttons and Ctrl-D activates the focused button. Normalize Dialog's
+# configurable exit codes so callers can rely on those values.
 tui_config_menu() {
   local title="$1" prompt="$2"; shift 2
   local backend rc=0 result
   backend="$(tui_backend)"
   [ "$backend" = "dialog" ] || return 127
   result="$(DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_EXTRA=3 DIALOG_ESC=255 \
-    "$backend" --no-ok --extra-button --extra-label "Save & Exit" \
-      --cancel-label "Discard & Exit" --visit-items \
-      --menu "$prompt" 0 0 0 "$@" --title "$title" 3>&1 1>&2 2>&3)" || rc=$?
+    _tui_widget "$backend" --title "$title" --no-ok --extra-button \
+      --extra-label "Save & Exit" --cancel-label "Discard & Exit" \
+      --menu "$prompt" 0 0 0 "$@" 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
 }
@@ -461,7 +478,8 @@ tui_config_menu() {
 tui_msgbox() {
   local title="$1" text="$2" backend rc=0
   backend="$(tui_backend)"
-  "$backend" --msgbox "$text" 0 0 --title "$title" 3>&1 1>&2 2>&3 || rc=$?
+  _tui_widget "$backend" --title "$title" --msgbox "$text" 0 0 \
+    3>&1 1>&2 2>&3 || rc=$?
   return 0
 }
 
@@ -612,7 +630,7 @@ run_tui_reconfigure() {
     local choice="" menu_rc=0
     choice="$(tui_config_menu \
       "OpenCode Launcher — configuration" \
-      "Enter edits the highlighted setting. Tab moves to an exit action; Ctrl-D activates it. Changes are staged." \
+      "Enter edits the highlighted setting. Tab switches exit actions; Ctrl-D activates the focused one. Changes are staged." \
       "${menu_args[@]}")" || menu_rc=$?
 
     case "$menu_rc" in

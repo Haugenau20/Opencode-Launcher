@@ -150,8 +150,8 @@ staged configuration only when you choose **Save**, **Enable**, or **Disable**;
 **Back** or Esc returns without changing that field. **Save & Exit** commits the
 whole session. **Discard & Exit**, main-menu Esc, or Ctrl-C leaves the existing
 `.env` untouched; canceling first-run setup removes its new template too. For
-keyboard access to the bottom buttons, Tab moves from the list to the button
-row and Ctrl-D activates the focused action (Enter remains the row-edit key).
+keyboard access to the bottom buttons, Tab switches the focused action and
+Ctrl-D activates it (Enter remains the row-edit key).
 
 The smaller `whiptail` implementation cannot separate an Enter-to-edit action
 from its mandatory OK button, so a host with only `whiptail` uses the
