@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 #
 # lib/config.sh — the config subsystem: schema, accessors, the setup wizard,
-# the read-only dashboard, and the optional ncurses dialog editor.
+# the read-only dashboard, and the optional ncurses (whiptail/dialog) editor.
 #
 # Sourced by start.sh (not meant to be run standalone). Depends on the
 # shared low-level helpers start.sh defines before sourcing this file:
@@ -95,7 +95,7 @@ is_secret() { [ "$(field_type "$1")" = "secret" ]; }
 
 # field_help_text KEY — a short, human-readable description (1-3 lines) of
 # what KEY is for, condensed from the comment block above that key in
-# .env.example. Used ONLY by the ncurses dialog editor
+# .env.example. Used ONLY by the ncurses (whiptail/dialog) editor
 # (run_tui_reconfigure below) to show context inside the edit dialog itself —
 # the linear wizard (prompt_one_key) gets this same information from its own
 # hand-written info/warn lines and hint text, and is NOT touched by this
@@ -318,60 +318,31 @@ unmet_required() {
 }
 
 # --- optional ncurses configuration editor ----------------------------------
-# Layer 2 of the config UX: when a real terminal and dialog are available,
-# --reconfigure drives a small ncurses menu instead of the plain-text
-# dashboard+menu (Layer 1) or the linear wizard (Layer 0). dialog is required
-# for this layer because its --no-ok + --extra-button combination is what lets
-# Enter edit a highlighted row while Save & Exit and Discard & Exit remain two
-# independent bottom actions. whiptail cannot represent that interaction, so
-# a whiptail-only host uses the pure-bash fallback rather than showing a
-# misleading Select/Edit button.
+# Layer 2 of the config UX: when a real terminal and whiptail/dialog are
+# available, --reconfigure drives a small ncurses menu instead of the
+# plain-text dashboard+menu (Layer 1) or the linear wizard (Layer 0).
 
-# tui_backend — echo "dialog" or "whiptail", preferring dialog when both are
-# on PATH. whiptail remains supported by the generic field wrappers, but the
-# full-screen configuration editor is enabled only for dialog (see have_tui).
-# Pure detection, no tty required, so this is directly unit-testable.
+# tui_backend — echo "whiptail" or "dialog", preferring whiptail to preserve
+# the launcher's established appearance. Pure detection, no tty required, so
+# this is directly unit-testable.
 tui_backend() {
-  if command -v dialog >/dev/null 2>&1; then
-    printf '%s' "dialog"
-  elif command -v whiptail >/dev/null 2>&1; then
+  if command -v whiptail >/dev/null 2>&1; then
     printf '%s' "whiptail"
+  elif command -v dialog >/dev/null 2>&1; then
+    printf '%s' "dialog"
   fi
 }
 
-# have_tui — return 0 iff the ncurses editor should be used: dialog is
-# installed, stdin AND stdout are a real terminal, and the OC_CONFIG_TUI=0
+# have_tui — return 0 iff an ncurses backend is installed, stdin AND stdout
+# are a real terminal, and the OC_CONFIG_TUI=0
 # escape hatch has not been set. Set OC_CONFIG_TUI=0 to force the pure-bash
-# path even when dialog is present (documented in usage()/README).
+# path even when a backend is present (documented in usage()/README).
 # The tty check is also what keeps this from ever hijacking a piped/CI
 # --reconfigure run (bats included): stdin is never a tty there.
 have_tui() {
   [ "${OC_CONFIG_TUI:-}" = "0" ] && return 1
-  [ "$(tui_backend)" = "dialog" ] || return 1
+  [ -n "$(tui_backend)" ] || return 1
   [ -t 0 ] && [ -t 1 ]
-}
-
-# config_tui_fallback_notice — explain why a host that has whiptail but not
-# dialog gets the plain-text editor. No warning is shown when the user
-# explicitly selected that path with OC_CONFIG_TUI=0.
-config_tui_fallback_notice() {
-  [ "${OC_CONFIG_TUI:-}" = "0" ] && return 0
-  if command -v whiptail >/dev/null 2>&1 && ! command -v dialog >/dev/null 2>&1; then
-    info "full-screen configuration needs 'dialog' for separate Save & Exit and Discard & Exit actions; using the plain-text editor."
-  fi
-}
-
-# _tui_widget BACKEND ARGS... — invoke one ncurses widget. Dialog is always
-# given the launcher's own small rc file so a host ~/.dialogrc cannot change
-# the menu key bindings or re-enable the in-list cursor. Whiptail has no
-# equivalent configuration file and is executed unchanged.
-_tui_widget() {
-  local backend="$1"; shift
-  if [ "$backend" = "dialog" ]; then
-    DIALOGRC="$__OCL_DIR/lib/dialogrc" "$backend" "$@"
-  else
-    "$backend" "$@"
-  fi
 }
 
 # tui_input TITLE LABEL DEFAULT — show an inputbox pre-filled with DEFAULT,
@@ -386,7 +357,7 @@ tui_input() {
     whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
     dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
   esac
-  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+  result="$("$backend" --title "$title" "${button_args[@]}" \
     --inputbox "$label" 0 0 "$default" 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
@@ -404,7 +375,7 @@ tui_password() {
     whiptail) button_args=(--ok-button Save --cancel-button Back) ;;
     dialog)   button_args=(--ok-label Save --cancel-label Back) ;;
   esac
-  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+  result="$("$backend" --title "$title" "${button_args[@]}" \
     --passwordbox "$label" 0 0 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
@@ -421,7 +392,7 @@ tui_yesno() {
     whiptail) button_args=(--yes-button "$yes_label" --no-button "$no_label") ;;
     dialog)   button_args=(--yes-label "$yes_label" --no-label "$no_label") ;;
   esac
-  _tui_widget "$backend" --title "$title" "${button_args[@]}" \
+  "$backend" --title "$title" "${button_args[@]}" \
     --yesno "$label" 0 0 3>&1 1>&2 2>&3
 }
 
@@ -438,7 +409,7 @@ _tui_menu_with_labels() {
     whiptail) button_args=(--ok-button "$ok_label" --cancel-button "$cancel_label") ;;
     dialog)   button_args=(--ok-label "$ok_label" --cancel-label "$cancel_label") ;;
   esac
-  result="$(_tui_widget "$backend" --title "$title" "${button_args[@]}" \
+  result="$("$backend" --title "$title" "${button_args[@]}" \
     --menu "$prompt" 0 0 0 "$@" 3>&1 1>&2 2>&3)" || rc=$?
   [ "$rc" -eq 0 ] && printf '%s' "$result"
   return "$rc"
@@ -448,26 +419,11 @@ _tui_menu_with_labels() {
 # returns to its caller.
 tui_menu() { _tui_menu_with_labels Select Back "$@"; }
 
-# tui_config_menu TITLE PROMPT TAG1 ITEM1 ... — dialog-only top-level editor
-# menu. --no-ok keeps Enter as the implicit row-edit action without rendering
-# a redundant button. The Extra and Cancel buttons are the two session-level
-# actions and have distinct return codes: 3=Save & Exit, 1=Discard & Exit,
-# 255=Esc. With --no-ok and the launcher's cursor-free Dialog configuration,
-# Enter is the implicit row action; Tab moves focus between the two visible
-# buttons and Ctrl-D activates the focused button. Normalize Dialog's
-# configurable exit codes so callers can rely on those values.
-tui_config_menu() {
-  local title="$1" prompt="$2"; shift 2
-  local backend rc=0 result
-  backend="$(tui_backend)"
-  [ "$backend" = "dialog" ] || return 127
-  result="$(DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_EXTRA=3 DIALOG_ESC=255 \
-    _tui_widget "$backend" --title "$title" --no-ok --extra-button \
-      --extra-label "Save & Exit" --cancel-label "Discard & Exit" \
-      --menu "$prompt" 0 0 0 "$@" 3>&1 1>&2 2>&3)" || rc=$?
-  [ "$rc" -eq 0 ] && printf '%s' "$result"
-  return "$rc"
-}
+# tui_config_menu TITLE PROMPT TAG1 ITEM1 ... — top-level editor menu. Enter
+# and Select both return the highlighted row (status 0); the right-hand
+# Save & Exit button returns status 1. Discard is intentionally a final list
+# row because Whiptail cannot distinguish Enter from activating Select.
+tui_config_menu() { _tui_menu_with_labels Select "Save & Exit" "$@"; }
 
 # tui_msgbox TITLE TEXT — show a plain dismiss-only message box (whiptail/
 # dialog --msgbox). Used to surface information (e.g. the first-run save
@@ -478,7 +434,7 @@ tui_config_menu() {
 tui_msgbox() {
   local title="$1" text="$2" backend rc=0
   backend="$(tui_backend)"
-  _tui_widget "$backend" --title "$title" --msgbox "$text" 0 0 \
+  "$backend" --title "$title" --msgbox "$text" 0 0 \
     3>&1 1>&2 2>&3 || rc=$?
   return 0
 }
@@ -558,15 +514,15 @@ _restore_tui_trap() {
 
 # run_tui_reconfigure [--first-run] [--new-file] — transactional ncurses
 # editor. Every field action writes only to a private staged copy. Choosing
-# Save & Exit atomically replaces the real .env; choosing Discard & Exit,
+# Save & Exit atomically replaces the real .env; selecting Discard & Exit,
 # pressing Esc, or interrupting with Ctrl+C removes the stage
 # and leaves an existing .env untouched. --new-file additionally removes the
 # just-created template on discard/interruption, so canceled first-run setup
 # never leaves a partial configuration behind.
 #
-# The top-level dialog renders only Save & Exit and Discard & Exit; Enter edits
-# the highlighted setting without a visible Select/Edit button. Field dialogs
-# use Save/Back, and only Save/Enable/Disable changes the stage.
+# The top-level menu uses Select / Save & Exit. Enter and Select edit the
+# highlighted setting; Discard & Exit is the final row. Field dialogs use
+# Save/Back, and only Save/Enable/Disable changes the stage.
 #
 # First run uses wizard_keys() (the same intentionally smaller scope as the
 # linear wizard); normal --reconfigure uses every editable_schema_keys() key.
@@ -626,15 +582,16 @@ run_tui_reconfigure() {
       desc="$label $state"
       menu_args+=("$k" "$desc")
     done
+    menu_args+=("Discard & Exit" "Discard all staged changes and exit")
 
     local choice="" menu_rc=0
     choice="$(tui_config_menu \
       "OpenCode Launcher — configuration" \
-      "Enter edits the highlighted setting. Tab switches exit actions; Ctrl-D activates the focused one. Changes are staged." \
+      "Choose a setting and press Enter or Select to edit it. Save & Exit commits all staged changes." \
       "${menu_args[@]}")" || menu_rc=$?
 
     case "$menu_rc" in
-      1|255)
+      255)
         ENV_FILE="$original_env_file"
         rm -f -- "$staged_env_file"
         [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
@@ -644,7 +601,7 @@ run_tui_reconfigure() {
         TUI_CONFIG_RESULT=discarded
         return 2
         ;;
-      3)
+      1)
         if [ "$first_run" -eq 1 ]; then
           local unmet=() ukey
           while IFS= read -r ukey; do
@@ -689,6 +646,17 @@ run_tui_reconfigure() {
         ;;
       0)
         [ -n "$choice" ] || continue
+
+        if [ "$choice" = "Discard & Exit" ]; then
+          ENV_FILE="$original_env_file"
+          rm -f -- "$staged_env_file"
+          [ "$new_file" -eq 0 ] || rm -f -- "$original_env_file"
+          _restore_tui_trap INT "$old_int_trap"
+          _restore_tui_trap TERM "$old_term_trap"
+          TUI_CONFIG_CHANGED=0
+          TUI_CONFIG_RESULT=discarded
+          return 2
+        fi
 
         local type cur new help body input_rc bool_rc clear_rc secret_status
         type="$(field_type "$choice")"
@@ -981,7 +949,7 @@ cmd_config_show() {
 }
 
 # cmd_reconfigure — re-run the secrets setup, picking one of three flows:
-#   1. have_tui (real terminal + dialog installed, and
+#   1. have_tui (real terminal + whiptail/dialog installed, and
 #      OC_CONFIG_TUI != 0): run_tui_reconfigure, the ncurses menu editor.
 #   2. real terminal but no ncurses backend (or OC_CONFIG_TUI=0): a read-only
 #      dashboard (cmd_config_show) followed by a small plain-text menu so the
@@ -1002,9 +970,9 @@ cmd_reconfigure() {
 
   if have_tui; then
     used_tui=1
-    # Interactive + dialog available: ncurses menu editor (Layer 2).
-    # The editor stages every field and commits only from its explicit save
-    # row. If this command created .env, discard removes that template too.
+    # Interactive + whiptail/dialog available: ncurses menu editor (Layer 2).
+    # The editor stages every field and commits only from Save & Exit. If this
+    # command created .env, discard removes that template too.
     # shellcheck disable=SC2119,SC2120
     if [ "$env_created" -eq 1 ]; then
       run_tui_reconfigure --new-file || tui_rc=$?
@@ -1025,7 +993,6 @@ cmd_reconfigure() {
     # plain-text menu (Layer 1). Editable set = editable_schema_keys() (every
     # non-"internal" schema key); HOST_UID/HOST_GID/IMAGE_TAG are "internal"
     # and stay out of the menu (hand-edited only).
-    config_tui_fallback_notice
     local keys=() key
     while IFS= read -r key; do
       [ -n "$key" ] && keys+=("$key")

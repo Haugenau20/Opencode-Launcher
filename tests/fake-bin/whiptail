@@ -2,8 +2,8 @@
 #
 # Fake `whiptail` for the test suite. Real ncurses widgets need a tty and
 # can't be driven headlessly in bats, so this stub exists purely so
-# `tui_backend`/`have_tui` detection tests can assert the whiptail-only
-# fallback without requiring the real ncurses binary to be installed in CI.
+# `tui_backend`/`have_tui` detection tests can assert Whiptail-first backend
+# selection without requiring the real ncurses binary to be installed in CI.
 # It is never actually exercised as an interactive backend by the suite
 # (have_tui() also requires a real tty, which bats does not have).
 #

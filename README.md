@@ -100,8 +100,8 @@ cd opencode-launcher
 
 On the **first run**, `start.sh` copies `.env.example` → `.env` and prompts for
 the only required fields — your LLM endpoint/key and Artifactory path. At a real
-terminal with `dialog` installed it's a small ncurses editor; a whiptail-only
-host, piped input, or CI gets a plain-text wizard. The service integrations
+terminal with `whiptail` or `dialog` installed it's a small ncurses editor;
+piped input or CI gets a plain-text wizard. The service integrations
 (Bitbucket, Jira, GitLab,
 JFrog, Confluence, M-Files, git identity) are optional — press Enter to skip.
 M-Files needs a minted token rather than a pasted one — the prompt offers to
@@ -143,22 +143,15 @@ never pull an image, attach the TUI, or need your LLM key, and they no-op
 gracefully when nothing is running. Run `./start.sh --help` for the full
 per-flag detail.
 
-On a real terminal with `dialog`, press Enter to edit the highlighted setting.
-There is no Select/Edit button and no synthetic save row: the only main-screen
-buttons are **Save & Exit** and **Discard & Exit**. A field is added to the
-staged configuration only when you choose **Save**, **Enable**, or **Disable**;
-**Back** or Esc returns without changing that field. **Save & Exit** commits the
-whole session. **Discard & Exit**, main-menu Esc, or Ctrl-C leaves the existing
-`.env` untouched; canceling first-run setup removes its new template too. For
-keyboard access to the bottom buttons, Tab switches the focused action and
-Ctrl-D activates it (Enter remains the row-edit key).
-
-The smaller `whiptail` implementation cannot separate an Enter-to-edit action
-from its mandatory OK button, so a host with only `whiptail` uses the
-plain-text editor instead of displaying a misleading third action. Install
-`dialog` for the full-screen editor, or set `OC_CONFIG_TUI=0` to choose the
-plain-text path explicitly. Piped input continues to walk every wizard prompt
-for scripting compatibility.
+On a real terminal, `whiptail` is preferred to preserve the launcher's original
+look (`dialog` remains the fallback). Press Enter or choose **Select** to edit
+the highlighted setting. Field **Save**, **Enable**, and **Disable** actions are
+staged; **Back** or field-level Esc returns without changing that field. The
+right-hand **Save & Exit** button commits the whole session. Select the final
+**Discard & Exit** row, press main-menu Esc, or press Ctrl-C to leave the
+existing `.env` untouched; canceling first-run setup removes its new template
+too. Set `OC_CONFIG_TUI=0` to choose the plain-text path explicitly. Piped input
+continues to walk every wizard prompt for scripting compatibility.
 
 ```bash
 ./start.sh --persist ~/code/your-repo    # stay up after you exit

@@ -501,7 +501,7 @@ cmd_run() {
     echo
 
     if have_tui; then
-      # Real terminal + dialog available: the ncurses editor, with
+      # Real terminal + whiptail/dialog available: the ncurses editor, with
       # its first-run save gate (required_keys() must be field_satisfied
       # before staged changes can be committed). set_host_ids does what
       # run_setup_wizard's own first-run branch does for the linear path —
@@ -521,7 +521,6 @@ cmd_run() {
       esac
       set_host_ids
     else
-      [ -t 0 ] && [ -t 1 ] && config_tui_fallback_notice
       run_setup_wizard            # linear path — unchanged, still does its own first-run UID/GID autofill
     fi
 

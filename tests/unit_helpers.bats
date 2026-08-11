@@ -1604,23 +1604,23 @@ older"
 # the pure detection/gating logic (tui_backend, have_tui), never an actual
 # interactive ncurses screen, since bats has no tty.
 
-@test "tui_backend: prefers dialog when both dialog and whiptail are on PATH" {
+@test "tui_backend: prefers whiptail when both whiptail and dialog are on PATH" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
-  [ "$output" = "dialog" ]
+  [ "$output" = "whiptail" ]
 }
 
-@test "tui_backend: reports whiptail when dialog is absent" {
-  local bin="$BATS_TEST_TMPDIR/whiptail-only-bin"
+@test "tui_backend: falls back to dialog when whiptail is absent" {
+  local bin="$BATS_TEST_TMPDIR/dialog-only-bin"
   mkdir -p "$bin"
-  cp "$FAKE_BIN/whiptail" "$bin/whiptail"
+  cp "$FAKE_BIN/dialog" "$bin/dialog"
   cp "$(command -v dirname)" "$bin/dirname"
-  chmod +x "$bin/whiptail"
+  chmod +x "$bin/dialog"
   run env PATH="$bin" \
     /bin/bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
-  [ "$output" = "whiptail" ]
+  [ "$output" = "dialog" ]
 }
 
 @test "tui_backend: empty when neither whiptail nor dialog is on PATH" {
@@ -1630,13 +1630,13 @@ older"
   [ -z "$output" ]
 }
 
-@test "have_tui: false when not a tty, even with dialog present (bats is never a tty)" {
+@test "have_tui: false when not a tty, even with a backend present (bats is never a tty)" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
 }
 
-@test "have_tui: false when OC_CONFIG_TUI=0, even with dialog present" {
+@test "have_tui: false when OC_CONFIG_TUI=0, even with a backend present" {
   run env PATH="$FAKE_BIN:/usr/bin:/bin" OC_CONFIG_TUI=0 \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
@@ -1716,74 +1716,36 @@ older"
   grep -qxF -- 'Disable' "$BATS_TEST_TMPDIR/whiptail-argv"
 }
 
-@test "dialog configuration menu has only Save & Exit and Discard & Exit buttons" {
+@test "whiptail configuration menu has Select left and Save & Exit right" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" dialog; }
-    dialog() {
-      printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/dialog-argv"
-      printf "%s" "$DIALOGRC" > "'"$BATS_TEST_TMPDIR"'/dialog-rc-path"
-      printf selected >&2
-    }
-    tui_config_menu "Title" "Prompt" KEY1 "Item 1" >/dev/null
+    tui_backend() { printf "%s" whiptail; }
+    whiptail() { printf "%s\n" "$@" >> "'"$BATS_TEST_TMPDIR"'/config-menu-argv"; printf KEY1 >&2; }
+    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")"
+    printf "%s" "$value"
   '
   [ "$status" -eq 0 ]
-  grep -qxF -- '--no-ok' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--extra-button' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--extra-label' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- 'Save & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- '--cancel-label' "$BATS_TEST_TMPDIR/dialog-argv"
-  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/dialog-argv"
-  ! grep -qxF -- '--visit-items' "$BATS_TEST_TMPDIR/dialog-argv"
-  ! grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/dialog-argv"
-  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/dialog-argv"
-  ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/dialog-argv"
-  [ "$(cat "$BATS_TEST_TMPDIR/dialog-rc-path")" = "$REPO_ROOT/lib/dialogrc" ]
-  grep -qxF -- 'visit_items = OFF' "$REPO_ROOT/lib/dialogrc"
-
-  local title_line menu_line
-  title_line="$(grep -nxF -- '--title' "$BATS_TEST_TMPDIR/dialog-argv" | cut -d: -f1)"
-  menu_line="$(grep -nxF -- '--menu' "$BATS_TEST_TMPDIR/dialog-argv" | cut -d: -f1)"
-  [ "$title_line" -lt "$menu_line" ]
+  [ "$output" = KEY1 ]
+  grep -qxF -- '--ok-button' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- 'Select' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- '--cancel-button' "$BATS_TEST_TMPDIR/config-menu-argv"
+  grep -qxF -- 'Save & Exit' "$BATS_TEST_TMPDIR/config-menu-argv"
+  ! grep -qxF -- 'Edit' "$BATS_TEST_TMPDIR/config-menu-argv"
+  ! grep -qxF -- '--extra-button' "$BATS_TEST_TMPDIR/config-menu-argv"
 }
 
-@test "dialog configuration menu ignores a hostile host DIALOGRC" {
-  run env DIALOGRC=/tmp/host-dialogrc bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" dialog; }
-    dialog() { printf "%s" "$DIALOGRC"; }
-    _tui_widget dialog --version
-  '
-  [ "$status" -eq 0 ]
-  [ "$output" = "$REPO_ROOT/lib/dialogrc" ]
-}
-
-@test "dialog configuration menu returns the highlighted row for Enter status 0" {
+@test "configuration menu maps Save & Exit to status 1 without a row value" {
   run bash -c '
     source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" dialog; }
-    dialog() { printf KEY1 >&2; return 0; }
+    tui_backend() { printf "%s" fake-save-backend; }
+    fake-save-backend() { printf ignored-row >&2; return 1; }
     set -euo pipefail
     rc=0
     value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
     printf "rc=%s value=%s" "$rc" "$value"
   '
   [ "$status" -eq 0 ]
-  [ "$output" = "rc=0 value=KEY1" ]
-}
-
-@test "dialog configuration menu returns Save & Exit as status 3 without a row value" {
-  run bash -c '
-    source "'"$REPO_ROOT"'/start.sh"
-    tui_backend() { printf "%s" dialog; }
-    dialog() { printf ignored-row >&2; return 3; }
-    set -euo pipefail
-    rc=0
-    value="$(tui_config_menu "Title" "Prompt" KEY1 "Item 1")" || rc=$?
-    printf "rc=%s value=%s" "$rc" "$value"
-  '
-  [ "$status" -eq 0 ]
-  [ "$output" = "rc=3 value=" ]
+  [ "$output" = "rc=1 value=" ]
 }
 
 @test "tui_yesno: propagates Yes (0) and No (1) without tripping set -e" {
@@ -1846,7 +1808,7 @@ older"
   [[ "$output" != *"super-secret-value"* ]]
 }
 
-@test "run_tui_reconfigure: first-run menu has no save row, uses wizard scope, and gates Save & Exit" {
+@test "run_tui_reconfigure: first-run menu has a discard row, uses wizard scope, and gates Save & Exit" {
   cp "$REPO_ROOT/.env.example" "$ENV_FILE"
   printf '0' > "$BATS_TEST_TMPDIR/menu-count"
   run bash -c '
@@ -1856,7 +1818,7 @@ older"
       printf "%s\n" "$@" > "'"$BATS_TEST_TMPDIR"'/first-run-menu-argv"
       count="$(cat "'"$BATS_TEST_TMPDIR"'/menu-count")"
       printf "%s" "$((count + 1))" > "'"$BATS_TEST_TMPDIR"'/menu-count"
-      return 3
+      return 1
     }
     tui_msgbox() {
       printf "%s" "$2" > "'"$BATS_TEST_TMPDIR"'/first-run-gate-message"
@@ -1872,7 +1834,9 @@ older"
   ! grep -qxF -- 'ALLOW_REMOTE_GIT' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- '__SAVE__' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'Save changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
-  grep -qF -- 'Ctrl-D activates the focused one' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Discard & Exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qxF -- 'Discard all staged changes and exit' "$BATS_TEST_TMPDIR/first-run-menu-argv"
+  grep -qF -- 'Enter or Select to edit it' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   ! grep -qxF -- 'DONE' "$BATS_TEST_TMPDIR/first-run-menu-argv"
   grep -qF -- 'required before you can save' "$BATS_TEST_TMPDIR/first-run-gate-message"
   [ "$(cat "$BATS_TEST_TMPDIR/menu-count")" = 2 ]
@@ -1892,7 +1856,8 @@ older"
         printf GIT_USER_NAME
         return 0
       fi
-      return 1
+      printf "Discard & Exit"
+      return 0
     }
     tui_input() { printf "New Name"; return 1; }
     rc=0
@@ -1919,7 +1884,8 @@ older"
         printf ALLOW_REMOTE_GIT
         return 0
       fi
-      return 1
+      printf "Discard & Exit"
+      return 0
     }
     tui_yesno() { return 255; }
     rc=0
@@ -1946,7 +1912,7 @@ older"
         printf ALLOW_REMOTE_GIT
         return 0
       fi
-      return 3
+      return 1
     }
     tui_yesno() { return 1; }
     run_tui_reconfigure
@@ -1972,7 +1938,8 @@ older"
         printf GIT_USER_NAME
         return 0
       fi
-      return 1
+      printf "Discard & Exit"
+      return 0
     }
     tui_input() { printf "New Name"; return 0; }
     rc=0
@@ -2029,7 +1996,8 @@ older"
         printf JIRA_PAT
         return 0
       fi
-      return 1
+      printf "Discard & Exit"
+      return 0
     }
     tui_password() { return 1; }
     rc=0
@@ -2053,7 +2021,7 @@ older"
         printf JIRA_PAT
         return 0
       fi
-      return 3
+      return 1
     }
     tui_password() { printf ""; return 0; }
     tui_yesno() { return 0; }
