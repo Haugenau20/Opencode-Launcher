@@ -61,8 +61,10 @@ _Nothing yet._
 
 ## [0.17.0] — 2026-08-26
 
-**Action required:** none. The image `0.4.0` keys this launcher needs were
-already added in `0.16.0`; re-running `./start.sh` picks the new image up.
+**Action required:** none — but re-run `./start.sh` rather than leaving a
+running stack up, so the `opencode` container is recreated and picks up the
+`NO_PROXY` fix below. Nothing to edit: the image `0.4.0` keys this launcher
+needs were already added in `0.16.0`.
 
 ### Changed
 
@@ -100,6 +102,26 @@ already added in `0.16.0`; re-running `./start.sh` picks the new image up.
   `--show-allowlist`, `--mfiles-token`, `--also` and the project/plugin/
   package flows are all still plain text, unchanged by this release. Bringing
   those under the same editor is deliberately left for a later release.
+
+### Fixed
+
+- **`.local` is gone from the container's `NO_PROXY`** — a sync drift that had
+  been in this launcher's compose since its first commit. Squid is the
+  container's only route out, so every `NO_PROXY` entry is a hole punched
+  around it; `.local` matched any corp service addressed by a `*.local` FQDN
+  (e.g. `bitbucket.corp.local`) and routed it **directly** instead of through
+  squid, which fails as `could not resolve host` / `CONNECT tunnel failed`.
+  That is precisely the bug the image fixed on its own side in `0.1.0` — this
+  launcher's changelog even recorded it — but the launcher's copy of the
+  variable was never mirrored, so a `*.local` Bitbucket stayed broken here for
+  reasons the image had already dealt with. If git-over-HTTPS or `curl` to an
+  internal `*.local` host has been failing for you, this is why; recreate the
+  stack and it works.
+
+  `docs/SYNC.md` gains `NO_PROXY` as **block 7** of the must-match list, with
+  the rule stated as "loopback and compose service names only, never a DNS
+  suffix", so re-adding a corp domain there is a documented mistake rather
+  than an invisible one.
 
 ## [0.16.0] — 2026-08-10
 

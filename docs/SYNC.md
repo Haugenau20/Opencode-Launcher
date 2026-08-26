@@ -96,6 +96,29 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    default — the point of mirroring it now is so the block matches the
    maintainer repo byte-for-byte, not that this launcher exposes a new knob.
 
+7. **`NO_PROXY`/`no_proxy` (`opencode` `environment:`).** Must be, exactly:
+
+   ```yaml
+         NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,rag"
+         no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag"
+   ```
+
+   This is the docker-side copy of the image's own `policy.yaml` `NO_PROXY`,
+   and the two must agree: it exists so in-container DNS for the sidecars
+   (`opencode`, `squid`, `rag`) bypasses the proxy.
+
+   **Never add `.local` — or any other corp-domain suffix — to this list.**
+   Squid is the container's only route out, so every entry here is a hole
+   punched *around* it. A corp service addressed by a `*.local` FQDN (e.g.
+   `bitbucket.corp.local`) matches the suffix, gets routed **directly**
+   instead of through squid, and fails with `could not resolve host` /
+   `CONNECT tunnel failed` — which is what git-over-HTTPS to an internal
+   Bitbucket used to do. The maintainer repo dropped `.local` in image
+   `0.1.0` for exactly this reason; this launcher carried it until `0.17.0`
+   (see the changelog), and the drift was invisible because nothing compares
+   the two files automatically. The entries that belong here are loopback and
+   compose **service names** only — never a DNS suffix.
+
 ## Shared env-var contracts (launcher sets, image consumes)
 
 These are behavioural contracts, not compose blocks to compare line-for-line:
