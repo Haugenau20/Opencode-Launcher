@@ -31,8 +31,15 @@ services:
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
-      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
-      no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag,.local"
+      # The docker-side copy of the image's own policy.yaml NO_PROXY, so
+      # in-container DNS for the sidecars (opencode, squid, rag) bypasses the
+      # proxy. Deliberately NO `.local`: a corp service addressed by a *.local
+      # FQDN (e.g. bitbucket.corp.local) would otherwise match and be routed
+      # DIRECTLY instead of through squid — which breaks git/curl to it, since
+      # squid is the only way out. Do not re-add it; the maintainer repo
+      # dropped it in image 0.1.0 for exactly this reason.
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,rag"
+      no_proxy: "localhost,127.0.0.1,::1,opencode,squid,rag"
       # The in-container listen port. oc-publish's socat forwarder below reads
       # the same variable, so there is one place to change it. NOT
       # OPENCODE_PORT: that is the HOST port, kept decoupled so several stacks

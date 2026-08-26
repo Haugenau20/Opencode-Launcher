@@ -57,17 +57,71 @@ _Changes to the launcher itself._
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.17.0] — 2026-08-26
+
+**Action required:** none — but re-run `./start.sh` rather than leaving a
+running stack up, so the `opencode` container is recreated and picks up the
+`NO_PROXY` fix below. Nothing to edit: the image `0.4.0` keys this launcher
+needs were already added in `0.16.0`.
+
 ### Changed
 
+- **Verified in sync with image `0.4.0`.** Every env key the image's
+  `manifest.json` carries at `0.4.0` — including the write gates and
+  allowlists (`ALLOW_CONFLUENCE_WRITE`, `ALLOW_GITLAB_WRITE`,
+  `GITLAB_WRITE_PROJECTS`, `GITLAB_QUEUE_LABEL_PREFIX`,
+  `GIT_REMOTE_ALLOWLIST`) — is already known to `.env.example`, `--config`,
+  `--reconfigure` and `--doctor` from `0.16.0`, so no boot flags a drift and
+  there is nothing new to fill in. The compose hooks `0.4.0` kept from the
+  withdrawn `0.3.0`, `PROJECT_ENV_FILE` and `EXTRA_ALLOWLIST_PATH`, are the
+  ones this launcher's per-project model already implements
+  (`docs/SYNC.md` blocks 4–6). See the image `0.4.0` entry below for what
+  actually changed in the image.
+
 - Clarified the ncurses configuration workflow while retaining Whiptail's
-  original appearance: Enter or **Select** edits the highlighted setting, the
-  right-hand **Save & Exit** button commits all staged edits, and the final
-  **Discard & Exit** row, main-menu Esc, or Ctrl-C discards them. Field dialogs
-  use **Save/Back** and booleans use **Enable/Disable**. Canceling first-run
-  setup removes its new template. Menu states distinguish enabled, disabled,
-  missing, placeholder, set, and unset values without exposing secrets.
-  Whiptail is preferred when both ncurses backends are installed; `dialog`
-  remains the fallback.
+  original appearance. Required settings remain on the main screen; optional
+  settings are grouped into MCP, Git/repository, safety/permissions,
+  user-layer/plugins, and advanced submenus. Enter or **Select** opens the
+  highlighted setting or submenu, and submenu **Back** returns one level. The
+  main menu's right-hand **Save & Exit** button commits all staged edits, while
+  its final **Discard & Exit** row, or Esc/Ctrl-C from any menu, discards them.
+  Whiptail exposes Esc and Ctrl+C through the same cancellation path, so only
+  the visible **Back** button performs non-destructive submenu navigation.
+  Field dialogs use **Save/Back** and booleans use **Enable/Disable**. Canceling
+  first-run setup removes its new template. Menu states distinguish enabled,
+  disabled, missing, placeholder, set, and unset values without exposing
+  secrets. Whiptail is preferred when both ncurses backends are installed;
+  `dialog` remains the fallback. The plain-text configuration flow is
+  unchanged.
+
+  **Scope, so the boundary is on record:** the ncurses editor is reached from
+  first-run setup and `./start.sh --reconfigure` only. `--config` remains a
+  plain-text read-only dashboard, and `--doctor`, `--status`,
+  `--show-allowlist`, `--mfiles-token`, `--also` and the project/plugin/
+  package flows are all still plain text, unchanged by this release. Bringing
+  those under the same editor is deliberately left for a later release.
+
+### Fixed
+
+- **`.local` is gone from the container's `NO_PROXY`** — a sync drift that had
+  been in this launcher's compose since its first commit. Squid is the
+  container's only route out, so every `NO_PROXY` entry is a hole punched
+  around it; `.local` matched any corp service addressed by a `*.local` FQDN
+  (e.g. `bitbucket.corp.local`) and routed it **directly** instead of through
+  squid, which fails as `could not resolve host` / `CONNECT tunnel failed`.
+  That is precisely the bug the image fixed on its own side in `0.1.0` — this
+  launcher's changelog even recorded it — but the launcher's copy of the
+  variable was never mirrored, so a `*.local` Bitbucket stayed broken here for
+  reasons the image had already dealt with. If git-over-HTTPS or `curl` to an
+  internal `*.local` host has been failing for you, this is why; recreate the
+  stack and it works.
+
+  `docs/SYNC.md` gains `NO_PROXY` as **block 7** of the must-match list, with
+  the rule stated as "loopback and compose service names only, never a DNS
+  suffix", so re-adding a corp domain there is a documented mistake rather
+  than an invisible one.
 
 ## [0.16.0] — 2026-08-10
 
@@ -492,6 +546,65 @@ offers them) if you want the M-Files MCP; otherwise none.
 
 What's in each OpenCode Workplace image version, distilled for the people who
 run it.
+
+## [0.4.0] — 2026-08-19
+
+**Action required:** none beyond the normal re-pull — unless you are on the
+withdrawn `0.3.0` (see below), in which case move to `0.4.0` and drop any
+`projects/`-style per-project stack you set up against it.
+
+- **The image's write planes and gates from `0.3.0` all survive**, with the
+  orchestrator framing removed. Everything below is off by default and this
+  launcher has known every key since `0.16.0` — nothing to edit unless you
+  want to turn one on:
+  - **Confluence writes** behind `ALLOW_CONFLUENCE_WRITE=1` — `create_page`,
+    `update_page`, `append_to_page` and `add_comment`, plus a
+    `confluence-write` skill and `get_page format="storage"` for reading a
+    page back before editing it. Deleting a page is never possible.
+  - **GitLab issue reads and an opt-in write surface** —
+    `list_issues`/`get_issue`/`get_issue_notes`/`get_pipelines` always, and
+    behind `ALLOW_GITLAB_WRITE=1` the MR/issue/note write tools, optionally
+    narrowed to `GITLAB_WRITE_PROJECTS`. Setting labels, closing an issue and
+    merging an MR stay deliberately absent at any setting, and
+    `GITLAB_QUEUE_LABEL_PREFIX` (ships as `symphony`) is a label namespace the
+    MCP always refuses to write.
+  - **`GIT_REMOTE_ALLOWLIST`** narrows where remote git may go when
+    `ALLOW_REMOTE_GIT=1`, as host/path prefixes matched on a segment boundary.
+  - Both allowlists are **defence in depth, not a security boundary** — an
+    agent with a shell can call git or the API directly. The boundary is what
+    the token itself is scoped to; the image's `docs/ARCHITECTURE.md` now
+    carries that argument under **The credential model**.
+- **Boot and `doctor.sh` report which side of each gate the container came up
+  on** (`mcp ro: confluence` / `mcp rw: confluence`), and the GitLab write-gate
+  report is no longer nested inside the Confluence one — a GitLab-only stack
+  used to get no line about it at all.
+- **`OPENCODE_INTERNAL_PORT`** (default `4096`) is a real variable rather than
+  a hardcoded port in the entrypoint and publisher. It is the *container* side
+  and stays `4096`; `OPENCODE_PORT` remains the host side. This launcher
+  already mirrors the parameterization (`docs/SYNC.md` block 6) and does not
+  vary it.
+- **`.requires` files gained an `env=NAME=value` gate**, so a skill is only
+  linked in when its switch is on — a default install is never told about
+  tools it doesn't have.
+- **Symphony is gone from the image repo.** The unattended orchestrator, its
+  overlays, its image and its docs were removed; it lives in its own
+  repositories. Nothing in this launcher consumed it (its own symphony support
+  was reverted before `0.16.0`), so there is nothing to do.
+- **The image repo's `projects/` per-project stacks were removed too**, having
+  arrived and departed in the same release. The two compose hooks they rested
+  on — **`PROJECT_ENV_FILE`** and **`EXTRA_ALLOWLIST_PATH`** — **stay**, and
+  are exactly what this launcher's own per-project model uses (see launcher
+  `0.16.0` and `docs/SYNC.md` blocks 4–5). Unaffected.
+
+## [0.3.0] — 2026-08-10 — WITHDRAWN
+
+**Action required:** don't run it. Go from `0.2.0` straight to `0.4.0`.
+
+- Tagged and pushed but never announced, and `latest` was never moved to it.
+  Everything in it worth keeping is in `0.4.0` above; the rest — symphony and
+  the `projects/` stack model — was removed. If you pinned `IMAGE_TAG=0.3.0`,
+  set it back to `latest` (or `0.4.0`); `./start.sh`'s boot update gate offers
+  to do that for you.
 
 ## [0.2.0] — 2026-07-15
 
