@@ -1,0 +1,15 @@
+# The container entrypoint mounts this directory at ~/.config/opencode and
+# writes its own generated config into it on every boot: symlinks to the baked
+# bundle, the merged opencode.json, disabled.yaml, tui.json, plugin links and
+# seeds. None of that is ours to track — it is regenerated on the next start,
+# and it is chowned to HOST_UID/HOST_GID.
+#
+# Track only the three source directories this pack actually ships.
+*
+!.gitignore
+!agents/
+!agents/**
+!commands/
+!commands/**
+!skills/
+!skills/**
