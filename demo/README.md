@@ -6,12 +6,14 @@ shipped as a **user layer** so it loads on top of a stock released image —
 
 ```
 demo/
-  RUNSHEET.md                     the presenter's run-sheet (read this first)
+  RUNSHEET.md                       the presenter's run-sheet (read this first)
   onboarding-layer/
-    .gitignore                    keeps the entrypoint's generated config untracked
-    agents/guide.md               `guide` — a mode: primary host agent (Tab-selectable)
-    commands/demo-tour.md         `/demo-tour <1-7>` — presenter-paced, one stage per call
-    commands/try-it.md            `/try-it` — the self-paced take-home
+    .gitignore                      keeps the entrypoint's generated config untracked
+    agents/guide.md                 `guide` — a mode: primary host agent (Tab-selectable)
+    commands/demo-tour.md           `/demo-tour <1-7>` — thin stub, one stage per call
+    commands/demo-status.md         `/demo-status` — compact snapshot of work in flight
+    commands/try-it.md              `/try-it` — the self-paced take-home
+    skills/demo-stages/SKILL.md     the tour's rules, format and seven stages
 ```
 
 ## Turning it on
@@ -62,19 +64,34 @@ Two consequences worth knowing:
 depth — even `demo/user-layer/` would be silently untracked. The name is
 arbitrary (`USER_LAYER_PATH` is what points at it), so just avoid that token.
 
-## `/demo-tour` is a command, not a skill
+## Why the tour is split into a command *and* a skill
 
-It reads like a skill, but it is a **command** on purpose. `/demo-tour 3` needs
-explicit invocation with an argument, which is what `$ARGUMENTS` in a command
-file gives you deterministically. Slash-invoking a *skill* in OpenCode has known
-rough edges — the body gets injected raw while the skill tool stays exposed
+`/demo-tour` is a ten-line stub; the 300-line body lives in the `demo-stages`
+skill next to it. That split exists for one reason: **a command body is the
+prompt.** OpenCode inserts the whole command file into the conversation as a user
+message, so a fat command repaints its entire text on screen every single
+invocation — which on a projector buries the previous stage's output and makes it
+hard to tell what just ran. A skill body loads through the skill tool instead, so
+what the room sees is the short stub, then the stage output.
+
+The stub still has to be a *command*, not a slash-invoked skill: `/demo-tour 3`
+needs explicit invocation with an argument, which `$ARGUMENTS` gives
+deterministically. Slash-invoking a skill directly has known rough edges — the
+body gets injected raw while the skill tool stays exposed
 ([opencode#26185](https://github.com/anomalyco/opencode/issues/26185)), and
-arguments can be dropped. On a projector, predictable beats lazy-loaded.
+arguments can be dropped.
+
+The command and the skill are deliberately named **differently** (`demo-tour`
+vs. `demo-stages`) so `/demo-tour` can only ever resolve to the command.
+
+> If the skill hop ever misbehaves on stage, the fallback is to paste the skill
+> body back into the command file and accept the repaint — the content is
+> identical.
 
 ## Promoting it into the image later
 
 If this earns its keep and you want it on for everyone without a user layer, the
-files move to the backbone's `opencode/bundle/{agents,commands}/`. Note the gate
+files move to the backbone's `opencode/bundle/{agents,commands,skills}/`. Note the gate
 asymmetry before you plan that: bundled **skills** can be hidden behind a switch
 today via a `.requires` file (`env=DEMO_MODE=1`, see
 `docs/ADDING_SKILLS.md` in the backbone), but **agents and commands are flat
