@@ -6,7 +6,9 @@ shipped as a **user layer** so it loads on top of a stock released image —
 
 ```
 demo/
-  RUNSHEET.md                       the presenter's run-sheet (read this first)
+  RUNSHEET.md                       the presenter's run-sheet (read this first).
+                                    Built around a live workflow demo; the
+                                    scripted tour is an appendix, not the spine.
   onboarding-layer/
     .gitignore                      keeps the entrypoint's generated config untracked
     agents/guide.md                 `guide` — a mode: primary host agent (Tab-selectable)
