@@ -57,7 +57,80 @@ _Changes to the launcher itself._
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Port assignment no longer gives up (or lies) after ~100 instances.** Fresh
+  port assignment scanned `4096`, then `4097-4196`, and — this is the actual
+  bug — when every candidate in that window was taken, `find_free_port` fell
+  out of its loop and echoed the *limit* itself, `4196`: a port it had never
+  probed. The launcher then wrote that port into `.envs/<slug>.env`, printed
+  `http://localhost:4196`, and handed it to compose, which failed on a port
+  bind with no hint that the real cause was an exhausted range. Exhaustion is
+  now an explicit condition: `find_free_port` returns non-zero with no output,
+  and the boot flow stops with a message naming the range and how to free it.
+
+- **A second `start.sh` on the same repo no longer kills the first one's TUI.**
+  Two terminals on one repo derive the same slug, so they share a container —
+  intended, and you do get a second TUI into the same `/workspace`. But whoever
+  quit first ran `compose down` on everyone, and the second run's `compose up
+  -d` recreated the container (any config drift did it; no `--also` this time
+  deleted the previous run's overlay) which killed the attached TUI. Attached
+  TUIs are now tracked in `.envs/<slug>.attach.d/` (`lib/attach.sh`), so:
+  teardown happens when the LAST TUI exits, `up -d` passes `--no-recreate`
+  while anyone is attached, a run with no `--also` keeps a live stack's
+  overlay, and `--exec`'s teardown stands down too. A slot is an flock held by
+  an open descriptor, so the kernel frees it however the holder dies — a
+  `kill -9` cannot strand a stack. `--status` reports the attached count and
+  `--down` warns before closing other people's sessions.
+
+- **"All predefined address pools have been fully subnetted" now explains
+  itself.** This — not a port conflict — is what stops a new instance once a
+  few are running: each stack creates 4 bridge networks, and a daemon with no
+  `default-address-pools` carves only ~32 subnets in total, so the ceiling
+  arrives after a handful of concurrent stacks. The daemon's one-liner names
+  neither the cause nor the fix and reads like a port clash. `start.sh` now
+  recognises it and prints what ran out, how to free some now, and the
+  `/etc/docker/daemon.json` change that raises the ceiling to 4352 subnets.
+  `./start.sh --doctor` gained a matching check that warns as the stock budget
+  runs low (WARN only, and it defers entirely to a daemon that already has
+  explicit `default-address-pools`).
+
+- **`docker/Dockerfile.user-packages` no longer emits
+  `InvalidDefaultArgInFrom` on every package-layer build.** BuildKit lints
+  `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}` for having no default. The absent
+  default is deliberate — the only supported caller passes
+  `${OC_BASE_IMAGE:?...}`, so a missing base fails loudly instead of silently
+  building from a wrong image — so the lint is skipped by name with a
+  `# check=skip=InvalidDefaultArgInFrom` directive rather than papered over
+  with a fake default.
+
+### Changed
+
+- **Each stack now creates 2 docker networks instead of 4**, doubling how many
+  stacks fit in dockerd's address pools — and freeing subnets for every other
+  compose project on the host, since they all draw on the same ~32. Two removals,
+  neither of which changes what any container can reach: `oc_internal` carried
+  `opencode` and nothing else (a single-member internal network connects its
+  member to nothing), and `oc_egress`/`oc_publish` are merged into one
+  `oc_external` because `squid` and `oc-publish` already saw each other on
+  `oc_proxy`. The egress model is untouched: `opencode` is on `oc_proxy` alone,
+  `oc_proxy` is `internal: true`, and `squid` remains the only route off-host.
+  Two is the floor this isolation model permits, not a number picked for
+  roundness. New `tests/compose.bats` pins the invariant — no agent container on
+  a non-internal network — plus the network count and its agreement with
+  `OCL_NETS_PER_STACK`. **Existing stacks recreate their containers on the next
+  boot.**
+
+- **Port range widened to `4096`-`9999`** (was `4096`-`4196`), so ~5900
+  concurrent stacks fit instead of 100. The ceiling is `9999` on purpose and
+  should not be raised: the `opencode-pty` viewer port is the base port with a
+  literal `1` prepended (`docker-compose.yml` derives both `PTY_WEB_PORT` and
+  the `oc-publish` `ports:` mapping that way), so a 5-digit base would derive
+  an unbindable 6-digit port. Within `4096`-`9999` the viewer ports land in
+  `14096`-`19999`, disjoint from the base range. The bounds are named
+  constants (`OCL_PORT_BASE` / `OCL_PORT_MAX`) in `lib/project.sh` rather than
+  literals scattered across the boot flow, and a unit test pins the 4-digit
+  invariant.
 
 ## [0.17.0] — 2026-08-26
 

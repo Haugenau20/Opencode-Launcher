@@ -111,10 +111,14 @@ setup() {
   [ "$output" = "4099" ]
 }
 
-@test "find_free_port: stops at LIMIT even if everything is busy" {
+@test "find_free_port: stops at LIMIT and reports failure when everything is busy" {
+  # It used to echo LIMIT (4100) here — a port it had never probed. Exhaustion
+  # is now a non-zero return with no output; see the range-exhaustion block
+  # below for the rest of that contract.
   port_in_use() { return 0; }   # everything busy
   run find_free_port 4097 4100
-  [ "$output" = "4100" ]
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
 }
 
 # --- viewer_port_for / port_pair_free (opencode-pty viewer-port coupling) ---
@@ -152,6 +156,43 @@ setup() {
   port_in_use() { [ "$1" = 14097 ] && return 0 || return 1; }
   run find_free_port 4097 4196
   [ "$output" = "4098" ]
+}
+
+# --- range exhaustion ------------------------------------------------------
+# find_free_port used to fall out of its loop and echo LIMIT — a port it had
+# never probed — so an exhausted range silently handed back a colliding port
+# and the failure surfaced later as an opaque `docker compose up` bind error.
+
+@test "find_free_port: fails (no output) when every candidate in the range is taken" {
+  port_in_use() { return 0; }   # everything busy
+  run find_free_port 4097 4100
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "find_free_port: never echoes the un-probed LIMIT itself" {
+  # Only LIMIT (4100) is free; it is exclusive, so this must still fail
+  # rather than hand out a port outside the requested range.
+  port_in_use() { [ "$1" = 4100 ] && return 1 || return 0; }
+  run find_free_port 4097 4100
+  [ "$status" -ne 0 ]
+  [ "$output" != "4100" ]
+}
+
+@test "find_free_port: scans the whole inclusive range up to OCL_PORT_MAX" {
+  # Everything busy except the very last port the launcher may hand out.
+  port_in_use() { [ "$1" = 9999 ] || [ "$1" = 19999 ] && return 1 || return 0; }
+  run find_free_port 4097 $(( OCL_PORT_MAX + 1 ))
+  [ "$output" = "9999" ]
+}
+
+@test "OCL_PORT_MAX stays 4-digit so the '1'-prefixed viewer port is bindable" {
+  # docker-compose.yml derives PTY_WEB_PORT/the oc-publish mapping as
+  # 1<OPENCODE_PORT>; a 5-digit base would derive an unbindable 6-digit port.
+  [ "$OCL_PORT_MAX" -le 9999 ]
+  [ "$OCL_PORT_BASE" -ge 1024 ]
+  run viewer_port_for "$OCL_PORT_MAX"
+  [ "$output" -le 65535 ]
 }
 
 # --- resolve_project_port / publish_container_running (sticky ports) --------
@@ -284,6 +325,30 @@ setup() {
   port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
   run resolve_project_port demo
   [ "$output" = "4097" ]
+}
+
+@test "resolve_project_port: fails when the whole port range is taken, instead of returning an unprobed port" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }   # every base and viewer port busy
+  run resolve_project_port demo
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "resolve_project_port: reaches well past 4196 (the old scan ceiling)" {
+  # Regression for the old `find_free_port 4097 4196` window: with 4096-4196
+  # all taken the launcher used to give up (echoing the unprobed 4196); it
+  # must now keep scanning and find 4200.
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() {
+    case "$1" in
+      4200|14200) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  run resolve_project_port demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "4200" ]
 }
 
 @test "resolve_project_port: fresh assignment skips 4096 when only its viewer port (14096) is busy" {
@@ -2711,4 +2776,257 @@ git_repo_pair() {
   local SLUG=demo PORT=4096 PROJECT_ENV="$ENVS_DIR/demo.env"
   write_project_env "/some/repo"
   grep -q 'demo.overrides.env' "$PROJECT_ENV"
+}
+
+# --- attached-TUI registry (lib/attach.sh) ----------------------------------
+# Two terminals on the same repo share one container, so "is anyone else in a
+# TUI on this stack?" decides both whether `compose up` may recreate the
+# container and whether an exiting TUI may tear the stack down.
+
+# spawn_holder SLUG PIDFILE — start a background process that claims a slot for
+# SLUG and then blocks. Echoes its pid, and records it so teardown can reap it.
+#
+# Two details matter. It spawns NO child of its own: a child would inherit the
+# slot's descriptor and keep the lock alive past its parent's death — correct
+# in production (the TUI is that child) but it would hide a stranded-slot bug
+# here. And it blocks on a read from a fifo held open read-write rather than on
+# `sleep` (a child) or a read from /dev/null (instant EOF, i.e. a busy spin).
+spawn_holder() {
+  local slug="$1" pidfile="$2"
+  # Separate `local`: bash does not see a name assigned earlier in the SAME
+  # local statement, so `local pidfile="$2" fifo="${pidfile}.fifo"` would
+  # silently make an empty-prefixed fifo.
+  local fifo="${pidfile}.fifo"
+  mkfifo "$fifo"
+  bash -c '
+    export ENVS_DIR="$1"
+    source "$2/lib/core.sh"; source "$2/lib/attach.sh"
+    attach_register "$3"
+    echo "$$" > "$4"
+    exec 7<>"$5"
+    read -r -t 60 _ <&7 || :
+  ' _ "$ENVS_DIR" "$REPO_ROOT" "$slug" "$pidfile" "$fifo" </dev/null >/dev/null 2>&1 &
+  local waited=0
+  while [ ! -s "$pidfile" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+  local pid
+  pid="$(cat "$pidfile")"
+  printf '%s\n' "$pid" >> "$BATS_TEST_TMPDIR/holders"
+  printf '%s' "$pid"
+}
+
+# reap_holders — kill anything spawn_holder started, so no test leaks a process
+# that lingers holding a lock (or the suite's terminal) for a minute.
+reap_holders() {
+  local pid
+  [ -f "$BATS_TEST_TMPDIR/holders" ] || return 0
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -9 "$pid" 2>/dev/null || :
+  done < "$BATS_TEST_TMPDIR/holders"
+  rm -f "$BATS_TEST_TMPDIR/holders"
+}
+
+teardown() {
+  reap_holders
+}
+
+# await_count SLUG N — wait (briefly) for attach_count SLUG to settle on N.
+# The kernel drops a killed holder's descriptors asynchronously, so a bare
+# assertion right after `kill` would be racy.
+await_count() {
+  local slug="$1" want="$2" waited=0
+  while [ "$(attach_count "$slug")" != "$want" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+  attach_count "$slug"
+}
+
+@test "attach_count: zero for a project nobody has ever attached to" {
+  run attach_count never-booted
+  [ "$output" = "0" ]
+}
+
+@test "attach_count: counts each attached TUI, across separate processes" {
+  spawn_holder demo "$BATS_TEST_TMPDIR/h1" >/dev/null
+  spawn_holder demo "$BATS_TEST_TMPDIR/h2" >/dev/null
+  run attach_count demo
+  [ "$output" = "2" ]
+}
+
+@test "attach_count: a slot whose holder was SIGKILLed is pruned, not stranded" {
+  # The reason the slot is an flock and not a pidfile: a kill -9 must not leave
+  # a stack that can never be torn down again.
+  local pid
+  pid="$(spawn_holder demo "$BATS_TEST_TMPDIR/h1")"
+  spawn_holder demo "$BATS_TEST_TMPDIR/h2" >/dev/null
+  [ "$(attach_count demo)" = "2" ]
+  kill -9 "$pid"
+  run await_count demo 1
+  [ "$output" = "1" ]
+  # ...and the dead holder's file is gone from disk, so the directory
+  # self-heals rather than accumulating junk.
+  [ ! -e "$(attach_dir demo)/${pid}.lock" ]
+}
+
+@test "attach_count: scoped per project — one slug's TUIs never count for another" {
+  spawn_holder demo "$BATS_TEST_TMPDIR/h1" >/dev/null
+  [ "$(attach_count demo)" = "1" ]
+  run attach_count other-project
+  [ "$output" = "0" ]
+}
+
+@test "attach_register/attach_release: a process sees its own slot, then gives it back" {
+  attach_register demo
+  [ -n "$OCL_ATTACH_SLOT" ]
+  [ "$(attach_count demo)" = "1" ]
+  attach_release demo
+  [ "$(attach_count demo)" = "0" ]
+  [ -z "$OCL_ATTACH_SLOT" ]
+}
+
+@test "attach_register: idempotent — a second call reuses the slot already held" {
+  attach_register demo
+  local first="$OCL_ATTACH_SLOT"
+  attach_register demo
+  [ "$OCL_ATTACH_SLOT" = "$first" ]
+  run attach_count demo
+  [ "$output" = "1" ]
+}
+
+@test "attach_release: safe no-op when this process holds no slot" {
+  run attach_release demo
+  [ "$status" -eq 0 ]
+}
+
+@test "attach_count: falls back to pid liveness when flock is not installed" {
+  # Degraded mode for a host without util-linux: the slot is named after its
+  # holder's pid, so a dead holder is still detectable (just not kill -9-proof
+  # against pid reuse).
+  local pid
+  pid="$(spawn_holder demo "$BATS_TEST_TMPDIR/h1")"
+  _attach_flock() { printf ''; }   # pretend flock is missing
+  [ "$(attach_count demo)" = "1" ]
+  kill -9 "$pid"
+  run await_count demo 0
+  [ "$output" = "0" ]
+}
+
+@test "attach_dir: slots live under ENVS_DIR, namespaced by slug" {
+  run attach_dir demo
+  [ "$output" = "$ENVS_DIR/demo.attach.d" ]
+}
+
+# --- docker network address pools -------------------------------------------
+# The ceiling that actually stops a new instance from starting once a few are
+# running: dockerd carves ~32 subnets out of its stock address pools, and each
+# stack takes OCL_NETS_PER_STACK of them. Its error names neither the cause nor
+# the fix, so the boot flow replaces it.
+
+@test "compose_up_or_explain: passes a successful command through, output and all" {
+  run compose_up_or_explain printf 'up done\n'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"up done"* ]]
+}
+
+@test "compose_up_or_explain: propagates an unrelated failure's exit code untouched" {
+  fake() { echo "no such image"; return 17; }
+  run compose_up_or_explain fake
+  [ "$status" -eq 17 ]
+  [[ "$output" == *"no such image"* ]]
+  [[ "$output" != *"address pools"* ]]
+}
+
+@test "compose_up_or_explain: explains an address-pool exhaustion instead of leaving the daemon's one-liner" {
+  fake() {
+    echo 'failed to create network opencode-demo_oc_egress: Error response from daemon: all predefined address pools have been fully subnetted'
+    return 1
+  }
+  run compose_up_or_explain fake
+  [ "$status" -eq 1 ]
+  # Names the real resource...
+  [[ "$output" == *"not out of ports"* ]]
+  # ...the immediate way out...
+  [[ "$output" == *"--down"* ]]
+  # ...and the permanent one.
+  [[ "$output" == *"default-address-pools"* ]]
+  [[ "$output" == *"/etc/docker/daemon.json"* ]]
+}
+
+@test "compose_up_or_explain: still shows compose's own output on the pool failure" {
+  fake() {
+    echo 'Network opencode-demo_oc_internal Created'
+    echo 'Error response from daemon: all predefined address pools have been fully subnetted'
+    return 1
+  }
+  run compose_up_or_explain fake
+  [[ "$output" == *"oc_internal  Created"* ]] || [[ "$output" == *"oc_internal Created"* ]]
+}
+
+@test "address_pool_advice: quotes the per-stack network count from one place" {
+  OCL_NETS_PER_STACK=9
+  run address_pool_advice
+  [[ "$output" == *"creates 9 bridge networks"* ]]
+}
+
+@test "OCL_NETS_PER_STACK: two, matching the compose file (see tests/compose.bats)" {
+  # The headroom arithmetic below divides by this, so a drift from
+  # docker/docker-compose.yml silently skews every estimate --doctor prints.
+  [ "$OCL_NETS_PER_STACK" -eq 2 ]
+}
+
+@test "docker_network_count: counts bridge networks" {
+  docker() { printf 'bridge\nopencode-a_oc_proxy\nopencode-a_oc_egress\n'; }
+  run docker_network_count
+  [ "$output" = "3" ]
+}
+
+@test "docker_network_count: 0 (not an error) when docker cannot be reached" {
+  docker() { return 1; }
+  run docker_network_count
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "doctor_check_address_pools: PASS with plenty of room" {
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '0\n' ;;
+      *) printf 'bridge\n' ;;
+    esac
+  }
+  run doctor_check_address_pools
+  [[ "$output" == *"[PASS"* ]]
+  [[ "$output" == *"docker address pools"* ]]
+}
+
+@test "doctor_check_address_pools: WARN, never FAIL, when the stock budget is spent" {
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '0\n' ;;
+      *) seq 1 31 ;;   # 31 bridge networks of a ~32 budget
+    esac
+  }
+  run doctor_check_address_pools
+  [ "$status" -eq 0 ]          # WARN must never flip --doctor's exit code
+  [[ "$output" == *"[WARN"* ]]
+  [[ "$output" == *"no room for another stack"* ]]
+}
+
+@test "doctor_check_address_pools: defers to a daemon that has explicit default-address-pools" {
+  # An admin who sized the pools has far more room than the stock budget knows
+  # about; --doctor must not call that setup broken.
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '2\n' ;;
+      *) seq 1 200 ;;
+    esac
+  }
+  run doctor_check_address_pools
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS"* ]]
+  [[ "$output" == *"explicit default-address-pools"* ]]
 }

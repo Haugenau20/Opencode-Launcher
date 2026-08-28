@@ -259,10 +259,72 @@ One launcher clone handles many repos — just point `start.sh` at another path:
 Each invocation derives its own project slug, port, and workspace mount from the
 path (nothing stored in `.env`). Each project gets its own web UI on its own port
 (the browser UI derives its backend from the page origin, so any port works) —
-they don't collide. If `opencode-pty` is enabled, its viewer port travels with
-the base port (base `4096` -> viewer `14096`, base `4097` -> viewer `14097`,
-etc.) — the two ranges stay disjoint, so multiple instances' viewers don't
-collide either.
+they don't collide. Ports are assigned from `4096` upward through `9999`, and a
+project's port is sticky: once a stack has been booted, that port is recorded in
+`.envs/<slug>.env` and reused on later runs even after the lower ports free up.
+If every port in the range is taken, `start.sh` says so and stops rather than
+booting onto a port it never checked.
+
+If `opencode-pty` is enabled, its viewer port travels with the base port (base
+`4096` -> viewer `14096`, base `4097` -> viewer `14097`, etc.) — which is why
+the range stops at `9999`: the viewer port is the base port with a literal `1`
+in front, so a 5-digit base would derive an unbindable 6-digit port. Within
+`4096`-`9999` the derived viewer ports land in `14096`-`19999`, so the two
+ranges stay disjoint and multiple instances' viewers don't collide either. A
+base port is only handed out when the base *and* its viewer port are both free.
+
+### Running out of room for new instances
+
+If a new stack fails with:
+
+```
+failed to create network opencode-<slug>_oc_egress:
+  Error response from daemon: all predefined address pools have been fully subnetted
+```
+
+that is **not** a port problem — Docker is out of network address space. Every
+stack creates 2 bridge networks, and a daemon with no `default-address-pools`
+configured carves only ~32 subnets in total (`172.16.0.0/12` as `/16`s plus
+`192.168.0.0/16` as `/20`s). Crucially that budget is shared with **every**
+stack on the host, not just this launcher's — so if you also run other
+compose projects, the ceiling arrives sooner than your launcher count suggests.
+`start.sh` recognises this error and prints the fix; `./start.sh --doctor`
+warns as you approach the limit.
+
+To free space now: `./start.sh --status`, `./start.sh --down <repo>`, then
+`docker network prune`. To raise the ceiling permanently, give dockerd more and
+smaller subnets — as root, in `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.16.0.0/12", "size": 24 },
+    { "base": "192.168.0.0/16", "size": 24 }
+  ]
+}
+```
+
+then `sudo systemctl restart docker`. That gives 4096 + 256 subnets instead of
+32. It renumbers existing container networks, so restart your stacks after.
+
+### Two terminals, one repo
+
+Running `./start.sh <repo>` from a second terminal while the first is still in
+its TUI **joins** that stack: same slug, same container, so you get a second TUI
+onto the same `/workspace`. That means two agents in one working tree — useful
+deliberately, messy by accident, so the launcher says so on the way in.
+
+The stack is shared, so it is torn down when the **last** TUI exits, not the
+first. While anyone is attached, a new run also leaves the running container
+alone (`--no-recreate`), so changes to `.env` or `--also` from the joining
+terminal apply the next time the stack starts clean rather than restarting the
+container out from under a live session. `./start.sh --status <repo>` reports
+how many TUIs are attached; `./start.sh --down <repo>` still closes all of them
+(it warns first) — that is the deliberate way to end a shared stack.
+
+For a genuinely separate instance on the same code, point the launcher at a
+different path (a git worktree or a second clone): the slug comes from the
+directory name, so that gets its own container, its own port and its own state.
 
 ### Per-project credentials
 

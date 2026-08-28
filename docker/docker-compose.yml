@@ -60,7 +60,7 @@ services:
       - oc_state:/home/dev/.local/share/opencode
       - oc_cfg:/home/dev/.config/opencode
     networks:
-      - oc_internal
+      # Internal-only, and it must stay that way — see the networks: block.
       - oc_proxy
     cap_add:
       - CHOWN
@@ -96,7 +96,7 @@ services:
       - "127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"
     networks:
       - oc_proxy
-      - oc_publish
+      - oc_external
     restart: unless-stopped
     stop_grace_period: 1s
 
@@ -117,19 +117,21 @@ services:
       - ${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z
     networks:
       - oc_proxy
-      - oc_egress
+      - oc_external
     stop_grace_period: 1s
 
+# Two networks: opencode gets an internal-only one, squid gets the external
+# one. That is the floor this model permits, and each extra costs a subnet
+# from dockerd's address pools (~32 on a stock daemon, shared host-wide).
+#
+# INVARIANT: no agent container on a non-internal network — squid is the only
+# route off-host. tests/compose.bats asserts it.
 networks:
-  oc_internal:
-    driver: bridge
-    internal: true
   oc_proxy:
     driver: bridge
     internal: true
-  oc_egress:
-    driver: bridge
-  oc_publish:
+  # Reaches off-host: squid's egress, and oc-publish's published ports.
+  oc_external:
     driver: bridge
 
 volumes:

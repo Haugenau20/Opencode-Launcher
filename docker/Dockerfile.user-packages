@@ -1,3 +1,7 @@
+# check=skip=InvalidDefaultArgInFrom
+# ^ must stay on line 1 (BuildKit parser directives precede everything). It
+# skips the lint on the intentionally default-less ARG BASE_IMAGE below.
+#
 # Thin LOCAL layer that bakes developer-requested packages onto the pulled
 # OpenCode base image. Built on the developer's HOST at launch time, where
 # apt-get and pip reach the internet directly — they do NOT go through the
@@ -15,6 +19,8 @@
 # Inherits USER root, ENTRYPOINT, CMD and WORKDIR from the base image — do NOT
 # reset them. Changing extra-packages.txt invalidates the COPY layer below and
 # triggers a rebuild.
+# No default on purpose: compose passes BASE_IMAGE: ${OC_BASE_IMAGE:?...}, so a
+# missing base fails loudly. A default would silently build on the wrong image.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
