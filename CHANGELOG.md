@@ -55,7 +55,13 @@ _Changes to the launcher itself._
 > and dates are a **best-effort approximation** — treat them as a guide, not a
 > precise tag-for-tag record. Entries from `0.6.0` onward are authoritative.
 
-## [Unreleased]
+## [0.18.0] — 2026-08-28
+
+**Action required:** re-run `./start.sh` rather than leaving a running stack
+up — the network topology changed, so containers are recreated on the next
+boot. If you run several stacks side by side (this launcher's or any other
+compose project), also consider raising Docker's address-pool budget; the
+address-pool entry below has the one-line `daemon.json` change.
 
 ### Fixed
 
@@ -85,9 +91,10 @@ _Changes to the launcher itself._
 
 - **"All predefined address pools have been fully subnetted" now explains
   itself.** This — not a port conflict — is what stops a new instance once a
-  few are running: each stack creates 4 bridge networks, and a daemon with no
-  `default-address-pools` carves only ~32 subnets in total, so the ceiling
-  arrives after a handful of concurrent stacks. The daemon's one-liner names
+  few are running: every stack creates bridge networks (see the network entry
+  under *Changed*), and a daemon with no `default-address-pools` carves only
+  ~32 subnets in total — a budget shared with every other compose project on
+  the host — so the ceiling arrives after a handful of concurrent stacks. The daemon's one-liner names
   neither the cause nor the fix and reads like a port clash. `start.sh` now
   recognises it and prints what ran out, how to free some now, and the
   `/etc/docker/daemon.json` change that raises the ceiling to 4352 subnets.
