@@ -273,6 +273,38 @@ in front, so a 5-digit base would derive an unbindable 6-digit port. Within
 ranges stay disjoint and multiple instances' viewers don't collide either. A
 base port is only handed out when the base *and* its viewer port are both free.
 
+### Running out of room for new instances
+
+If a new stack fails with:
+
+```
+failed to create network opencode-<slug>_oc_egress:
+  Error response from daemon: all predefined address pools have been fully subnetted
+```
+
+that is **not** a port problem — Docker is out of network address space. Every
+stack creates 4 bridge networks, and a daemon with no `default-address-pools`
+configured carves only ~32 subnets in total (`172.16.0.0/12` as `/16`s plus
+`192.168.0.0/16` as `/20`s), so a handful of concurrent stacks exhausts them.
+`start.sh` now recognises this error and prints the fix; `./start.sh --doctor`
+warns as you approach the limit.
+
+To free space now: `./start.sh --status`, `./start.sh --down <repo>`, then
+`docker network prune`. To raise the ceiling permanently, give dockerd more and
+smaller subnets — as root, in `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.16.0.0/12", "size": 24 },
+    { "base": "192.168.0.0/16", "size": 24 }
+  ]
+}
+```
+
+then `sudo systemctl restart docker`. That gives 4096 + 256 subnets instead of
+32. It renumbers existing container networks, so restart your stacks after.
+
 ### Two terminals, one repo
 
 Running `./start.sh <repo>` from a second terminal while the first is still in

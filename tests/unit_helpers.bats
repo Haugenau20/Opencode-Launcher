@@ -2919,3 +2919,108 @@ await_count() {
   run attach_dir demo
   [ "$output" = "$ENVS_DIR/demo.attach.d" ]
 }
+
+# --- docker network address pools -------------------------------------------
+# The ceiling that actually stops a new instance from starting once a few are
+# running: dockerd carves ~32 subnets out of its stock address pools, and each
+# stack takes OCL_NETS_PER_STACK of them. Its error names neither the cause nor
+# the fix, so the boot flow replaces it.
+
+@test "compose_up_or_explain: passes a successful command through, output and all" {
+  run compose_up_or_explain printf 'up done\n'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"up done"* ]]
+}
+
+@test "compose_up_or_explain: propagates an unrelated failure's exit code untouched" {
+  fake() { echo "no such image"; return 17; }
+  run compose_up_or_explain fake
+  [ "$status" -eq 17 ]
+  [[ "$output" == *"no such image"* ]]
+  [[ "$output" != *"address pools"* ]]
+}
+
+@test "compose_up_or_explain: explains an address-pool exhaustion instead of leaving the daemon's one-liner" {
+  fake() {
+    echo 'failed to create network opencode-demo_oc_egress: Error response from daemon: all predefined address pools have been fully subnetted'
+    return 1
+  }
+  run compose_up_or_explain fake
+  [ "$status" -eq 1 ]
+  # Names the real resource...
+  [[ "$output" == *"not out of ports"* ]]
+  # ...the immediate way out...
+  [[ "$output" == *"--down"* ]]
+  # ...and the permanent one.
+  [[ "$output" == *"default-address-pools"* ]]
+  [[ "$output" == *"/etc/docker/daemon.json"* ]]
+}
+
+@test "compose_up_or_explain: still shows compose's own output on the pool failure" {
+  fake() {
+    echo 'Network opencode-demo_oc_internal Created'
+    echo 'Error response from daemon: all predefined address pools have been fully subnetted'
+    return 1
+  }
+  run compose_up_or_explain fake
+  [[ "$output" == *"oc_internal  Created"* ]] || [[ "$output" == *"oc_internal Created"* ]]
+}
+
+@test "address_pool_advice: quotes the per-stack network count from one place" {
+  OCL_NETS_PER_STACK=9
+  run address_pool_advice
+  [[ "$output" == *"creates 9 bridge networks"* ]]
+}
+
+@test "docker_network_count: counts bridge networks" {
+  docker() { printf 'bridge\nopencode-a_oc_proxy\nopencode-a_oc_egress\n'; }
+  run docker_network_count
+  [ "$output" = "3" ]
+}
+
+@test "docker_network_count: 0 (not an error) when docker cannot be reached" {
+  docker() { return 1; }
+  run docker_network_count
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "doctor_check_address_pools: PASS with plenty of room" {
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '0\n' ;;
+      *) printf 'bridge\n' ;;
+    esac
+  }
+  run doctor_check_address_pools
+  [[ "$output" == *"[PASS"* ]]
+  [[ "$output" == *"docker address pools"* ]]
+}
+
+@test "doctor_check_address_pools: WARN, never FAIL, when the stock budget is spent" {
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '0\n' ;;
+      *) seq 1 31 ;;   # 31 bridge networks of a ~32 budget
+    esac
+  }
+  run doctor_check_address_pools
+  [ "$status" -eq 0 ]          # WARN must never flip --doctor's exit code
+  [[ "$output" == *"[WARN"* ]]
+  [[ "$output" == *"no room for another stack"* ]]
+}
+
+@test "doctor_check_address_pools: defers to a daemon that has explicit default-address-pools" {
+  # An admin who sized the pools has far more room than the stock budget knows
+  # about; --doctor must not call that setup broken.
+  docker() {
+    case "$*" in
+      *"len .DefaultAddressPools"*) printf '2\n' ;;
+      *) seq 1 200 ;;
+    esac
+  }
+  run doctor_check_address_pools
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[PASS"* ]]
+  [[ "$output" == *"explicit default-address-pools"* ]]
+}

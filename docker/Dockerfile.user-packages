@@ -1,3 +1,11 @@
+# check=skip=InvalidDefaultArgInFrom
+#
+# The `check=` directive above must stay on line 1 (BuildKit parser directives
+# have to precede every comment and instruction). It silences one lint on the
+# `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}` pair below: BuildKit warns that the
+# ARG has no default and so the FROM "results in empty or invalid base image
+# name". Here that is the point, not an oversight — see the ARG below.
+#
 # Thin LOCAL layer that bakes developer-requested packages onto the pulled
 # OpenCode base image. Built on the developer's HOST at launch time, where
 # apt-get and pip reach the internet directly — they do NOT go through the
@@ -15,6 +23,12 @@
 # Inherits USER root, ENTRYPOINT, CMD and WORKDIR from the base image — do NOT
 # reset them. Changing extra-packages.txt invalidates the COPY layer below and
 # triggers a rebuild.
+# Deliberately NO default. The only supported caller is
+# docker/docker-compose.user-packages.yml, which passes
+# BASE_IMAGE: ${OC_BASE_IMAGE:?...} — so a missing base image fails loudly at
+# compose time. A default here would instead let a build silently succeed
+# against the WRONG base image, which is a far worse failure than the lint
+# skipped at the top of this file.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 

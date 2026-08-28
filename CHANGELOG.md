@@ -83,6 +83,27 @@ _Changes to the launcher itself._
   `kill -9` cannot strand a stack. `--status` reports the attached count and
   `--down` warns before closing other people's sessions.
 
+- **"All predefined address pools have been fully subnetted" now explains
+  itself.** This — not a port conflict — is what stops a new instance once a
+  few are running: each stack creates 4 bridge networks, and a daemon with no
+  `default-address-pools` carves only ~32 subnets in total, so the ceiling
+  arrives after a handful of concurrent stacks. The daemon's one-liner names
+  neither the cause nor the fix and reads like a port clash. `start.sh` now
+  recognises it and prints what ran out, how to free some now, and the
+  `/etc/docker/daemon.json` change that raises the ceiling to 4352 subnets.
+  `./start.sh --doctor` gained a matching check that warns as the stock budget
+  runs low (WARN only, and it defers entirely to a daemon that already has
+  explicit `default-address-pools`).
+
+- **`docker/Dockerfile.user-packages` no longer emits
+  `InvalidDefaultArgInFrom` on every package-layer build.** BuildKit lints
+  `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}` for having no default. The absent
+  default is deliberate — the only supported caller passes
+  `${OC_BASE_IMAGE:?...}`, so a missing base fails loudly instead of silently
+  building from a wrong image — so the lint is skipped by name with a
+  `# check=skip=InvalidDefaultArgInFrom` directive rather than papered over
+  with a fake default.
+
 ### Changed
 
 - **Port range widened to `4096`-`9999`** (was `4096`-`4196`), so ~5900

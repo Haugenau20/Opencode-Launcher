@@ -771,12 +771,18 @@ cmd_run() {
   if [ "$OTHER_TUIS" -gt 0 ]; then
     UP_ARGS+=(--no-recreate)
   fi
+  #
+  # `up` is run through compose_up_or_explain rather than directly: the one
+  # failure a user hits by simply running one stack too many — dockerd having
+  # no address-pool space left for this stack's networks — surfaces as a bare
+  # "all predefined address pools have been fully subnetted", which explains
+  # neither the cause nor the fix. See address_pool_advice in lib/project.sh.
   if [ "$SERVE_WEB_UI" -eq 1 ]; then
     info "starting $PROJECT_NAME ..."
-    "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"}
+    compose_up_or_explain "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"}
   else
     info "starting $PROJECT_NAME (opencode + egress proxy; no web UI) ..."
-    "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"} opencode
+    compose_up_or_explain "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"} opencode
   fi
 
   # --- image digest (reproducibility / tamper-check anchor) ------------------

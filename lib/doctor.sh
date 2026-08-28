@@ -256,6 +256,48 @@ doctor_check_disk_space() {
   return 0
 }
 
+# doctor_check_address_pools — WARN when dockerd is close to running out of
+# network address space. This is the ceiling people actually hit when running
+# several stacks side by side, and its error ("all predefined address pools
+# have been fully subnetted") reads like anything but what it is, so it is
+# worth flagging BEFORE the boot that would trip it.
+#
+# The count is a heuristic, deliberately. dockerd exposes no "subnets left"
+# number, and the pool layout depends on default-address-pools; what we can
+# see is how many bridge networks exist, and that the stock layout carves
+# about 32 subnets. So: compare existing bridge networks against that stock
+# budget and warn when there is not room for another stack. WARN, never FAIL —
+# a host with default-address-pools configured has far more room than this
+# knows about, and must not be told its setup is broken.
+doctor_check_address_pools() {
+  local nets pools
+  nets="$(docker_network_count)"
+  if ! [ "$nets" -ge 0 ] 2>/dev/null; then
+    doctor_line WARN "docker address pools" "could not list networks — skipped"
+    return 0
+  fi
+  # An explicit default-address-pools means the admin has already sized this;
+  # report it and don't second-guess the budget.
+  pools="$(docker info --format '{{len .DefaultAddressPools}}' 2>/dev/null || true)"
+  if [ "${pools:-0}" -gt 0 ] 2>/dev/null; then
+    doctor_line PASS "docker address pools" "$nets bridge network(s); daemon has explicit default-address-pools"
+    return 0
+  fi
+  local budget=32 room
+  room=$(( (budget - nets) / OCL_NETS_PER_STACK ))
+  [ "$room" -ge 0 ] || room=0
+  if [ "$room" -lt 1 ]; then
+    doctor_line WARN "docker address pools" \
+      "$nets/$budget stock subnets used — no room for another stack (${OCL_NETS_PER_STACK} networks each); see --help or raise default-address-pools"
+  elif [ "$room" -le 2 ]; then
+    doctor_line WARN "docker address pools" \
+      "$nets/$budget stock subnets used — room for about $room more stack(s)"
+  else
+    doctor_line PASS "docker address pools" "$nets/$budget stock subnets used — room for about $room more stacks"
+  fi
+  return 0
+}
+
 # cmd_doctor [REPO_PATH] — run every check above and print one pasteable
 # report. Returns 1 if any check FAILed, 0 otherwise (WARN never fails it).
 # This is a pure diagnostic: it never pulls images, never boots the stack,
@@ -272,6 +314,7 @@ cmd_doctor() {
   doctor_check_docker_daemon || overall_rc=1
   doctor_check_compose_v2 || overall_rc=1
   doctor_check_podman || true
+  doctor_check_address_pools || true
 
   doctor_check_env_file || overall_rc=1
   doctor_check_env_keys || overall_rc=1
