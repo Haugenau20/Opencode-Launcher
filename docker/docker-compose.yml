@@ -60,9 +60,7 @@ services:
       - oc_state:/home/dev/.local/share/opencode
       - oc_cfg:/home/dev/.config/opencode
     networks:
-      # oc_proxy ONLY, and it is internal: true — this is the whole egress
-      # model in one line. opencode is on no network that reaches off-host,
-      # so squid (the one service that is) is its only route out.
+      # Internal-only, and it must stay that way — see the networks: block.
       - oc_proxy
     cap_add:
       - CHOWN
@@ -122,34 +120,17 @@ services:
       - oc_external
     stop_grace_period: 1s
 
-# TWO networks, which is the minimum this isolation model permits — and the
-# maximum worth paying for. Every bridge network costs a subnet out of
-# dockerd's address pools, and a daemon with no default-address-pools carves
-# only ~32 in total (172.16.0.0/12 as /16s plus 192.168.0.0/16 as /20s), shared
-# with every other stack on the host. Four networks per stack exhausted that
-# after a handful of concurrent projects; two doubles the headroom for
-# everything on the machine.
+# Two networks: opencode gets an internal-only one, squid gets the external
+# one. That is the floor this model permits, and each extra costs a subnet
+# from dockerd's address pools (~32 on a stock daemon, shared host-wide).
 #
-# THE INVARIANT: no agent container may sit on a non-internal network. opencode
-# is on oc_proxy alone, oc_proxy is internal: true, and squid is the only
-# service also on oc_external — so squid remains the single route off-host.
-# tests/compose.bats asserts exactly this; do not add a network to opencode.
-#
-# What used to be here and why it is gone:
-#   * oc_internal — carried opencode and nothing else. A single-member
-#     internal network connects its member to nothing, so it cost a subnet
-#     per stack and bought no isolation.
-#   * oc_egress + oc_publish — one carried squid, the other oc-publish, both
-#     non-internal. They are merged because those two containers already see
-#     each other on oc_proxy: one external bridge instead of two grants no
-#     adjacency they did not already have.
+# INVARIANT: no agent container on a non-internal network — squid is the only
+# route off-host. tests/compose.bats asserts it.
 networks:
   oc_proxy:
     driver: bridge
     internal: true
-  # The one network that reaches off-host. squid needs it for egress;
-  # oc-publish needs it for its loopback-bound ports: mapping to reach the
-  # host. No agent container is ever on it.
+  # Reaches off-host: squid's egress, and oc-publish's published ports.
   oc_external:
     driver: bridge
 
