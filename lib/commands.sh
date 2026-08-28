@@ -75,6 +75,12 @@ cmd_status() {
   info "repo:    $repo_path"
   if [ -n "$running" ]; then
     info "status:  up ($running)"
+    # Attached TUIs (lib/attach.sh). Worth reporting because it is what decides
+    # whether `./start.sh` on this repo will tear the stack down when its TUI
+    # exits: the last one out does, anyone else does not.
+    local tuis
+    tuis="$(attach_count "$slug")"
+    info "TUIs:    $tuis attached"
     info "web UI:  http://localhost:${port}"
     # opencode-pty viewer — same condition as the boot report (see pty_enabled,
     # lib/project.sh): only worth reporting when this project has the plugin
@@ -168,6 +174,16 @@ cmd_down() {
   local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
   project_env_for_management "$repo_path"
+
+  # An explicit --down is a deliberate teardown, so it goes through even with
+  # TUIs attached (unlike a TUI exiting, which stands down for the others) —
+  # but say what it is about to kill, since those sessions are in other
+  # terminals and their owner may not be the one typing this.
+  local attached
+  attached="$(attach_count "$SLUG")"
+  if [ "$attached" -gt 0 ]; then
+    warn "$attached TUI(s) are attached to $PROJECT_NAME — --down closes them too."
+  fi
 
   info "tearing down $PROJECT_NAME ..."
   if "${COMPOSE[@]}" down; then

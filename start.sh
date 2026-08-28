@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace opencode-pty}
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config mfiles usage project also packages allowlist digest manifest update doctor commands exec; do
+for __lib in core config mfiles usage project attach also packages allowlist digest manifest update doctor commands exec; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -639,6 +639,21 @@ cmd_run() {
     info "booting $SLUG on port $PORT (sticky/first-free; the web UI works on any port)."
   fi
 
+  # How many TUIs are already sitting on this project's stack, from other
+  # terminals (see lib/attach.sh). Non-zero means this run is JOINING a live
+  # stack rather than booting one, which changes two things below: `compose up`
+  # must not recreate the container out from under them (step 7), and this
+  # run's --also decision must not silently drop the mounts they are using
+  # (just below). Read once, here, so every later branch agrees.
+  local OTHER_TUIS
+  OTHER_TUIS="$(attach_count "$SLUG")"
+  if [ "$OTHER_TUIS" -gt 0 ]; then
+    warn "$OTHER_TUIS other TUI(s) already attached to $SLUG — joining that stack."
+    warn "  You get a second TUI into the SAME container and the SAME /workspace:"
+    warn "  two agents editing one working tree. The stack now stays up until the"
+    warn "  LAST TUI exits, and this run will not recreate the running container."
+  fi
+
   # --- 6. generate per-project env file (superset of .env) ------------------
   mkdir -p "$ENVS_DIR"
   local PROJECT_ENV
@@ -676,7 +691,18 @@ cmd_run() {
   # above) so it always wins; with none, delete any stale overlay from a
   # previous boot so `compose up -d` recreates the container without it.
   if [ -n "$ALSO_MOUNTS" ]; then
+    if [ "$OTHER_TUIS" -gt 0 ]; then
+      warn "--also: another TUI is attached, so the running container is left as it"
+      warn "  is — these mounts take effect the next time the stack starts clean."
+    fi
     write_also_overlay "$SLUG" "$ALSO_MOUNTS"
+    COMPOSE_FILES+=(-f "$(also_overlay_file "$SLUG")")
+  elif [ "$OTHER_TUIS" -gt 0 ] && [ -f "$(also_overlay_file "$SLUG")" ]; then
+    # No --also this run, but someone else's TUI is live on a stack that was
+    # booted WITH mounts. Deleting their overlay would both misreport --status
+    # and (once the container is next recreated) silently strip mounts they are
+    # working in, so keep it and keep it in COMPOSE_FILES — the compose config
+    # this run computes has to describe the container that is actually running.
     COMPOSE_FILES+=(-f "$(also_overlay_file "$SLUG")")
   else
     delete_also_overlay "$SLUG"
@@ -735,12 +761,22 @@ cmd_run() {
   # With the web UI, bring the whole stack up. Without it (one-shot --exec),
   # bring up only opencode; compose starts its squid dependency (depends_on)
   # but not oc-publish (a dependent, not a dependency), so no port is published.
+  #
+  # --no-recreate when someone else's TUI is attached: `up -d` otherwise
+  # recreates the opencode container whenever the effective compose config
+  # differs from what it was started with, and a recreate kills every TUI in
+  # it. Joining a live stack means taking it as it stands — this run's env/
+  # overlay changes apply the next time it starts clean, not now.
+  local UP_ARGS=()
+  if [ "$OTHER_TUIS" -gt 0 ]; then
+    UP_ARGS+=(--no-recreate)
+  fi
   if [ "$SERVE_WEB_UI" -eq 1 ]; then
     info "starting $PROJECT_NAME ..."
-    "${COMPOSE[@]}" up -d
+    "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"}
   else
     info "starting $PROJECT_NAME (opencode + egress proxy; no web UI) ..."
-    "${COMPOSE[@]}" up -d opencode
+    "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"} opencode
   fi
 
   # --- image digest (reproducibility / tamper-check anchor) ------------------
@@ -840,8 +876,16 @@ cmd_run() {
     # --exec: non-interactive one-shot run — the whole path (spinner, stdin
     # handling, stdout isolation on fd3, teardown, exit code) lives in
     # exec_run (lib/exec.sh). It exits with opencode run's own rc.
-    exec_run "$PROJECT_NAME" "$EXEC_PROMPT" "$CONTINUE" "$PERSIST" "${COMPOSE[@]}"
+    # --exec is a one-shot, not a TUI, so it claims no slot — but its teardown
+    # would still kill any TUI that is attached, so it has to know about them.
+    exec_run "$PROJECT_NAME" "$EXEC_PROMPT" "$CONTINUE" "$PERSIST" "$OTHER_TUIS" "${COMPOSE[@]}"
   elif [ "$ATTACH_TUI" -eq 1 ]; then
+    # Claim a slot for the lifetime of this TUI (lib/attach.sh) so a run from
+    # another terminal can see it — and so this run can tell, once its own TUI
+    # exits, whether it is the last one out. The slot's lock is held by an open
+    # descriptor, so it survives the `exec` below and is dropped by the kernel
+    # however this process ends.
+    attach_register "$SLUG"
     if [ "$PERSIST" -eq 1 ]; then
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
       # straight to docker exec (the stack outlives this script either way).
@@ -854,10 +898,16 @@ cmd_run() {
         -w /workspace \
         -it "opencode-${SLUG}" opencode ${OC_ARGS[@]+"${OC_ARGS[@]}"}
     else
-      # Default: attach, then tear the stack down once the TUI exits. No `exec`
-      # here — we need to run `compose down` afterwards. `|| true` so a non-zero
-      # TUI exit (e.g. Ctrl-C => 130) still reaches the teardown under set -e.
-      info "attaching TUI (exit/Ctrl-C tears the stack down; pass --persist to keep it up) ..."
+      # Default: attach, then tear the stack down once the TUI exits — but only
+      # if this was the LAST TUI on it. No `exec` here — we need to run
+      # `compose down` afterwards. `|| true` so a non-zero TUI exit (e.g.
+      # Ctrl-C => 130) still reaches the teardown under set -e.
+      if [ "$OTHER_TUIS" -gt 0 ]; then
+        info "attaching TUI (exit/Ctrl-C detaches; other TUIs are still attached, so"
+        info "  the stack stays up until the last one exits) ..."
+      else
+        info "attaching TUI (exit/Ctrl-C tears the stack down; pass --persist to keep it up) ..."
+      fi
       docker exec -u dev \
         -e HOME=/home/dev \
         -e XDG_CONFIG_HOME=/home/dev/.config \
@@ -865,8 +915,20 @@ cmd_run() {
         -w /workspace \
         -it "opencode-${SLUG}" opencode ${OC_ARGS[@]+"${OC_ARGS[@]}"} || true
       echo
-      info "TUI exited — tearing down $PROJECT_NAME (pass --persist next time to keep it running) ..."
-      "${COMPOSE[@]}" down
+      # Give up our own slot BEFORE counting — attach_count includes it, and the
+      # question here is whether anyone ELSE is still attached. Recounted rather
+      # than reusing OTHER_TUIS: those terminals may have come and gone while
+      # this TUI was running.
+      attach_release "$SLUG"
+      local REMAINING
+      REMAINING="$(attach_count "$SLUG")"
+      if [ "$REMAINING" -gt 0 ]; then
+        info "TUI exited — $REMAINING other TUI(s) still attached, so $PROJECT_NAME stays up."
+        info "  it is torn down when the last one exits."
+      else
+        info "TUI exited — tearing down $PROJECT_NAME (pass --persist next time to keep it running) ..."
+        "${COMPOSE[@]}" down
+      fi
     fi
   else
     info "detached: stack is running. Attach the TUI any time with:"

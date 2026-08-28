@@ -2777,3 +2777,145 @@ git_repo_pair() {
   write_project_env "/some/repo"
   grep -q 'demo.overrides.env' "$PROJECT_ENV"
 }
+
+# --- attached-TUI registry (lib/attach.sh) ----------------------------------
+# Two terminals on the same repo share one container, so "is anyone else in a
+# TUI on this stack?" decides both whether `compose up` may recreate the
+# container and whether an exiting TUI may tear the stack down.
+
+# spawn_holder SLUG PIDFILE — start a background process that claims a slot for
+# SLUG and then blocks. Echoes its pid, and records it so teardown can reap it.
+#
+# Two details matter. It spawns NO child of its own: a child would inherit the
+# slot's descriptor and keep the lock alive past its parent's death — correct
+# in production (the TUI is that child) but it would hide a stranded-slot bug
+# here. And it blocks on a read from a fifo held open read-write rather than on
+# `sleep` (a child) or a read from /dev/null (instant EOF, i.e. a busy spin).
+spawn_holder() {
+  local slug="$1" pidfile="$2"
+  # Separate `local`: bash does not see a name assigned earlier in the SAME
+  # local statement, so `local pidfile="$2" fifo="${pidfile}.fifo"` would
+  # silently make an empty-prefixed fifo.
+  local fifo="${pidfile}.fifo"
+  mkfifo "$fifo"
+  bash -c '
+    export ENVS_DIR="$1"
+    source "$2/lib/core.sh"; source "$2/lib/attach.sh"
+    attach_register "$3"
+    echo "$$" > "$4"
+    exec 7<>"$5"
+    read -r -t 60 _ <&7 || :
+  ' _ "$ENVS_DIR" "$REPO_ROOT" "$slug" "$pidfile" "$fifo" </dev/null >/dev/null 2>&1 &
+  local waited=0
+  while [ ! -s "$pidfile" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+  local pid
+  pid="$(cat "$pidfile")"
+  printf '%s\n' "$pid" >> "$BATS_TEST_TMPDIR/holders"
+  printf '%s' "$pid"
+}
+
+# reap_holders — kill anything spawn_holder started, so no test leaks a process
+# that lingers holding a lock (or the suite's terminal) for a minute.
+reap_holders() {
+  local pid
+  [ -f "$BATS_TEST_TMPDIR/holders" ] || return 0
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -9 "$pid" 2>/dev/null || :
+  done < "$BATS_TEST_TMPDIR/holders"
+  rm -f "$BATS_TEST_TMPDIR/holders"
+}
+
+teardown() {
+  reap_holders
+}
+
+# await_count SLUG N — wait (briefly) for attach_count SLUG to settle on N.
+# The kernel drops a killed holder's descriptors asynchronously, so a bare
+# assertion right after `kill` would be racy.
+await_count() {
+  local slug="$1" want="$2" waited=0
+  while [ "$(attach_count "$slug")" != "$want" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+  attach_count "$slug"
+}
+
+@test "attach_count: zero for a project nobody has ever attached to" {
+  run attach_count never-booted
+  [ "$output" = "0" ]
+}
+
+@test "attach_count: counts each attached TUI, across separate processes" {
+  spawn_holder demo "$BATS_TEST_TMPDIR/h1" >/dev/null
+  spawn_holder demo "$BATS_TEST_TMPDIR/h2" >/dev/null
+  run attach_count demo
+  [ "$output" = "2" ]
+}
+
+@test "attach_count: a slot whose holder was SIGKILLed is pruned, not stranded" {
+  # The reason the slot is an flock and not a pidfile: a kill -9 must not leave
+  # a stack that can never be torn down again.
+  local pid
+  pid="$(spawn_holder demo "$BATS_TEST_TMPDIR/h1")"
+  spawn_holder demo "$BATS_TEST_TMPDIR/h2" >/dev/null
+  [ "$(attach_count demo)" = "2" ]
+  kill -9 "$pid"
+  run await_count demo 1
+  [ "$output" = "1" ]
+  # ...and the dead holder's file is gone from disk, so the directory
+  # self-heals rather than accumulating junk.
+  [ ! -e "$(attach_dir demo)/${pid}.lock" ]
+}
+
+@test "attach_count: scoped per project — one slug's TUIs never count for another" {
+  spawn_holder demo "$BATS_TEST_TMPDIR/h1" >/dev/null
+  [ "$(attach_count demo)" = "1" ]
+  run attach_count other-project
+  [ "$output" = "0" ]
+}
+
+@test "attach_register/attach_release: a process sees its own slot, then gives it back" {
+  attach_register demo
+  [ -n "$OCL_ATTACH_SLOT" ]
+  [ "$(attach_count demo)" = "1" ]
+  attach_release demo
+  [ "$(attach_count demo)" = "0" ]
+  [ -z "$OCL_ATTACH_SLOT" ]
+}
+
+@test "attach_register: idempotent — a second call reuses the slot already held" {
+  attach_register demo
+  local first="$OCL_ATTACH_SLOT"
+  attach_register demo
+  [ "$OCL_ATTACH_SLOT" = "$first" ]
+  run attach_count demo
+  [ "$output" = "1" ]
+}
+
+@test "attach_release: safe no-op when this process holds no slot" {
+  run attach_release demo
+  [ "$status" -eq 0 ]
+}
+
+@test "attach_count: falls back to pid liveness when flock is not installed" {
+  # Degraded mode for a host without util-linux: the slot is named after its
+  # holder's pid, so a dead holder is still detectable (just not kill -9-proof
+  # against pid reuse).
+  local pid
+  pid="$(spawn_holder demo "$BATS_TEST_TMPDIR/h1")"
+  _attach_flock() { printf ''; }   # pretend flock is missing
+  [ "$(attach_count demo)" = "1" ]
+  kill -9 "$pid"
+  run await_count demo 0
+  [ "$output" = "0" ]
+}
+
+@test "attach_dir: slots live under ENVS_DIR, namespaced by slug" {
+  run attach_dir demo
+  [ "$output" = "$ENVS_DIR/demo.attach.d" ]
+}

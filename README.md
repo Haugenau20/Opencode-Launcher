@@ -273,6 +273,25 @@ in front, so a 5-digit base would derive an unbindable 6-digit port. Within
 ranges stay disjoint and multiple instances' viewers don't collide either. A
 base port is only handed out when the base *and* its viewer port are both free.
 
+### Two terminals, one repo
+
+Running `./start.sh <repo>` from a second terminal while the first is still in
+its TUI **joins** that stack: same slug, same container, so you get a second TUI
+onto the same `/workspace`. That means two agents in one working tree — useful
+deliberately, messy by accident, so the launcher says so on the way in.
+
+The stack is shared, so it is torn down when the **last** TUI exits, not the
+first. While anyone is attached, a new run also leaves the running container
+alone (`--no-recreate`), so changes to `.env` or `--also` from the joining
+terminal apply the next time the stack starts clean rather than restarting the
+container out from under a live session. `./start.sh --status <repo>` reports
+how many TUIs are attached; `./start.sh --down <repo>` still closes all of them
+(it warns first) — that is the deliberate way to end a shared stack.
+
+For a genuinely separate instance on the same code, point the launcher at a
+different path (a git worktree or a second clone): the slug comes from the
+directory name, so that gets its own container, its own port and its own state.
+
 ### Per-project credentials
 
 By default every project shares the credentials in `.env`. To give one project

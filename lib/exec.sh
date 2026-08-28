@@ -107,11 +107,15 @@ cmd_exec() {
 }
 
 # --- --exec run (non-interactive one-shot) ----------------------------------
-# exec_run PROJECT_NAME EXEC_PROMPT CONTINUE PERSIST [COMPOSE...] — run the
-# one-shot prompt inside the already-booted PROJECT_NAME container (container
-# name == project name), then (unless PERSIST) tear the stack down with the
-# passed-through COMPOSE invocation. Ends with `exit <rc>` carrying opencode's
-# own exit code. Called by cmd_run's attach step for the --exec path.
+# exec_run PROJECT_NAME EXEC_PROMPT CONTINUE PERSIST OTHER_TUIS [COMPOSE...] —
+# run the one-shot prompt inside the already-booted PROJECT_NAME container
+# (container name == project name), then tear the stack down with the
+# passed-through COMPOSE invocation — unless PERSIST, or unless OTHER_TUIS says
+# somebody is sitting in a TUI on this stack from another terminal
+# (lib/attach.sh). A one-shot --exec is not itself a TUI and claims no slot, but
+# its teardown reaches the same container as theirs, so it has to stand down
+# for them exactly as a TUI does. Ends with `exit <rc>` carrying opencode's own
+# exit code. Called by cmd_run's attach step for the --exec path.
 #
 # `-i` but deliberately NOT `-t` — output must pipe cleanly for scripting.
 # --continue prepends opencode's own `-c` (resume most recent session) ahead of
@@ -144,8 +148,8 @@ cmd_exec() {
 # so a nonzero `opencode run` (or teardown) never aborts the script before we
 # can exit with the RIGHT code.
 exec_run() {
-  local project_name="$1" prompt="$2" continue_flag="$3" persist="$4"
-  shift 4
+  local project_name="$1" prompt="$2" continue_flag="$3" persist="$4" others="${5:-0}"
+  shift 5
   local compose=("$@")
 
   local oc_args=()
@@ -181,6 +185,8 @@ exec_run() {
 
   if [ "$persist" -eq 1 ]; then
     info "exec finished (rc=$rc) — --persist: leaving $project_name running."
+  elif [ "$others" -gt 0 ]; then
+    info "exec finished (rc=$rc) — $others TUI(s) attached to $project_name, so it stays up."
   else
     info "exec finished (rc=$rc) — tearing down $project_name (pass --persist to keep it running) ..."
     "${compose[@]}" down || true

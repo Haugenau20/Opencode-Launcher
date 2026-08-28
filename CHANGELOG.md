@@ -69,6 +69,20 @@ _Changes to the launcher itself._
   now an explicit condition: `find_free_port` returns non-zero with no output,
   and the boot flow stops with a message naming the range and how to free it.
 
+- **A second `start.sh` on the same repo no longer kills the first one's TUI.**
+  Two terminals on one repo derive the same slug, so they share a container —
+  intended, and you do get a second TUI into the same `/workspace`. But whoever
+  quit first ran `compose down` on everyone, and the second run's `compose up
+  -d` recreated the container (any config drift did it; no `--also` this time
+  deleted the previous run's overlay) which killed the attached TUI. Attached
+  TUIs are now tracked in `.envs/<slug>.attach.d/` (`lib/attach.sh`), so:
+  teardown happens when the LAST TUI exits, `up -d` passes `--no-recreate`
+  while anyone is attached, a run with no `--also` keeps a live stack's
+  overlay, and `--exec`'s teardown stands down too. A slot is an flock held by
+  an open descriptor, so the kernel frees it however the holder dies — a
+  `kill -9` cannot strand a stack. `--status` reports the attached count and
+  `--down` warns before closing other people's sessions.
+
 ### Changed
 
 - **Port range widened to `4096`-`9999`** (was `4096`-`4196`), so ~5900
