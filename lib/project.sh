@@ -30,10 +30,24 @@ port_in_use() {
   fi
 }
 
+# --- host port range -------------------------------------------------------
+# The window fresh port assignment may hand out: OCL_PORT_BASE first, then
+# every port up to and including OCL_PORT_MAX.
+#
+# OCL_PORT_MAX MUST stay 4-digit (<= 9999). The opencode-pty viewer port is
+# derived by prepending a literal '1' to the base port — in docker-compose.yml
+# (`PTY_WEB_PORT: "1${OPENCODE_PORT}"` and the oc-publish `ports:` mapping) as
+# well as in viewer_port_for below — so a 5-digit base would derive a 6-digit
+# "port" that cannot be bound. Within 4096-9999 the derived viewer ports land
+# in 14096-19999, which cannot collide with the base range either.
+: "${OCL_PORT_BASE:=4096}"
+: "${OCL_PORT_MAX:=9999}"
+
 # viewer_port_for BASE — echo the opencode-pty web-viewer port derived from
 # BASE by the docker-compose.yml oc-publish/opencode blocks: a literal '1'
-# prepended to BASE (e.g. 4096 -> 14096). Assumes BASE stays a 4-digit port,
-# same assumption the compose interpolation (`1${OPENCODE_PORT:-4096}`) makes.
+# prepended to BASE (e.g. 4096 -> 14096). Only meaningful for a 4-digit BASE,
+# same assumption the compose interpolation (`1${OPENCODE_PORT:-4096}`) makes
+# — which is exactly why OCL_PORT_MAX above is capped at 9999.
 viewer_port_for() {
   printf '1%s' "$1"
 }
@@ -54,12 +68,22 @@ port_pair_free() {
 # "Free" means the viewer-port-aware sense (port_pair_free): a candidate whose
 # derived opencode-pty viewer port is taken gets skipped too, not just the
 # candidate itself.
+#
+# Returns 1 and echoes NOTHING when every candidate in [START, LIMIT) is taken.
+# It used to fall out of the loop and echo LIMIT itself — a port it had never
+# probed — so an exhausted range silently handed the caller a colliding port
+# and the failure only surfaced later as an opaque `docker compose up` bind
+# error. Exhaustion is a caller-visible condition now.
 find_free_port() {
   local p="$1" limit="${2:-$(( $1 + 100 ))}"
-  while [ "$p" -lt "$limit" ] && ! port_pair_free "$p"; do
+  while [ "$p" -lt "$limit" ]; do
+    if port_pair_free "$p"; then
+      printf '%s' "$p"
+      return 0
+    fi
     p=$((p + 1))
   done
-  printf '%s' "$p"
+  return 1
 }
 
 # recorded_port SLUG — echo the OPENCODE_PORT last written to
@@ -105,14 +129,20 @@ publish_container_running() {
 #      running with no recorded port, fall through to the default logic.
 #   b. else if a recorded port exists and is currently free, reuse it (sticky
 #      across down/up cycles, even after 4096 frees up again).
-#   c. else 4096 if free (base AND its opencode-pty viewer port 14096 — see
-#      port_pair_free), otherwise the first free port in 4097-4196
-#      (find_free_port; existing fallback behavior, now equally viewer-aware).
+#   c. else OCL_PORT_BASE (4096) if free (base AND its opencode-pty viewer port
+#      14096 — see port_pair_free), otherwise the first free port in
+#      OCL_PORT_BASE+1 .. OCL_PORT_MAX (find_free_port, equally viewer-aware).
 #
 # Only the FRESH-assignment branch (c) gets the viewer-port coupling — (a)/(b)
 # are sticky reuse of a port this project itself already recorded/is running
 # on, and must keep behaving exactly as before (never bounced to a different
 # port just because a viewer port looks busy).
+#
+# Returns 1 and echoes NOTHING when branch (c) finds the whole range taken, so
+# callers can report a real exhaustion instead of booting onto a port nothing
+# ever probed. With the range at 4096-9999 that is ~5900 concurrent stacks, so
+# in practice exhaustion means something else on the host has taken the range,
+# not that you ran out of projects.
 resolve_project_port() {
   local slug="$1" recorded running=0
   recorded="$(recorded_port "$slug")"
@@ -128,11 +158,18 @@ resolve_project_port() {
     return 0
   fi
 
-  if port_pair_free 4096; then
-    printf '%s' 4096
+  if port_pair_free "$OCL_PORT_BASE"; then
+    printf '%s' "$OCL_PORT_BASE"
     return 0
   fi
-  find_free_port 4097 4196
+  find_free_port "$(( OCL_PORT_BASE + 1 ))" "$(( OCL_PORT_MAX + 1 ))"
+}
+
+# port_exhausted_msg — the one wording every caller uses when
+# resolve_project_port comes back empty, so the boot flow and the read-only
+# commands explain the same thing.
+port_exhausted_msg() {
+  printf '%s' "no free host port in ${OCL_PORT_BASE}-${OCL_PORT_MAX} (base port and its '1'-prefixed opencode-pty viewer port must BOTH be free). Free some ports, or stop stacks you no longer need with ./start.sh --down <repo>."
 }
 
 # open_url URL — best-effort launch of the user's default browser on URL via
@@ -218,7 +255,7 @@ derive_project_settings() {
   local repo_path="$1"
 
   SLUG="$(derive_slug "$repo_path")"
-  PORT="$(resolve_project_port "$SLUG")"
+  PORT="$(resolve_project_port "$SLUG")" || die "$(port_exhausted_msg)"
 
   local compose_files
   _project_compose_files "$SLUG"

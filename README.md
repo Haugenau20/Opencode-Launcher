@@ -259,10 +259,19 @@ One launcher clone handles many repos — just point `start.sh` at another path:
 Each invocation derives its own project slug, port, and workspace mount from the
 path (nothing stored in `.env`). Each project gets its own web UI on its own port
 (the browser UI derives its backend from the page origin, so any port works) —
-they don't collide. If `opencode-pty` is enabled, its viewer port travels with
-the base port (base `4096` -> viewer `14096`, base `4097` -> viewer `14097`,
-etc.) — the two ranges stay disjoint, so multiple instances' viewers don't
-collide either.
+they don't collide. Ports are assigned from `4096` upward through `9999`, and a
+project's port is sticky: once a stack has been booted, that port is recorded in
+`.envs/<slug>.env` and reused on later runs even after the lower ports free up.
+If every port in the range is taken, `start.sh` says so and stops rather than
+booting onto a port it never checked.
+
+If `opencode-pty` is enabled, its viewer port travels with the base port (base
+`4096` -> viewer `14096`, base `4097` -> viewer `14097`, etc.) — which is why
+the range stops at `9999`: the viewer port is the base port with a literal `1`
+in front, so a 5-digit base would derive an unbindable 6-digit port. Within
+`4096`-`9999` the derived viewer ports land in `14096`-`19999`, so the two
+ranges stay disjoint and multiple instances' viewers don't collide either. A
+base port is only handed out when the base *and* its viewer port are both free.
 
 ### Per-project credentials
 

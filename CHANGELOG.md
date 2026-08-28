@@ -57,7 +57,30 @@ _Changes to the launcher itself._
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Port assignment no longer gives up (or lies) after ~100 instances.** Fresh
+  port assignment scanned `4096`, then `4097-4196`, and — this is the actual
+  bug — when every candidate in that window was taken, `find_free_port` fell
+  out of its loop and echoed the *limit* itself, `4196`: a port it had never
+  probed. The launcher then wrote that port into `.envs/<slug>.env`, printed
+  `http://localhost:4196`, and handed it to compose, which failed on a port
+  bind with no hint that the real cause was an exhausted range. Exhaustion is
+  now an explicit condition: `find_free_port` returns non-zero with no output,
+  and the boot flow stops with a message naming the range and how to free it.
+
+### Changed
+
+- **Port range widened to `4096`-`9999`** (was `4096`-`4196`), so ~5900
+  concurrent stacks fit instead of 100. The ceiling is `9999` on purpose and
+  should not be raised: the `opencode-pty` viewer port is the base port with a
+  literal `1` prepended (`docker-compose.yml` derives both `PTY_WEB_PORT` and
+  the `oc-publish` `ports:` mapping that way), so a 5-digit base would derive
+  an unbindable 6-digit port. Within `4096`-`9999` the viewer ports land in
+  `14096`-`19999`, disjoint from the base range. The bounds are named
+  constants (`OCL_PORT_BASE` / `OCL_PORT_MAX`) in `lib/project.sh` rather than
+  literals scattered across the boot flow, and a unit test pins the 4-digit
+  invariant.
 
 ## [0.17.0] — 2026-08-26
 

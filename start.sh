@@ -630,11 +630,12 @@ cmd_run() {
   # Port: sticky per project via resolve_project_port (shared with
   # derive_project_settings in lib/project.sh — see there for the full rule).
   # In short: reuse this project's own running port, else its last-recorded
-  # port if that's free, else 4096, else the first free port in 4097-4196.
+  # port if that's free, else 4096, else the first free port up to 9999.
   # The browser web UI derives its backend from the page's own origin, so any
-  # host port works.
-  PORT="$(resolve_project_port "$SLUG")"
-  if [ "$PORT" != "4096" ]; then
+  # host port works. An empty result means the whole range is taken — fail
+  # here with something readable rather than booting onto an unprobed port.
+  PORT="$(resolve_project_port "$SLUG")" || die "$(port_exhausted_msg)"
+  if [ "$PORT" != "$OCL_PORT_BASE" ]; then
     info "booting $SLUG on port $PORT (sticky/first-free; the web UI works on any port)."
   fi
 

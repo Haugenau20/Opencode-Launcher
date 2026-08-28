@@ -111,10 +111,14 @@ setup() {
   [ "$output" = "4099" ]
 }
 
-@test "find_free_port: stops at LIMIT even if everything is busy" {
+@test "find_free_port: stops at LIMIT and reports failure when everything is busy" {
+  # It used to echo LIMIT (4100) here — a port it had never probed. Exhaustion
+  # is now a non-zero return with no output; see the range-exhaustion block
+  # below for the rest of that contract.
   port_in_use() { return 0; }   # everything busy
   run find_free_port 4097 4100
-  [ "$output" = "4100" ]
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
 }
 
 # --- viewer_port_for / port_pair_free (opencode-pty viewer-port coupling) ---
@@ -152,6 +156,43 @@ setup() {
   port_in_use() { [ "$1" = 14097 ] && return 0 || return 1; }
   run find_free_port 4097 4196
   [ "$output" = "4098" ]
+}
+
+# --- range exhaustion ------------------------------------------------------
+# find_free_port used to fall out of its loop and echo LIMIT — a port it had
+# never probed — so an exhausted range silently handed back a colliding port
+# and the failure surfaced later as an opaque `docker compose up` bind error.
+
+@test "find_free_port: fails (no output) when every candidate in the range is taken" {
+  port_in_use() { return 0; }   # everything busy
+  run find_free_port 4097 4100
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "find_free_port: never echoes the un-probed LIMIT itself" {
+  # Only LIMIT (4100) is free; it is exclusive, so this must still fail
+  # rather than hand out a port outside the requested range.
+  port_in_use() { [ "$1" = 4100 ] && return 1 || return 0; }
+  run find_free_port 4097 4100
+  [ "$status" -ne 0 ]
+  [ "$output" != "4100" ]
+}
+
+@test "find_free_port: scans the whole inclusive range up to OCL_PORT_MAX" {
+  # Everything busy except the very last port the launcher may hand out.
+  port_in_use() { [ "$1" = 9999 ] || [ "$1" = 19999 ] && return 1 || return 0; }
+  run find_free_port 4097 $(( OCL_PORT_MAX + 1 ))
+  [ "$output" = "9999" ]
+}
+
+@test "OCL_PORT_MAX stays 4-digit so the '1'-prefixed viewer port is bindable" {
+  # docker-compose.yml derives PTY_WEB_PORT/the oc-publish mapping as
+  # 1<OPENCODE_PORT>; a 5-digit base would derive an unbindable 6-digit port.
+  [ "$OCL_PORT_MAX" -le 9999 ]
+  [ "$OCL_PORT_BASE" -ge 1024 ]
+  run viewer_port_for "$OCL_PORT_MAX"
+  [ "$output" -le 65535 ]
 }
 
 # --- resolve_project_port / publish_container_running (sticky ports) --------
@@ -284,6 +325,30 @@ setup() {
   port_in_use() { [ "$1" = 4096 ] && return 0 || return 1; }
   run resolve_project_port demo
   [ "$output" = "4097" ]
+}
+
+@test "resolve_project_port: fails when the whole port range is taken, instead of returning an unprobed port" {
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() { return 0; }   # every base and viewer port busy
+  run resolve_project_port demo
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "resolve_project_port: reaches well past 4196 (the old scan ceiling)" {
+  # Regression for the old `find_free_port 4097 4196` window: with 4096-4196
+  # all taken the launcher used to give up (echoing the unprobed 4196); it
+  # must now keep scanning and find 4200.
+  docker() { [ "$1" = ps ] && printf ''; }
+  port_in_use() {
+    case "$1" in
+      4200|14200) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  run resolve_project_port demo
+  [ "$status" -eq 0 ]
+  [ "$output" = "4200" ]
 }
 
 @test "resolve_project_port: fresh assignment skips 4096 when only its viewer port (14096) is busy" {
