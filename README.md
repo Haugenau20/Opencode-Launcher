@@ -283,10 +283,12 @@ failed to create network opencode-<slug>_oc_egress:
 ```
 
 that is **not** a port problem — Docker is out of network address space. Every
-stack creates 4 bridge networks, and a daemon with no `default-address-pools`
+stack creates 2 bridge networks, and a daemon with no `default-address-pools`
 configured carves only ~32 subnets in total (`172.16.0.0/12` as `/16`s plus
-`192.168.0.0/16` as `/20`s), so a handful of concurrent stacks exhausts them.
-`start.sh` now recognises this error and prints the fix; `./start.sh --doctor`
+`192.168.0.0/16` as `/20`s). Crucially that budget is shared with **every**
+stack on the host, not just this launcher's — so if you also run other
+compose projects, the ceiling arrives sooner than your launcher count suggests.
+`start.sh` recognises this error and prints the fix; `./start.sh --doctor`
 warns as you approach the limit.
 
 To free space now: `./start.sh --status`, `./start.sh --down <repo>`, then

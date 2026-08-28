@@ -106,6 +106,21 @@ _Changes to the launcher itself._
 
 ### Changed
 
+- **Each stack now creates 2 docker networks instead of 4**, doubling how many
+  stacks fit in dockerd's address pools — and freeing subnets for every other
+  compose project on the host, since they all draw on the same ~32. Two removals,
+  neither of which changes what any container can reach: `oc_internal` carried
+  `opencode` and nothing else (a single-member internal network connects its
+  member to nothing), and `oc_egress`/`oc_publish` are merged into one
+  `oc_external` because `squid` and `oc-publish` already saw each other on
+  `oc_proxy`. The egress model is untouched: `opencode` is on `oc_proxy` alone,
+  `oc_proxy` is `internal: true`, and `squid` remains the only route off-host.
+  Two is the floor this isolation model permits, not a number picked for
+  roundness. New `tests/compose.bats` pins the invariant — no agent container on
+  a non-internal network — plus the network count and its agreement with
+  `OCL_NETS_PER_STACK`. **Existing stacks recreate their containers on the next
+  boot.**
+
 - **Port range widened to `4096`-`9999`** (was `4096`-`4196`), so ~5900
   concurrent stacks fit instead of 100. The ceiling is `9999` on purpose and
   should not be raised: the `opencode-pty` viewer port is the base port with a

@@ -2972,6 +2972,12 @@ await_count() {
   [[ "$output" == *"creates 9 bridge networks"* ]]
 }
 
+@test "OCL_NETS_PER_STACK: two, matching the compose file (see tests/compose.bats)" {
+  # The headroom arithmetic below divides by this, so a drift from
+  # docker/docker-compose.yml silently skews every estimate --doctor prints.
+  [ "$OCL_NETS_PER_STACK" -eq 2 ]
+}
+
 @test "docker_network_count: counts bridge networks" {
   docker() { printf 'bridge\nopencode-a_oc_proxy\nopencode-a_oc_egress\n'; }
   run docker_network_count

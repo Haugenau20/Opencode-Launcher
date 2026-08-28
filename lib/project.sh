@@ -409,7 +409,7 @@ project_env_for_management() {
 
 # How many networks docker/docker-compose.yml creates per stack. Keep in sync
 # with its `networks:` block.
-: "${OCL_NETS_PER_STACK:=4}"
+: "${OCL_NETS_PER_STACK:=2}"
 
 # docker_network_count — echo how many docker networks currently exist, or
 # nothing if that cannot be determined. Only bridge networks consume a pool
@@ -428,7 +428,9 @@ Docker ran out of network address space, not out of ports.
 Every launcher stack creates ${OCL_NETS_PER_STACK} bridge networks, and each needs a subnet
 from the daemon's address pools. With no default-address-pools configured,
 dockerd carves only ~32 subnets in total (172.16.0.0/12 as /16s, plus
-192.168.0.0/16 as /20s) — so a handful of concurrent stacks exhausts them.
+192.168.0.0/16 as /20s) — and that budget is shared with every OTHER stack on
+this host, not just this launcher's. So the ceiling can arrive well before you
+have many launcher projects up.
 
 Two ways forward:
 
