@@ -51,5 +51,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/podman-runtime"
           chmod 700 "$RUNNER_TEMP/podman-runtime"
           echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/podman-runtime" >> "$GITHUB_ENV"
+          # Hosted runners have no systemd user bus. Use one isolated config
+          # for both Podman and its Buildah build steps, rather than relying on
+          # Podman's per-command fallback from systemd to cgroupfs.
+          printf '%s\n' '[engine]' 'cgroup_manager = "cgroupfs"' 'events_logger = "file"' \
+            > "$RUNNER_TEMP/containers.conf"
+          echo "CONTAINERS_CONF=$RUNNER_TEMP/containers.conf" >> "$GITHUB_ENV"
       - name: Exercise checked-in Compose configuration with real containers
         run: bash tests/integration/runtime-smoke.sh '${{ matrix.engine }}'
