@@ -35,7 +35,7 @@ jobs:
         if: matrix.engine == 'podman'
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs python3-venv
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs python3-venv dbus-user-session
           python3 -m venv "$RUNNER_TEMP/podman-compose"
           "$RUNNER_TEMP/podman-compose/bin/pip" install 'podman-compose==1.5.0'
           echo "$RUNNER_TEMP/podman-compose/bin" >> "$GITHUB_PATH"
@@ -48,12 +48,24 @@ jobs:
           # The hosted runner is disposable; this only permits its test account
           # to create the rootless user namespaces the Podman case requires.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          mkdir -p "$RUNNER_TEMP/podman-runtime"
-          chmod 700 "$RUNNER_TEMP/podman-runtime"
-          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/podman-runtime" >> "$GITHUB_ENV"
-          # Hosted runners have no systemd user bus. Use one isolated config
-          # for both Podman and its Buildah build steps, rather than relying on
-          # Podman's per-command fallback from systemd to cgroupfs.
+          # Netavark/Aardvark and rootless network helpers need a real user
+          # session; an arbitrary temporary XDG_RUNTIME_DIR has no user bus.
+          runtime_uid="$(id -u)"
+          runtime_user="$(id -un)"
+          sudo loginctl enable-linger "$runtime_user"
+          sudo systemctl start "user@${runtime_uid}.service"
+          export XDG_RUNTIME_DIR="/run/user/$runtime_uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          for attempt in {1..30}; do
+            [ -S "$XDG_RUNTIME_DIR/bus" ] && break
+            sleep 1
+          done
+          test -S "$XDG_RUNTIME_DIR/bus"
+          timeout 10s systemctl --user show-environment >/dev/null
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          # Keep Podman and its Buildah build steps on the same explicit
+          # cgroup configuration in this disposable CI job.
           printf '%s\n' '[engine]' 'cgroup_manager = "cgroupfs"' 'events_logger = "file"' \
             > "$RUNNER_TEMP/containers.conf"
           echo "CONTAINERS_CONF=$RUNNER_TEMP/containers.conf" >> "$GITHUB_ENV"
