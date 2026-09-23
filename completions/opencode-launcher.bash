@@ -14,7 +14,7 @@ _opencode_launcher_flags=(
   --continue -c
   --persist --web
   --detach --no-tui
-  --podman
+  --engine --podman
   --tui
   --open
   --also
@@ -37,10 +37,22 @@ _opencode_launcher_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]:-}"
 
+  if [[ "$prev" == --engine ]]; then
+    mapfile -t COMPREPLY < <(compgen -W 'docker podman' -- "$cur")
+    return 0
+  fi
+  if [[ "$cur" == --engine=* ]]; then
+    local engine
+    for engine in docker podman; do
+      [[ "--engine=$engine" == "$cur"* ]] && COMPREPLY+=("--engine=$engine")
+    done
+    return 0
+  fi
+
   # Only start.sh itself takes a flag right after it; once a non-flag word
   # (the repo path) has been typed, just keep offering directories.
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=($(compgen -W "${_opencode_launcher_flags[*]}" -- "$cur"))
+    mapfile -t COMPREPLY < <(compgen -W "${_opencode_launcher_flags[*]}" -- "$cur")
     return 0
   fi
 
@@ -51,7 +63,7 @@ _opencode_launcher_complete() {
   # nothing useful rather than something wrong).
   # <host-repo-path>: native directory completion (compgen -d), matching
   # every flag above that takes a repo path argument.
-  COMPREPLY=($(compgen -d -- "$cur"))
+  mapfile -t COMPREPLY < <(compgen -d -- "$cur")
 }
 
 complete -F _opencode_launcher_complete start.sh

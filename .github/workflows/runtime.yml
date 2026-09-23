@@ -1,0 +1,49 @@
+name: Runtime adapters
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y bats python3-yaml zsh
+      - run: bash tests/run.sh
+
+  containers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rootless Podman and the explicit Compose provider
+        if: matrix.engine == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs python3-venv
+          python3 -m venv "$RUNNER_TEMP/podman-compose"
+          "$RUNNER_TEMP/podman-compose/bin/pip" install 'podman-compose==1.5.0'
+          echo "$RUNNER_TEMP/podman-compose/bin" >> "$GITHUB_PATH"
+          if ! grep -q "^$(id -un):" /etc/subuid; then
+            sudo usermod --add-subuids 200000-265535 "$(id -un)"
+          fi
+          if ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subgids 200000-265535 "$(id -un)"
+          fi
+          # The hosted runner is disposable; this only permits its test account
+          # to create the rootless user namespaces the Podman case requires.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          mkdir -p "$RUNNER_TEMP/podman-runtime"
+          chmod 700 "$RUNNER_TEMP/podman-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/podman-runtime" >> "$GITHUB_ENV"
+      - name: Exercise checked-in Compose configuration with real containers
+        run: bash tests/integration/runtime-smoke.sh '${{ matrix.engine }}'

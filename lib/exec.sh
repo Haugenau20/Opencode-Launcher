@@ -112,9 +112,8 @@ cmd_exec() {
 # (container name == project name), then tear the stack down with the
 # passed-through COMPOSE invocation — unless PERSIST, or unless OTHER_TUIS says
 # somebody is sitting in a TUI on this stack from another terminal
-# (lib/attach.sh). A one-shot --exec is not itself a TUI and claims no slot, but
-# its teardown reaches the same container as theirs, so it has to stand down
-# for them exactly as a TUI does. Ends with `exit <rc>` carrying opencode's own
+# (lib/attach.sh). A one-shot holds the same session slot as an interactive
+# user, so overlapping prompts cannot stop each other's containers. Ends with `exit <rc>` carrying opencode's own
 # exit code. Called by cmd_run's attach step for the --exec path.
 #
 # `-i` but deliberately NOT `-t` — output must pipe cleanly for scripting.
@@ -158,7 +157,7 @@ exec_run() {
   info "exec: running one-shot prompt in $project_name ..."
   local rc=0 answer_file
   answer_file="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/oc-exec-answer.$$")"
-  local exec_cmd=(docker exec -u dev
+  local exec_cmd=(runtime_exec -u dev
     -e HOME=/home/dev
     -e XDG_CONFIG_HOME=/home/dev/.config
     -e XDG_DATA_HOME=/home/dev/.local/share
@@ -183,6 +182,15 @@ exec_run() {
   cat "$answer_file" >&3 || true
   rm -f "$answer_file"
 
+  # Recount under the lifecycle lock, since sessions may have joined or left
+  # while the prompt was running. On contention leave the stack up safely.
+  if ! runtime_lock_project "$SLUG"; then
+    attach_release "$SLUG"
+    warn "another operation is in progress; leaving $project_name running."
+    exit "$rc"
+  fi
+  attach_release "$SLUG"
+  others="$(attach_count "$SLUG")"
   if [ "$persist" -eq 1 ]; then
     info "exec finished (rc=$rc) — --persist: leaving $project_name running."
   elif [ "$others" -gt 0 ]; then
@@ -191,5 +199,6 @@ exec_run() {
     info "exec finished (rc=$rc) — tearing down $project_name (pass --persist to keep it running) ..."
     "${compose[@]}" down || true
   fi
+  runtime_release_project
   exit "$rc"
 }

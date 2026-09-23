@@ -22,6 +22,10 @@ make_sandbox() {
   cp "$REPO_ROOT"/docker/docker-compose*.yml "$SANDBOX/docker/" 2>/dev/null || true
   cp -r "$REPO_ROOT/extra-allowlist.d" "$SANDBOX/" 2>/dev/null || true
 
+  export FAKE_PODMAN_LOG="$BATS_TEST_TMPDIR/podman.log"
+  : > "$FAKE_PODMAN_LOG"
+  export FAKE_PODMAN_COMPOSE_LOG="$BATS_TEST_TMPDIR/podman-compose.log"
+  : > "$FAKE_PODMAN_COMPOSE_LOG"
   export FAKE_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
   : > "$FAKE_DOCKER_LOG"
   export FAKE_XDG_OPEN_LOG="$BATS_TEST_TMPDIR/xdg-open.log"

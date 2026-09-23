@@ -21,8 +21,8 @@
 # unavailable, etc.) just yields empty output.
 image_manifest() {
   local image="$1" out
-  docker image inspect "$image" >/dev/null 2>&1 || return 1
-  out="$(docker run --rm --entrypoint cat "$image" /etc/opencode/manifest.json 2>/dev/null)" || return 1
+  runtime_image_inspect "$image" >/dev/null 2>&1 || return 1
+  out="$(runtime_run --rm --entrypoint cat "$image" /etc/opencode/manifest.json 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"
 }
@@ -74,7 +74,7 @@ manifest_missing_keys() {
 # locally, `docker` error, etc. all degrade to empty output).
 image_version_label() {
   local image="$1" out
-  out="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image" 2>/dev/null)" || return 1
+  out="$(runtime_image_label "$image" org.opencontainers.image.version 2>/dev/null)" || return 1
   case "$out" in
     ''|'<no value>'|'<nil>') return 1 ;;
   esac
@@ -88,7 +88,7 @@ image_version_label() {
 # VERSION not found in it, etc).
 image_changelog_section() {
   local image="$1" version="$2" out
-  out="$(docker run --rm --entrypoint sed "$image" \
+  out="$(runtime_run --rm --entrypoint sed "$image" \
     -n "/^## \[${version}\]/,/^## /p" /etc/opencode/CHANGELOG.md 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   # The range match above intentionally includes the NEXT section's heading

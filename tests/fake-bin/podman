@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Fake local Podman. Unknown application/image operations reuse the Docker
+# fixture, but keep an independent invocation log and rootless controls.
+printf '%s\n' "$*" >> "${FAKE_PODMAN_LOG:-/dev/null}"
+[ "${1:-}" != --remote=false ] || shift
+case "${1:-}" in
+  info)
+    [ "${FAKE_PODMAN_INFO_RC:-0}" -eq 0 ] || exit "$FAKE_PODMAN_INFO_RC"
+    case "$*" in
+      *Rootless*) printf '%s\n' "${FAKE_PODMAN_ROOTLESS:-true}" ;;
+      *GraphRoot*) printf '%s\n' "${FAKE_PODMAN_GRAPHROOT:-/fake/podman/store}" ;;
+    esac
+    exit 0 ;;
+  version|--version)
+    printf '%s\n' "${FAKE_PODMAN_VERSION:-5.4.2}"
+    exit 0 ;;
+  unshare)
+    [ "${FAKE_PODMAN_UNSHARE_RC:-0}" -eq 0 ] || exit "$FAKE_PODMAN_UNSHARE_RC"
+    printf '%s\n' "${FAKE_PODMAN_ID_MAP:-0 1000 1
+1 100000 65536}"
+    exit 0 ;;
+  ps)
+    [ "${FAKE_PODMAN_PS_RC:-0}" -eq 0 ] || exit "$FAKE_PODMAN_PS_RC"
+    if [[ "$*" == *'compose.project'* ]]; then
+      printf '%s\n' "${FAKE_PODMAN_PROJECTS:-}"
+    else
+      printf '%s\n' "${FAKE_PODMAN_PS_OUTPUT:-}"
+    fi
+    exit 0 ;;
+esac
+export FAKE_DOCKER_LOG=/dev/null
+exec "$(dirname -- "$0")/docker" "$@"

@@ -22,71 +22,117 @@ doctor_line() {
   fi
 }
 
-# doctor_check_docker_present — is `docker` on PATH.
-doctor_check_docker_present() {
-  if command -v docker >/dev/null 2>&1; then
+# doctor_check_runtime [SLUG] — select the same saved binding as lifecycle
+# commands, then validate that engine/provider. Never falls back on failure.
+doctor_check_runtime() {
+  local slug="${1:-}"
+  if ! runtime_select "${OCL_ENGINE_REQUESTED:-}" "$slug"; then
+    doctor_line FAIL "runtime selection" "see runtime error above"
+    return 1
+  fi
+  if ! runtime_validate; then
+    if [ "${RUNTIME_ENGINE:-}" = docker ]; then
+      doctor_line FAIL "docker daemon reachable / compose provider" "see runtime error above"
+    else
+      doctor_line FAIL "podman runtime / compose provider" "see runtime error above"
+    fi
+    return 1
+  fi
+  if [ "$RUNTIME_ENGINE" = docker ]; then
     doctor_line PASS "docker on PATH"
-    return 0
-  fi
-  doctor_line FAIL "docker on PATH" "not found — install Docker first"
-  return 1
-}
-
-# doctor_check_docker_daemon — can we talk to the Docker daemon. Mirrors the
-# permission-denied / "is it running?" hinting from the normal preflight.
-doctor_check_docker_daemon() {
-  local out
-  if out="$(docker info 2>&1)"; then
-    doctor_line PASS "docker daemon reachable"
-    return 0
-  fi
-  if printf '%s' "$out" | grep -qi 'permission denied'; then
-    doctor_line FAIL "docker daemon reachable" \
-      "permission denied — try: sudo usermod -aG docker \$USER && newgrp docker"
+    doctor_line PASS "docker daemon reachable" "${RUNTIME_ENGINE_VERSION:-}"
+    doctor_line PASS "docker compose v2 plugin" "${RUNTIME_PROVIDER_VERSION:-}"
   else
-    doctor_line FAIL "docker daemon reachable" "is it running? ($(printf '%s' "$out" | tail -n1))"
+    doctor_line PASS "podman on PATH"
+    doctor_line PASS "podman rootless engine" "${RUNTIME_ENGINE_VERSION:-}"
+    doctor_line PASS "podman-compose provider" "${RUNTIME_PROVIDER_VERSION:-}"
   fi
-  return 1
-}
-
-# doctor_check_compose_v2 — the `docker compose` (v2) plugin is available.
-doctor_check_compose_v2() {
-  if docker compose version >/dev/null 2>&1; then
-    doctor_line PASS "docker compose v2 plugin"
-    return 0
-  fi
-  doctor_line FAIL "docker compose v2 plugin" "not available — install the Docker Compose plugin"
-  return 1
-}
-
-# doctor_check_podman — informational only; a Podman `docker` shim changes
-# which compose overlay is needed, but it is never a failure.
-doctor_check_podman() {
-  if docker --version 2>&1 | grep -qi podman; then
-    doctor_line WARN "podman shim detected" "the --podman overlay will be added automatically"
-  else
-    doctor_line PASS "podman shim" "not detected (using real Docker)"
-  fi
+  doctor_line PASS "runtime endpoint" "${RUNTIME_ENDPOINT:-local} (${RUNTIME_MODE:-unknown})"
   return 0
 }
 
-# doctor_check_registry_access CHECK_IMAGE REGISTRY_HOST — reuses the same
-# `docker manifest inspect` access check the normal boot path runs, including
-# the docker-login hint on an auth failure.
+# doctor_check_registry_access CHECK_IMAGE REGISTRY_HOST — use the selected
+# engine's registry credentials, rather than assuming Docker's credential store.
 doctor_check_registry_access() {
   local check_image="$1" registry_host="$2" inspect_err
-  if inspect_err="$(docker manifest inspect "$check_image" 2>&1)"; then
+  if inspect_err="$(runtime_manifest_inspect "$check_image" 2>&1)"; then
     doctor_line PASS "registry access ($check_image)"
     return 0
   fi
   if printf '%s' "$inspect_err" | grep -qiE 'unauthorized|authentication|denied|forbidden|login'; then
     doctor_line FAIL "registry access ($check_image)" \
-      "auth problem — run: docker login $registry_host"
+      "auth problem — run: ${RUNTIME_ENGINE:-docker} login $registry_host"
     return 1
   fi
+  # Runtime output may contain a registry URL or credential helper details.
+  # Keep this pasteable report to a classification, not arbitrary raw output.
   doctor_line WARN "registry access ($check_image)" \
-    "could not verify ($(printf '%s' "$inspect_err" | tail -n1))"
+    "could not verify — check registry connectivity and the selected engine's credentials"
   return 0
+}
+
+# Local checks establish only what the invoking user can access. A daemon can
+# still be denied by NFS root squashing, SELinux, or its own namespace.
+doctor_check_mount_directory() {
+  local label="$1" path="$2"
+  case "$path" in
+    /*) ;;
+    *) path="${SCRIPT_DIR:-$PWD}/$path" ;;
+  esac
+  if [[ "$path" == *:* ]]; then
+    doctor_line FAIL "mount: $label" "$path — ':' is unsupported with shared SELinux relabeling; use a path without ':'"
+    return 1
+  fi
+  if [ ! -d "$path" ]; then
+    doctor_line FAIL "mount: $label" "$path — directory missing or wrong type"
+    return 1
+  fi
+  if [ ! -r "$path" ] || [ ! -x "$path" ]; then
+    doctor_line FAIL "mount: $label" "$path — not readable/traversable by this user"
+    return 1
+  fi
+  doctor_line PASS "mount: $label" "$path (local user access)"
+}
+
+doctor_check_mounts() {
+  local repo_path="${1:-}" project_env="${2:-}" allowlist user_layer rc=0 conf found=0
+  if [ -n "$project_env" ] && [ -f "$project_env" ]; then
+    allowlist="$(compose_env_value EXTRA_ALLOWLIST_PATH "$project_env")"
+    user_layer="$(compose_env_value USER_LAYER_PATH "$project_env")"
+    local saved_repo
+    saved_repo="$(compose_env_value REPO_PATH "$project_env")"
+    [ -z "$saved_repo" ] || repo_path="$saved_repo"
+  else
+    allowlist="${EXTRA_ALLOWLIST_PATH:-}"
+    [ -n "$allowlist" ] || allowlist="$(get_env EXTRA_ALLOWLIST_PATH 2>/dev/null || true)"
+    user_layer="$(get_env USER_LAYER_PATH 2>/dev/null || true)"
+  fi
+  [ -n "$allowlist" ] || allowlist="${SCRIPT_DIR:-$PWD}/extra-allowlist.d"
+  allowlist="$(compose_absolute_path "$allowlist" "${SCRIPT_DIR:-$PWD}")" || return 1
+  if doctor_check_mount_directory "extra allowlist" "$allowlist"; then
+    for conf in "$allowlist"/*.conf; do
+      [ -f "$conf" ] || continue
+      if [ ! -r "$conf" ]; then
+        doctor_line FAIL "allowlist configuration" "$conf — not readable by this user"
+        rc=1
+      else
+        found=1
+      fi
+    done
+    if [ "$found" -eq 0 ]; then
+      doctor_line FAIL "allowlist configuration" "$allowlist — requires a readable *.conf file (a comment-only placeholder is sufficient)"
+      rc=1
+    fi
+  else
+    rc=1
+  fi
+  [ -z "$repo_path" ] || doctor_check_mount_directory "workspace" "$repo_path" || rc=1
+  if [ -n "$user_layer" ]; then
+    doctor_check_mount_directory "user layer" "$user_layer" || rc=1
+  fi
+  doctor_line WARN "mount engine access" \
+    "local checks only; startup verifies mounts through the selected engine. For permission errors, inspect parent directories, backing filesystem/NFS and SELinux."
+  return "$rc"
 }
 
 # doctor_check_image_manifest CHECK_IMAGE — WARN if CHECK_IMAGE's
@@ -134,7 +180,7 @@ doctor_check_env_file() {
 # can't silently drift apart.
 doctor_check_env_keys() {
   local rc=0
-  local required=() optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT BITBUCKET_LEGACY_URL JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT JFROG_BASE_URL JFROG_PAT CONFLUENCE_BASE_URL CONFLUENCE_PAT MFILES_BASE_URL MFILES_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG)
+  local required=() optional=(BITBUCKET_BASE_URL BITBUCKET_USER BITBUCKET_PAT BITBUCKET_LEGACY_URL JIRA_BASE_URL JIRA_PAT GITLAB_BASE_URL GITLAB_USER GITLAB_PAT JFROG_BASE_URL JFROG_PAT CONFLUENCE_BASE_URL CONFLUENCE_PAT MFILES_BASE_URL MFILES_PAT GIT_USER_NAME GIT_USER_EMAIL ENABLED_PLUGINS USER_LAYER_PATH IMAGE_TAG OCL_ENGINE)
   local key val
   while IFS= read -r key; do
     [ -n "$key" ] && required+=("$key")
@@ -192,6 +238,8 @@ doctor_check_env_drift() {
 # environment, hence WARN. The `local` self-built sentinel is not a pin (see
 # image_tag_pinned). Reads IMAGE_TAG from $ENV_FILE by default; a TAG argument
 # exists purely for testability.
+# Optional TAG is also used by independently sourced unit tests.
+# shellcheck disable=SC2120
 doctor_check_image_pin() {
   local tag
   if [ "$#" -ge 1 ]; then
@@ -271,14 +319,18 @@ doctor_check_disk_space() {
 # knows about, and must not be told its setup is broken.
 doctor_check_address_pools() {
   local nets pools
-  nets="$(docker_network_count)"
+  if [ "${RUNTIME_ENGINE:-docker}" != docker ]; then
+    doctor_line PASS "podman network allocation" "Docker address-pool estimate does not apply"
+    return 0
+  fi
+  nets="$(runtime_network_count 2>/dev/null || true)"
   if ! [ "$nets" -ge 0 ] 2>/dev/null; then
     doctor_line WARN "docker address pools" "could not list networks — skipped"
     return 0
   fi
   # An explicit default-address-pools means the admin has already sized this;
   # report it and don't second-guess the budget.
-  pools="$(docker info --format '{{len .DefaultAddressPools}}' 2>/dev/null || true)"
+  pools="$(runtime_default_address_pools 2>/dev/null || true)"
   if [ "${pools:-0}" -gt 0 ] 2>/dev/null; then
     doctor_line PASS "docker address pools" "$nets bridge network(s); daemon has explicit default-address-pools"
     return 0
@@ -304,17 +356,30 @@ doctor_check_address_pools() {
 # never attaches the TUI.
 cmd_doctor() {
   local repo_path="${1:-}"
-  local overall_rc=0
+  local overall_rc=0 runtime_ok=0 abs_repo="" slug=""
   local IMAGE_REGISTRY IMAGE_TAG REGISTRY_HOST CHECK_IMAGE
 
   echo "OpenCode Launcher doctor report"
   echo "================================"
 
-  doctor_check_docker_present || overall_rc=1
-  doctor_check_docker_daemon || overall_rc=1
-  doctor_check_compose_v2 || overall_rc=1
-  doctor_check_podman || true
-  doctor_check_address_pools || true
+  if [ -n "$repo_path" ]; then
+    if abs_repo="$(cd -- "$repo_path" 2>/dev/null && pwd)"; then
+      slug="$(derive_slug "$abs_repo")"
+      doctor_line PASS "project: $slug" "repo path OK"
+    else
+      doctor_line FAIL "project" "repo path not found/usable: $repo_path"
+      overall_rc=1
+    fi
+  fi
+  if doctor_check_runtime "$slug"; then
+    runtime_ok=1
+    doctor_check_address_pools || true
+  else
+    overall_rc=1
+  fi
+  local project_env=""
+  [ -z "$slug" ] || project_env="${RUNTIME_PROJECT_ENV_FILE:-${ENVS_DIR:-.envs}/$slug.env}"
+  doctor_check_mounts "${abs_repo:-$repo_path}" "$project_env" || overall_rc=1
 
   doctor_check_env_file || overall_rc=1
   doctor_check_env_keys || overall_rc=1
@@ -322,7 +387,7 @@ cmd_doctor() {
   doctor_check_image_pin
 
   IMAGE_REGISTRY="$(get_env IMAGE_REGISTRY 2>/dev/null || true)"
-  if [ -n "$IMAGE_REGISTRY" ]; then
+  if [ -n "$IMAGE_REGISTRY" ] && [ "$runtime_ok" -eq 1 ]; then
     IMAGE_TAG="$(get_env IMAGE_TAG 2>/dev/null || true)"
     [ -n "$IMAGE_TAG" ] || IMAGE_TAG="latest"
     REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
@@ -330,22 +395,11 @@ cmd_doctor() {
     doctor_check_registry_access "$CHECK_IMAGE" "$REGISTRY_HOST" || overall_rc=1
     doctor_check_image_manifest "$CHECK_IMAGE"
   else
-    doctor_line WARN "registry access" "skipped — IMAGE_REGISTRY not set"
-    doctor_line WARN "image manifest" "skipped — IMAGE_REGISTRY not set"
+    doctor_line WARN "registry access" "skipped — runtime unavailable or IMAGE_REGISTRY not set"
+    doctor_line WARN "image manifest" "skipped — runtime unavailable or IMAGE_REGISTRY not set"
   fi
 
   doctor_check_launcher_update || true
-
-  if [ -n "$repo_path" ]; then
-    if [ -e "$repo_path" ] && [ -d "$repo_path" ]; then
-      local abs_repo slug
-      abs_repo="$(cd -- "$repo_path" >/dev/null 2>&1 && pwd)" || abs_repo="$repo_path"
-      slug="$(derive_slug "$abs_repo")"
-      doctor_line PASS "project: $slug" "repo path OK"
-    else
-      doctor_line WARN "project" "repo path not found/usable: $repo_path"
-    fi
-  fi
 
   doctor_check_disk_space "$SCRIPT_DIR"
 

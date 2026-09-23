@@ -1,5 +1,4 @@
-# Podman overlay — applied by start.sh ONLY under Podman (auto-detected from
-# `docker --version`, or forced with --podman). Keeping these lines out of the
+# Podman overlay — applied ONLY by the selected Podman runtime. Keeping it out of the
 # base docker-compose.yml is deliberate: `userns_mode: keep-id` is a Podman-only
 # value that Docker rejects, so the base file must never carry it.
 #
@@ -17,3 +16,6 @@ x-podman:
 services:
   opencode:
     userns_mode: keep-id
+    # keep-id otherwise overrides the image's USER root. Its entrypoint needs
+    # container root to initialize accounts/state, then drops privileges to dev.
+    user: "0:0"
