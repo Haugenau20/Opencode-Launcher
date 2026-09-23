@@ -1,0 +1,73 @@
+name: Runtime adapters
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y bats python3-yaml python3-venv zsh
+      - name: Install the real Compose parser for command-routing regression tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/provider-tests"
+          "$RUNNER_TEMP/provider-tests/bin/pip" install 'podman-compose==1.5.0'
+          echo "OCL_REAL_PODMAN_COMPOSE=$RUNNER_TEMP/provider-tests/bin/podman-compose" >> "$GITHUB_ENV"
+          echo "OCL_TEST_PODMAN_COMPOSE=$RUNNER_TEMP/provider-tests/bin/podman-compose" >> "$GITHUB_ENV"
+      - run: bash tests/run.sh
+
+  containers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rootless Podman and the explicit Compose provider
+        if: matrix.engine == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs python3-venv dbus-user-session
+          python3 -m venv "$RUNNER_TEMP/podman-compose"
+          "$RUNNER_TEMP/podman-compose/bin/pip" install 'podman-compose==1.5.0'
+          echo "$RUNNER_TEMP/podman-compose/bin" >> "$GITHUB_PATH"
+          if ! grep -q "^$(id -un):" /etc/subuid; then
+            sudo usermod --add-subuids 200000-265535 "$(id -un)"
+          fi
+          if ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subgids 200000-265535 "$(id -un)"
+          fi
+          # The hosted runner is disposable; this only permits its test account
+          # to create the rootless user namespaces the Podman case requires.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Netavark/Aardvark and rootless network helpers need a real user
+          # session; an arbitrary temporary XDG_RUNTIME_DIR has no user bus.
+          runtime_uid="$(id -u)"
+          runtime_user="$(id -un)"
+          sudo loginctl enable-linger "$runtime_user"
+          sudo systemctl start "user@${runtime_uid}.service"
+          export XDG_RUNTIME_DIR="/run/user/$runtime_uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          for attempt in {1..30}; do
+            [ -S "$XDG_RUNTIME_DIR/bus" ] && break
+            sleep 1
+          done
+          test -S "$XDG_RUNTIME_DIR/bus"
+          timeout 10s systemctl --user show-environment >/dev/null
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          # Keep Podman and its Buildah build steps on the same explicit
+          # cgroup configuration in this disposable CI job.
+          printf '%s\n' '[engine]' 'cgroup_manager = "cgroupfs"' 'events_logger = "file"' \
+            > "$RUNNER_TEMP/containers.conf"
+          echo "CONTAINERS_CONF=$RUNNER_TEMP/containers.conf" >> "$GITHUB_ENV"
+      - name: Exercise checked-in Compose configuration with real containers
+        run: bash tests/integration/runtime-smoke.sh '${{ matrix.engine }}'

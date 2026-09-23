@@ -35,7 +35,7 @@ KNOWN_PLUGINS="${KNOWN_PLUGINS:-superpowers dcp opencode-workspace opencode-pty}
 # definitions and may load in any order (calls resolve at run time, by which
 # point every module is loaded and main() has not yet run).
 __OCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-for __lib in core config mfiles usage project attach also packages allowlist digest manifest update doctor commands exec; do
+for __lib in core runtime compose config mfiles usage project attach also packages allowlist digest manifest update doctor commands exec; do
   # shellcheck source=/dev/null
   source "$__OCL_DIR/lib/$__lib.sh"
 done
@@ -233,6 +233,7 @@ main() {
   local ATTACH_TUI=1
   local PERSIST=0
   local USE_PODMAN=0
+  OCL_ENGINE_REQUESTED=""
   local CONTINUE=0
   local WANT_DOCTOR=0
   local WANT_STATUS=0
@@ -252,7 +253,15 @@ main() {
     case "$1" in
       --detach|--no-tui) ATTACH_TUI=0; PERSIST=1; shift ;;
       --persist|--web)   PERSIST=1; shift ;;
-      --podman) USE_PODMAN=1; shift ;;
+      --podman) USE_PODMAN=1; OCL_ENGINE_REQUESTED=podman; shift ;;
+      --engine)
+        [ $# -gt 1 ] || die "--engine requires docker or podman"
+        case "$2" in docker|podman) OCL_ENGINE_REQUESTED="$2" ;; *) die "--engine must be docker or podman" ;; esac
+        shift 2 ;;
+      --engine=*)
+        OCL_ENGINE_REQUESTED="${1#*=}"
+        case "$OCL_ENGINE_REQUESTED" in docker|podman) ;; *) die "--engine must be docker or podman" ;; esac
+        shift ;;
       --tui)  ATTACH_TUI=1; shift ;;
       --continue|-c) CONTINUE=1; shift ;;
       --open) WANT_OPEN=1; shift ;;
@@ -336,7 +345,6 @@ main() {
   fi
 
   if [ "$WANT_STATUS" -eq 1 ]; then
-    command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
     cmd_status "$REPO_ARG"
     return 0
   fi
@@ -436,33 +444,6 @@ cmd_run() {
     SERVE_WEB_UI=0
   fi
 
-  # --- 2. preflight checks --------------------------------------------------
-  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
-
-  if ! docker info >/dev/null 2>&1; then
-    local out
-    out="$(docker info 2>&1 || true)"
-    if printf '%s' "$out" | grep -qi 'permission denied'; then
-      err "cannot talk to the Docker daemon (permission denied)."
-      err "you may need: sudo usermod -aG docker \$USER && newgrp docker"
-    else
-      err "cannot talk to the Docker daemon. Is it running?"
-      printf '%s\n' "$out" >&2
-    fi
-    exit 1
-  fi
-
-  # docker compose v2 (plugin) required.
-  docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) not available. Install the Docker Compose plugin."
-
-  # Podman ships a `docker` shim (podman-docker); detect it so we can add the
-  # Podman overlay, which carries a keep-id userns Docker would reject. --podman
-  # forces it on regardless of what `docker` reports.
-  if [ "$USE_PODMAN" -eq 0 ] && docker --version 2>&1 | grep -qi podman; then
-    USE_PODMAN=1
-    info "detected Podman (via 'docker --version'); enabling the Podman overlay."
-  fi
-
   # Resolve the repo path to an absolute path — or, for a one-shot --exec with
   # no repo argument, synthesize an empty scratch workspace instead. A NO_REPO
   # run mounts an empty, launcher-owned directory at /workspace: the container
@@ -481,6 +462,14 @@ cmd_run() {
     [ -d "$REPO_ARG" ] || die "repo path is not a directory: $REPO_ARG"
     REPO_PATH="$(cd -- "$REPO_ARG" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $REPO_ARG"
   fi
+
+  # Select once, before querying containers, images, ports or project state.
+  local SLUG PORT
+  if [ "$NO_REPO" -eq 1 ]; then SLUG=norepo; else SLUG="$(derive_slug "$REPO_PATH")"; fi
+  runtime_lock_project "$SLUG" || return $?
+  runtime_select "${OCL_ENGINE_REQUESTED:-}" "$SLUG" || return $?
+  runtime_validate || return $?
+  info "runtime: $RUNTIME_ENGINE ($RUNTIME_PROVIDER)"
 
   # --- --also: extra repo/folder mounts (read-only by default) --------------
   # Validate/resolve now (needs only REPO_PATH, not the per-project SLUG) so a
@@ -553,27 +542,9 @@ cmd_run() {
   # Concise one-line egress reminder on every boot (full detail: --show-allowlist).
   info "$(allowlist_summary_line)"
 
-  # --- optional user layer (host-editable personal agents/skills/commands) --
-  # When USER_LAYER_PATH is set, add the user-layer overlay so the dir is
-  # bind-mounted at /home/dev/.config/opencode. The overlay uses
-  # ${USER_LAYER_PATH:?...} so it must NOT be applied when the value is empty.
-  local COMPOSE_FILES
-  COMPOSE_FILES=(-f "$__OCL_DIR/docker/docker-compose.yml")
-  # Podman overlay (keep-id userns + no shared pod). Kept out of the base file so
-  # docker-compose.yml stays Docker-valid; applied only under Podman.
-  if [ "$USE_PODMAN" -eq 1 ]; then
-    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.podman.yml")
-    info "podman: adding overlay (keep-id userns so bind-mount ownership matches)."
-  fi
-  local USER_LAYER_PATH
-  USER_LAYER_PATH="$(get_env USER_LAYER_PATH)"
-  if [ -n "$USER_LAYER_PATH" ]; then
-    mkdir -p "$USER_LAYER_PATH"
-    USER_LAYER_PATH="$(cd -- "$USER_LAYER_PATH" >/dev/null 2>&1 && pwd)" \
-      || die "could not resolve USER_LAYER_PATH"
-    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.user-layer.yml")
-    info "user layer: $USER_LAYER_PATH -> /home/dev/.config/opencode"
-  fi
+  # Paths and feature overlays are assembled once from the effective project
+  # environment below. Both runtimes receive exactly the same host locations.
+  local COMPOSE_FILES=()
 
   local REGISTRY_HOST CHECK_IMAGE
   REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
@@ -588,11 +559,9 @@ cmd_run() {
   # local tag and adds a build: block (docker/Dockerfile.user-packages) so that
   # one service is built locally. Applied last so it wins. Empty/absent file =>
   # nothing here changes.
-  local PKG_LAYER_ACTIVE=0 OC_BASE_IMAGE=""
+  local PKG_LAYER_ACTIVE=0
   if extra_packages_active "$EXTRA_PACKAGES_FILE"; then
     PKG_LAYER_ACTIVE=1
-    OC_BASE_IMAGE="$CHECK_IMAGE"
-    COMPOSE_FILES+=(-f "$__OCL_DIR/docker/docker-compose.user-packages.yml")
     local apt_list pip_list
     apt_list="$(extra_apt_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     pip_list="$(extra_pip_packages "$EXTRA_PACKAGES_FILE" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -600,31 +569,6 @@ cmd_run() {
     [ -n "$apt_list" ] && info "  apt: $apt_list"
     [ -n "$pip_list" ] && info "  pip: $pip_list"
     info "  fetched on this host; the locked-down runtime is unchanged."
-  fi
-
-  # --- 4. verify Artifactory access -----------------------------------------
-  info "checking access to $CHECK_IMAGE ..."
-  if ! docker manifest inspect "$CHECK_IMAGE" >/dev/null 2>&1; then
-    local inspect_err
-    inspect_err="$(docker manifest inspect "$CHECK_IMAGE" 2>&1 || true)"
-    if printf '%s' "$inspect_err" | grep -qiE 'unauthorized|authentication|denied|forbidden|login'; then
-      err "cannot pull $CHECK_IMAGE — looks like an auth problem."
-      err "run:  docker login $REGISTRY_HOST"
-      exit 1
-    fi
-    warn "could not verify $CHECK_IMAGE via 'docker manifest inspect'."
-    warn "(continuing — 'docker compose pull' below will surface the real error)"
-    warn "detail: $(printf '%s' "$inspect_err" | tail -n1)"
-  fi
-
-  # --- 5. compute per-project settings --------------------------------------
-  local SLUG PORT
-  if [ "$NO_REPO" -eq 1 ]; then
-    # Fixed slug for no-repo runs (they all share one throwaway project) rather
-    # than deriving the scratch dir's basename.
-    SLUG="norepo"
-  else
-    SLUG="$(derive_slug "$REPO_PATH")"
   fi
 
   # Port: sticky per project via resolve_project_port (shared with
@@ -658,80 +602,67 @@ cmd_run() {
   mkdir -p "$ENVS_DIR"
   local PROJECT_ENV
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
-  local OVERRIDES_ENV
-  OVERRIDES_ENV="$(project_overrides_file "$SLUG")"
-  {
-    cat "$ENV_FILE"
-    # This project's own values, layered over the shared .env (last wins). The
-    # one file under .envs/ a user is meant to edit — everything else there is
-    # regenerated from scratch on every boot, so a hand-edited value in the
-    # generated file would silently vanish on the next run.
-    if [ -f "$OVERRIDES_ENV" ]; then
-      echo
-      echo "# --- from $(basename "$OVERRIDES_ENV") ---"
-      cat "$OVERRIDES_ENV"
-    fi
-    echo
-    echo "# --- per-project (generated by start.sh; do not edit by hand) ---"
-    echo "# To override a value for this project, edit ${OVERRIDES_ENV}"
-    echo "PROJECT_SLUG=${SLUG}"
-    echo "OPENCODE_PORT=${PORT}"
-    echo "REPO_PATH=${REPO_PATH}"
-    # Overwrite USER_LAYER_PATH with the resolved absolute path (a later line
-    # wins on duplicate keys) so the overlay interpolates an unambiguous path.
-    [ -n "$USER_LAYER_PATH" ] && echo "USER_LAYER_PATH=${USER_LAYER_PATH}"
-    # When the package layer is active, hand the overlay the base image to build
-    # FROM (the registry image start.sh would otherwise run for opencode).
-    [ -n "$OC_BASE_IMAGE" ] && echo "OC_BASE_IMAGE=${OC_BASE_IMAGE}"
-  } > "$PROJECT_ENV"
+  if [ "$OTHER_TUIS" -eq 0 ] || [ ! -f "$PROJECT_ENV" ]; then
+    write_project_env "$REPO_PATH"
+    {
+      printf 'OCL_PACKAGE_LAYER=%s\n' "$PKG_LAYER_ACTIVE"
+      if [ "$PKG_LAYER_ACTIVE" -eq 1 ]; then
+        local package_registry package_tag
+        package_registry="$(compose_env_value IMAGE_REGISTRY "$PROJECT_ENV")"
+        package_tag="$(compose_env_value IMAGE_TAG "$PROJECT_ENV")"
+        # Package bases follow the same project overrides as the service image.
+        compose_env_assignment OC_BASE_IMAGE "$(compute_base_image \
+          "${package_registry:-opencode-workplace}" "${package_tag:-latest}")"
+      fi
+    } >> "$PROJECT_ENV"
+  fi
 
   # --- --also overlay: write (or clear) .envs/<slug>.also.yml ---------------
   # Now that SLUG is known: with mounts, (re)generate the overlay and append it
   # LAST in COMPOSE_FILES (after the podman/user-layer/package-layer overlays
   # above) so it always wins; with none, delete any stale overlay from a
   # previous boot so `compose up -d` recreates the container without it.
-  if [ -n "$ALSO_MOUNTS" ]; then
-    if [ "$OTHER_TUIS" -gt 0 ]; then
-      warn "--also: another TUI is attached, so the running container is left as it"
-      warn "  is — these mounts take effect the next time the stack starts clean."
+  if [ "$OTHER_TUIS" -eq 0 ]; then
+    if [ -n "$ALSO_MOUNTS" ]; then
+      write_also_overlay "$SLUG" "$ALSO_MOUNTS"
+    else
+      delete_also_overlay "$SLUG"
     fi
-    write_also_overlay "$SLUG" "$ALSO_MOUNTS"
-    COMPOSE_FILES+=(-f "$(also_overlay_file "$SLUG")")
-  elif [ "$OTHER_TUIS" -gt 0 ] && [ -f "$(also_overlay_file "$SLUG")" ]; then
-    # No --also this run, but someone else's TUI is live on a stack that was
-    # booted WITH mounts. Deleting their overlay would both misreport --status
-    # and (once the container is next recreated) silently strip mounts they are
-    # working in, so keep it and keep it in COMPOSE_FILES — the compose config
-    # this run computes has to describe the container that is actually running.
-    COMPOSE_FILES+=(-f "$(also_overlay_file "$SLUG")")
-  else
-    delete_also_overlay "$SLUG"
+  elif [ -n "$ALSO_MOUNTS" ]; then
+    warn "--also: another TUI is attached; its current mounts are retained until the stack stops."
   fi
 
-  local PROJECT_NAME COMPOSE
+  local PROJECT_NAME COMPOSE PROJECT_ENV_FILE
   PROJECT_NAME="opencode-${SLUG}"
-  # PROJECT_ENV_FILE: the absolute path to the same file write_project_env
-  # just wrote, EXPORTED so `docker compose` (a child process) can see it.
-  # This is what actually gets per-project credentials INTO the container —
-  # the opencode service's `env_file:` directive layers
-  # `${PROJECT_ENV_FILE:-.env}` over the shared .env. Absolute for the reasons
-  # in lib/project.sh (derive_project_settings); the short version is that a
-  # miss here is silent, swallowed by env_file's `required: false`.
-  #
-  # This boot path assembles its own COMPOSE array rather than calling
-  # derive_project_settings, so the export has to be repeated. That
-  # duplication predates this change.
-  local PROJECT_ENV_FILE
-  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
-    || die "could not resolve ENVS_DIR"
-  export PROJECT_ENV_FILE
-  # See the note in the management-command builder above: the compose files sit
-  # under docker/, so --project-directory pins their relative paths to the root.
-  COMPOSE=(docker compose
-    --project-directory "$__OCL_DIR"
-    --env-file "$PROJECT_ENV"
-    -p "$PROJECT_NAME"
-    "${COMPOSE_FILES[@]}")
+  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" && pwd)/${SLUG}.env"
+  compose_prepare "$SLUG" "$PROJECT_ENV_FILE" || return $?
+  CHECK_IMAGE="$(compute_base_image "$IMAGE_REGISTRY" "$IMAGE_TAG")"
+  REGISTRY_HOST="${IMAGE_REGISTRY%%/*}"
+  # --- 4. verify Artifactory access -----------------------------------------
+  info "checking access to $CHECK_IMAGE ..."
+  if ! runtime_manifest_inspect "$CHECK_IMAGE" >/dev/null 2>&1; then
+    local inspect_err
+    inspect_err="$(runtime_manifest_inspect "$CHECK_IMAGE" 2>&1 || true)"
+    if printf '%s' "$inspect_err" | grep -qiE 'unauthorized|authentication|denied|forbidden|login'; then
+      err "cannot pull $CHECK_IMAGE — looks like an auth problem."
+      err "run:  $RUNTIME_ENGINE login $REGISTRY_HOST"
+      exit 1
+    fi
+    warn "could not verify $CHECK_IMAGE via the container registry."
+    warn "(continuing — the image pull below will surface the real error)"
+    warn "detail: $(printf '%s' "$inspect_err" | tail -n1)"
+  fi
+
+  compose_validate_mounts || return $?
+  runtime_validate_project_env "$PROJECT_ENV_FILE" || return $?
+  PKG_LAYER_ACTIVE="$(compose_env_value OCL_PACKAGE_LAYER "$PROJECT_ENV_FILE")"
+  PKG_LAYER_ACTIVE="${PKG_LAYER_ACTIVE:-0}"
+  COMPOSE=(runtime_compose --env-file "$PROJECT_ENV_FILE" -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}")
+  "${COMPOSE[@]}" config --quiet || return $?
+  runtime_save_binding "$SLUG" || return $?
+  if [ "$RUNTIME_ENGINE" = podman ]; then
+    info "podman: using keep-id with container-root initialization."
+  fi
 
   # --- 7. boot the stack ----------------------------------------------------
   # With the package layer active, opencode is a buildable LOCAL image: a blanket
@@ -757,6 +688,9 @@ cmd_run() {
       "${COMPOSE[@]}" pull opencode squid
     fi
   fi
+
+  compose_probe_mounts "$OCL_SQUID_IMAGE" || return $?
+  compose_validate_mounts || return $?
 
   # With the web UI, bring the whole stack up. Without it (one-shot --exec),
   # bring up only opencode; compose starts its squid dependency (depends_on)
@@ -784,6 +718,16 @@ cmd_run() {
     info "starting $PROJECT_NAME (opencode + egress proxy; no web UI) ..."
     compose_up_or_explain "${COMPOSE[@]}" up -d ${UP_ARGS[@]+"${UP_ARGS[@]}"} opencode
   fi
+
+  project_wait_ready "$PROJECT_NAME" "${OPENCODE_INTERNAL_PORT:-4096}" || return $?
+
+  # Claim the session before releasing the startup lock: another launcher must
+  # see this user before it can recreate or stop the shared stack. One-shot
+  # prompts need the same protection as interactive sessions.
+  if [ "$WANT_EXEC" -eq 1 ] || [ "$ATTACH_TUI" -eq 1 ]; then
+    attach_register "$SLUG"
+  fi
+  runtime_release_project
 
   # --- image digest (reproducibility / tamper-check anchor) ------------------
   # Print the resolved sha256 digest of the image actually in use — the tag
@@ -882,8 +826,7 @@ cmd_run() {
     # --exec: non-interactive one-shot run — the whole path (spinner, stdin
     # handling, stdout isolation on fd3, teardown, exit code) lives in
     # exec_run (lib/exec.sh). It exits with opencode run's own rc.
-    # --exec is a one-shot, not a TUI, so it claims no slot — but its teardown
-    # would still kill any TUI that is attached, so it has to know about them.
+    # One-shot prompts hold a session slot until their cleanup completes.
     exec_run "$PROJECT_NAME" "$EXEC_PROMPT" "$CONTINUE" "$PERSIST" "$OTHER_TUIS" "${COMPOSE[@]}"
   elif [ "$ATTACH_TUI" -eq 1 ]; then
     # Claim a slot for the lifetime of this TUI (lib/attach.sh) so a run from
@@ -891,13 +834,12 @@ cmd_run() {
     # exits, whether it is the last one out. The slot's lock is held by an open
     # descriptor, so it survives the `exec` below and is dropped by the kernel
     # however this process ends.
-    attach_register "$SLUG"
     if [ "$PERSIST" -eq 1 ]; then
       # Persist: keep the stack up after the TUI exits. `exec` hands the terminal
       # straight to docker exec (the stack outlives this script either way).
       info "attaching TUI (exit/Ctrl-C detaches; the stack keeps running) ..."
       info "  resume later with: ./start.sh --continue --persist $REPO_ARG"
-      exec docker exec -u dev \
+      runtime_exec_replace -u dev \
         -e HOME=/home/dev \
         -e XDG_CONFIG_HOME=/home/dev/.config \
         -e XDG_DATA_HOME=/home/dev/.local/share \
@@ -914,7 +856,7 @@ cmd_run() {
       else
         info "attaching TUI (exit/Ctrl-C tears the stack down; pass --persist to keep it up) ..."
       fi
-      docker exec -u dev \
+      runtime_exec -u dev \
         -e HOME=/home/dev \
         -e XDG_CONFIG_HOME=/home/dev/.config \
         -e XDG_DATA_HOME=/home/dev/.local/share \
@@ -925,6 +867,11 @@ cmd_run() {
       # question here is whether anyone ELSE is still attached. Recounted rather
       # than reusing OTHER_TUIS: those terminals may have come and gone while
       # this TUI was running.
+      if ! runtime_lock_project "$SLUG"; then
+        attach_release "$SLUG"
+        warn "another operation is in progress; leaving $PROJECT_NAME running."
+        return 0
+      fi
       attach_release "$SLUG"
       local REMAINING
       REMAINING="$(attach_count "$SLUG")"
@@ -935,6 +882,7 @@ cmd_run() {
         info "TUI exited — tearing down $PROJECT_NAME (pass --persist next time to keep it running) ..."
         "${COMPOSE[@]}" down
       fi
+      runtime_release_project
     fi
   else
     info "detached: stack is running. Attach the TUI any time with:"

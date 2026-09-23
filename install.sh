@@ -10,8 +10,8 @@
 #   INSTALL_DIR=~/tools ./install.sh   # clone into a custom directory
 #
 # This script does NOT boot anything itself — it only gets a clone onto disk,
-# sanity-checks Docker, and prints the exact next command to run. All the
-# actual environment/secrets setup still happens the first time you run
+# sanity-checks the selected runtime, and prints the exact next command to run.
+# Actual environment/secrets setup still happens the first time you run
 # ./start.sh <your-repo>, same as today.
 set -euo pipefail
 
@@ -32,55 +32,31 @@ LAUNCHER_GIT_URL="${LAUNCHER_GIT_URL:-https://CHANGEME.internal.example/scm/open
 INSTALL_DIR="${INSTALL_DIR:-$PWD/opencode-launcher}"
 
 # --- prerequisite checks -----------------------------------------------------
-# Deliberately lightweight: this mirrors the same checks/messages start.sh's
-# own preflight and --doctor use (docker on PATH, daemon reachable, compose v2
-# plugin, permission-denied => docker-group hint) without pulling in start.sh
-# itself, since at this point we may not even have a checkout yet.
-
-check_docker_present() {
-  if command -v docker >/dev/null 2>&1; then
-    info "docker found on PATH."
-    return 0
-  fi
-  warn "docker not found on PATH — install Docker before running ./start.sh."
-  warn "  https://docs.docker.com/engine/install/"
-  return 1
-}
-
-check_docker_daemon() {
-  local out
-  if out="$(docker info 2>&1)"; then
-    info "docker daemon is reachable."
-    return 0
-  fi
-  if printf '%s' "$out" | grep -qi 'permission denied'; then
-    warn "cannot talk to the Docker daemon (permission denied)."
-    warn "  you may need: sudo usermod -aG docker \$USER && newgrp docker"
-  else
-    warn "cannot talk to the Docker daemon. Is it running?"
-  fi
-  return 1
-}
-
-check_compose_v2() {
-  if docker compose version >/dev/null 2>&1; then
-    info "docker compose v2 plugin is available."
-    return 0
-  fi
-  warn "'docker compose' (v2) not available — install the Docker Compose plugin."
-  return 1
-}
-
+# The checkout must exist before checking runtimes, so bootstrap uses the same
+# implementation and validation as normal startup rather than duplicating it.
 run_prereq_checks() {
-  local rc=0
-  check_docker_present || rc=1
-  # Only bother checking the daemon/compose plugin if docker itself exists —
-  # otherwise every subsequent check is a foregone (and noisier) failure.
-  if command -v docker >/dev/null 2>&1; then
-    check_docker_daemon || rc=1
-    check_compose_v2 || rc=1
+  runtime_select "${OCL_ENGINE_REQUESTED:-}" "" || return 1
+  runtime_validate || return 1
+  if [ "$RUNTIME_ENGINE" = docker ]; then
+    info "docker found on PATH."
+    info "docker daemon is reachable."
+    info "docker compose v2 plugin is available."
+  else
+    info "podman found on PATH."
+    info "podman rootless engine is available."
+    info "podman-compose provider is available."
   fi
-  return "$rc"
+  info "runtime: $RUNTIME_ENGINE / $RUNTIME_PROVIDER ($RUNTIME_MODE)."
+}
+
+install_usage() {
+  cat <<'EOF'
+Usage: ./install.sh [--engine docker|podman] [--podman]
+
+Clone the launcher if needed and check the selected engine and Compose provider.
+--podman is an alias for --engine podman. No containers are started and no
+system configuration, group membership, or existing .env is changed.
+EOF
 }
 
 # --- clone (idempotent) ------------------------------------------------------
@@ -116,6 +92,24 @@ clone_launcher() {
 
 # --- main ---------------------------------------------------------------------
 main() {
+  local OCL_ENGINE_REQUESTED="" selected_arg=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --help|-h) install_usage; return 0 ;;
+      --engine)
+        [ "$#" -ge 2 ] || die "--engine requires docker or podman"
+        selected_arg="$2"; shift ;;
+      --engine=*) selected_arg="${1#*=}" ;;
+      --podman) selected_arg=podman ;;
+      *) die "unknown option: $1 (see --help)" ;;
+    esac
+    case "$selected_arg" in docker|podman) ;; *) die "--engine requires docker or podman" ;; esac
+    if [ -n "$OCL_ENGINE_REQUESTED" ] && [ "$OCL_ENGINE_REQUESTED" != "$selected_arg" ]; then
+      die "conflicting engine selections"
+    fi
+    OCL_ENGINE_REQUESTED="$selected_arg"
+    shift
+  done
   local here
   here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
@@ -131,8 +125,17 @@ main() {
     info "running from an existing checkout: $target_dir"
   else
     target_dir="$INSTALL_DIR"
-    clone_launcher "$target_dir" || true
+    clone_launcher "$target_dir" || return 1
   fi
+
+  [ -f "$target_dir/lib/runtime.sh" ] || die "launcher runtime helpers missing in $target_dir; use a complete checkout"
+  # Used by the dynamically sourced runtime helpers below.
+  # shellcheck disable=SC2034
+  local __OCL_DIR="$target_dir" ENV_FILE="$target_dir/.env" ENVS_DIR="$target_dir/.envs"
+  # shellcheck source=/dev/null
+  source "$target_dir/lib/core.sh"
+  # shellcheck source=/dev/null
+  source "$target_dir/lib/runtime.sh"
 
   echo
   info "checking prerequisites ..."
@@ -153,7 +156,9 @@ main() {
     warn "one or more prerequisite checks above need attention before ./start.sh will work."
     warn "re-run ./install.sh (or ./start.sh --doctor once you have a repo) after fixing them."
   fi
-  echo "  cd $target_dir && ./start.sh <your-repo-path>"
+  local next_engine=""
+  [ -z "$OCL_ENGINE_REQUESTED" ] || next_engine=" --engine $OCL_ENGINE_REQUESTED"
+  echo "  cd $target_dir && ./start.sh${next_engine} <your-repo-path>"
   echo
   info "first run prompts for your LLM endpoint/key and Artifactory path (Bitbucket and"
   info "git identity are optional). Run './start.sh --doctor' any time to re-check your setup."

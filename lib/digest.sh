@@ -13,7 +13,7 @@
 # treat an empty result as "unavailable", never as an error.
 get_image_digest() {
   local image="$1" out
-  out="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null)" || return 1
+  out="$(runtime_image_digest "$image" 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }

@@ -81,7 +81,27 @@ sub="${1:-}"
 case "$sub" in
   info)
     [ -n "${FAKE_DOCKER_INFO_STDERR:-}" ] && printf '%s\n' "$FAKE_DOCKER_INFO_STDERR" >&2
+    [ "${FAKE_DOCKER_INFO_RC:-0}" -eq 0 ] || exit "$FAKE_DOCKER_INFO_RC"
+    case "$*" in
+      *SecurityOptions*) printf '%s\n' "${FAKE_DOCKER_SECURITY_OPTIONS:-[\"name=seccomp\"]}" ;;
+      *DefaultAddressPools*) printf '%s\n' "${FAKE_DOCKER_ADDRESS_POOLS:-0}" ;;
+    esac
+    exit 0
+    ;;
+  version)
+    [ -z "${FAKE_DOCKER_INFO_STDERR:-}" ] || printf '%s\n' "$FAKE_DOCKER_INFO_STDERR" >&2
+    if [[ "$*" == *'.Server.Version'* ]]; then
+      printf '%s\n' "${FAKE_DOCKER_SERVER_VERSION:-29.8.1}"
+    elif [ -n "${FAKE_DOCKER_SERVER_JSON:-}" ]; then
+      printf '%s\n' "$FAKE_DOCKER_SERVER_JSON"
+    else
+      printf '%s\n' '{"Platform":{"Name":"Docker Engine - Community"},"Version":"29.8.1"}'
+    fi
     exit "${FAKE_DOCKER_INFO_RC:-0}"
+    ;;
+  context)
+    printf '%s\n' "${FAKE_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}"
+    exit 0
     ;;
   compose)
     if [ "${2:-}" = version ]; then
@@ -127,6 +147,7 @@ EOF
     # `opencode run`), so tests can control each independently (e.g.
     # "container running, but no bash => falls back to sh").
     case "$*" in
+      *"/global/health"*) exit "${FAKE_DOCKER_READY_RC:-0}" ;;
       *"sh -c"*"command -v bash"*) exit "${FAKE_DOCKER_EXEC_PROBE_RC:-0}" ;;
       *" jq "*)
         [ "${FAKE_DOCKER_MCP_RC:-0}" -eq 0 ] || exit "${FAKE_DOCKER_MCP_RC}"

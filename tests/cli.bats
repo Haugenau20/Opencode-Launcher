@@ -7,6 +7,7 @@
 setup() {
   load common
   make_sandbox
+  source "$REPO_ROOT/lib/compose.sh"
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -54,21 +55,22 @@ setup() {
 
 # --- preflight: docker daemon -----------------------------------------------
 
-@test "docker daemon unreachable fails with 'Is it running?'" {
+@test "docker daemon unreachable reports endpoint failure without fallback" {
   seed_env
   FAKE_DOCKER_INFO_RC=1 run_launcher "$(make_repo_arg)"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"cannot talk to the Docker daemon. Is it running?"* ]]
+  [[ "$output" == *"cannot connect to the selected Docker endpoint"* ]]
 }
 
-@test "docker permission denied surfaces the usermod hint" {
+@test "docker socket permission failure reports access advice without fallback" {
   seed_env
   FAKE_DOCKER_INFO_RC=1 \
     FAKE_DOCKER_INFO_STDERR="Got permission denied while trying to connect" \
     run_launcher "$(make_repo_arg)"
   [ "$status" -eq 1 ]
   [[ "$output" == *"permission denied"* ]]
-  [[ "$output" == *"usermod -aG docker"* ]]
+  [[ "$output" == *"can access its socket"* ]]
+  [[ "$output" != *"usermod -aG docker"* ]]
 }
 
 # --- Artifactory access -----------------------------------------------------
@@ -105,7 +107,8 @@ setup() {
   local penv="$SANDBOX/.envs/my-service.env"
   [ -f "$penv" ]
   grep -q '^PROJECT_SLUG=my-service$' "$penv"
-  grep -q "^REPO_PATH=${repo}$" "$penv"
+  source "$REPO_ROOT/lib/compose.sh"
+  [ "$(compose_env_value REPO_PATH "$penv")" = "$repo" ]
   grep -q '^OPENCODE_PORT=' "$penv"
   grep -q '^IMAGE_REGISTRY=reg.test.local/opencode$' "$penv"   # inherited from .env
 
@@ -186,7 +189,7 @@ setup() {
   run_launcher --detach "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   grep -q 'compose .*up -d' "$FAKE_DOCKER_LOG"
-  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .* -it .*opencode' "$FAKE_DOCKER_LOG"
   [[ "$output" == *"detached: stack is running"* ]]
 }
 
@@ -194,7 +197,7 @@ setup() {
   seed_env
   run_launcher --no-tui "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .* -it .*opencode' "$FAKE_DOCKER_LOG"
 }
 
 @test "--tui is accepted as a back-compat no-op (still attaches)" {
@@ -235,7 +238,7 @@ setup() {
   seed_env
   run_launcher --detach "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .* -it .*opencode' "$FAKE_DOCKER_LOG"
   ! grep -qE 'compose .*down' "$FAKE_DOCKER_LOG"
 }
 
@@ -252,8 +255,9 @@ setup() {
   seed_env
   run_launcher --podman "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  grep -q 'docker-compose.podman.yml' "$FAKE_DOCKER_LOG"
-  [[ "$output" == *"podman:"* ]]
+  grep -q 'docker-compose.podman.yml' "$FAKE_PODMAN_COMPOSE_LOG"
+  [ ! -s "$FAKE_DOCKER_LOG" ]
+  [[ "$output" == *"runtime: podman"* ]]
 }
 
 @test "--continue passes -c to the attached TUI" {
@@ -290,7 +294,7 @@ setup() {
   run_launcher --continue --detach "$(make_repo_arg)"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no effect with --detach"* ]]
-  ! grep -q '^exec ' "$FAKE_DOCKER_LOG"
+  ! grep -qE '^exec .* -it .*opencode' "$FAKE_DOCKER_LOG"
 }
 
 @test "--prod is gone: it is rejected as an unknown option" {
@@ -324,16 +328,17 @@ setup() {
   ! grep -q ':@sha256:' "$FAKE_DOCKER_LOG"   # never the invalid registry:@sha256 form
 }
 
-@test "USER_LAYER_PATH adds the user-layer overlay and records the abs path" {
+@test "USER_LAYER_PATH adds the user-layer overlay and resolves an absolute bind source" {
   seed_env
   # .env already carries an empty USER_LAYER_PATH= line; set that one (get_env
   # reads the first match), don't append a duplicate.
   sed -i 's|^USER_LAYER_PATH=.*|USER_LAYER_PATH=./user-layer|' "$SANDBOX/.env"
+  mkdir -p "$SANDBOX/user-layer"
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"user layer:"* ]]
   grep -q 'docker-compose.user-layer.yml' "$FAKE_DOCKER_LOG"
-  grep -q "^USER_LAYER_PATH=${SANDBOX}/user-layer$" "$SANDBOX/.envs/myrepo.env"
+  [ "$(compose_env_value USER_LAYER_PATH "$SANDBOX/.envs/myrepo.env")" = ./user-layer ]
+  grep -qF "source=${SANDBOX}/user-layer" "$FAKE_DOCKER_LOG"
 }
 
 # --- system-package layer ---------------------------------------------------
@@ -368,7 +373,7 @@ setup() {
 
   # overlay added; base image handed to the build via the per-project env file
   grep -q 'docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
-  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:local$' "$SANDBOX/.envs/myrepo.env"
+  [ "$(compose_env_value OC_BASE_IMAGE "$SANDBOX/.envs/myrepo.env")" = reg.test.local/opencode:local ]
 
   # registry services pulled by name, then opencode is built (not pulled)
   grep -qE 'compose .*pull squid oc-publish' "$FAKE_DOCKER_LOG"
@@ -386,7 +391,7 @@ setup() {
   printf '%s\n' 'cmake' > "$SANDBOX/extra-packages.txt"
   run_launcher "$(make_repo_arg)"
   [ "$status" -eq 0 ]
-  grep -q '^OC_BASE_IMAGE=reg.test.local/opencode:0.0.2$' "$SANDBOX/.envs/myrepo.env"
+  [ "$(compose_env_value OC_BASE_IMAGE "$SANDBOX/.envs/myrepo.env")" = reg.test.local/opencode:0.0.2 ]
   # the package overlay is applied last so it wins (overrides opencode's build:)
   grep -qE 'docker-compose.yml .*docker-compose.user-packages.yml' "$FAKE_DOCKER_LOG"
 }
@@ -698,18 +703,19 @@ seed_env_doctor() {
   seed_env_doctor
   FAKE_DOCKER_INFO_RC=1 run_launcher --doctor
   [ "$status" -ne 0 ]
-  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
+  [[ "$output" == *"[FAIL] runtime selection"* ]]
   [[ "$output" == *"one or more critical checks FAILED"* ]]
 }
 
-@test "--doctor: permission-denied daemon failure surfaces the usermod hint" {
+@test "--doctor: permission-denied daemon failure reports socket access advice" {
   seed_env_doctor
   FAKE_DOCKER_INFO_RC=1 \
     FAKE_DOCKER_INFO_STDERR="Got permission denied while trying to connect" \
     run_launcher --doctor
   [ "$status" -ne 0 ]
-  [[ "$output" == *"[FAIL] docker daemon reachable"* ]]
-  [[ "$output" == *"usermod -aG docker"* ]]
+  [[ "$output" == *"[FAIL] runtime selection"* ]]
+  [[ "$output" == *"can access its socket"* ]]
+  [[ "$output" != *"usermod -aG docker"* ]]
 }
 
 @test "--doctor: missing required env key FAILs and exits non-zero" {
@@ -779,19 +785,21 @@ seed_env_doctor() {
   [[ "$output" == *"skipped"* ]]
 }
 
-@test "--doctor: podman shim is reported as WARN, not FAIL" {
+@test "--doctor: a Podman shim selects the actual Podman engine and provider" {
   seed_env_doctor
   FAKE_DOCKER_VERSION_OUTPUT="Docker version 0.0.0, podman" \
     run_launcher --doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[WARN] podman shim detected"* ]]
+  [[ "$output" == *"[PASS] podman rootless engine"* ]]
+  [[ "$output" == *"[PASS] podman-compose provider"* ]]
 }
 
-@test "--doctor: no podman shim reports PASS" {
+@test "--doctor: Docker Engine reports the Docker provider" {
   seed_env_doctor
   run_launcher --doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[PASS] podman shim"* ]]
+  [[ "$output" == *"[PASS] docker daemon reachable"* ]]
+  [[ "$output" == *"[PASS] docker compose v2 plugin"* ]]
 }
 
 @test "--doctor: an optional repo path is validated and its project reported" {
@@ -986,14 +994,14 @@ seed_env_doctor() {
   ! grep -q 'compose' "$FAKE_DOCKER_LOG"
 }
 
-@test "--down surfaces a warning (not a hard failure) when compose down errors" {
+@test "--down reports provider failure and propagates its exit status" {
   seed_env
   local repo; repo="$(make_repo_arg)"
   run_launcher "$repo"
   [ "$status" -eq 0 ]
 
   FAKE_DOCKER_COMPOSE_RC=1 run_launcher --down "$repo"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"may not have been running"* ]]
 }
 
@@ -1277,7 +1285,7 @@ seed_env_doctor() {
   [[ "$output" == *"enforced"* ]]
   [[ "$output" == *"squid image"* ]]
   [[ "$output" == *"local extensions"* ]]
-  [[ "$output" == *"none"* ]]
+  [[ "$output" == *"placeholder.conf"* ]]
 }
 
 @test "--show-allowlist works with no repo path" {
@@ -1765,13 +1773,9 @@ seed_env_doctor() {
 @test "--open warns but does not fail the boot when xdg-open is missing" {
   seed_env
   local repo; repo="$(make_repo_arg)"
-  # Run in a stripped-down PATH that has docker (sandbox copy is found via the
-  # fake-bin dir already on PATH) but no xdg-open at all. Use a temp PATH
-  # containing only FAKE_BIN's docker stub directory and core utils.
-  local stub_dir="$BATS_TEST_TMPDIR/no-xdg-open-bin"
-  mkdir -p "$stub_dir"
-  ln -sf "$FAKE_BIN/docker" "$stub_dir/docker"
-  PATH="$stub_dir:/usr/bin:/bin" run bash "$SANDBOX/start.sh" --detach --open "$repo"
+  # Explicitly request a nonexistent opener so this is independent of
+  # whether the host has xdg-open in /usr/bin or /bin.
+  OPENER=ocl-test-nonexistent-opener run_launcher --detach --open "$repo"
   [ "$status" -eq 0 ]
   [[ "$output" == *"not found on PATH"* ]]
   [[ "$output" == *"open this URL yourself"* ]]
@@ -1964,7 +1968,7 @@ seed_env_doctor() {
 
 # --- --also (extra repo/folder mounts) --------------------------------------
 
-@test "--also: default is read-only, prints the boot line and writes a ro,z overlay" {
+@test "--also: default is read-only and uses shared SELinux relabeling" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   local liba; liba="$(make_repo_arg "liba")"
@@ -1973,30 +1977,40 @@ seed_env_doctor() {
   [[ "$output" == *"also: ${liba} -> /workspace-extra/liba (read-only)"* ]]
   [ -f "$SANDBOX/.envs/myrepo.also.yml" ]
   grep -qF "# generated by start.sh --also; do not edit" "$SANDBOX/.envs/myrepo.also.yml"
-  grep -qF -- "- ${liba}:/workspace-extra/liba:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "source: '${liba}'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/liba'" "$SANDBOX/.envs/myrepo.also.yml"
+  [ "$(grep -c 'read_only: true' "$SANDBOX/.envs/myrepo.also.yml")" -eq 2 ]
+  grep -qF 'create_host_path: true' "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF 'selinux: z' "$SANDBOX/.envs/myrepo.also.yml"
   grep -q 'myrepo.also.yml' "$FAKE_DOCKER_LOG"
 }
 
-@test "--also: a trailing :rw suffix opts a mount into read-write (z, not ro,z)" {
+@test "--also: a trailing :rw suffix opts a mount into read-write" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   local libb; libb="$(make_repo_arg "libb")"
   run_launcher --detach --also "${libb}:rw" "$repo"
   [ "$status" -eq 0 ]
   [[ "$output" == *"also: ${libb} -> /workspace-extra/libb (read-write)"* ]]
-  grep -qF -- "- ${libb}:/workspace-extra/libb:z" "$SANDBOX/.envs/myrepo.also.yml"
-  ! grep -qF -- "- ${libb}:/workspace-extra/libb:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "source: '${libb}'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/libb'" "$SANDBOX/.envs/myrepo.also.yml"
+  [ "$(grep -c 'read_only: true' "$SANDBOX/.envs/myrepo.also.yml")" -eq 1 ] # breadcrumb only
 }
 
-@test "--also is repeatable: each mount gets its own line, in order" {
+@test "--also is repeatable: each mount gets its own mapping, in order" {
   seed_env
   local repo; repo="$(make_repo_arg "myrepo")"
   local liba; liba="$(make_repo_arg "liba")"
   local libb; libb="$(make_repo_arg "libb")"
   run_launcher --detach --also "$liba" --also "${libb}:rw" "$repo"
   [ "$status" -eq 0 ]
-  grep -qF -- "- ${liba}:/workspace-extra/liba:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
-  grep -qF -- "- ${libb}:/workspace-extra/libb:z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "source: '${liba}'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/liba'" "$SANDBOX/.envs/myrepo.also.yml"
+  [ "$(grep -c 'read_only: true' "$SANDBOX/.envs/myrepo.also.yml")" -eq 2 ]
+  grep -qF 'create_host_path: true' "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF 'selinux: z' "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "source: '${libb}'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/libb'" "$SANDBOX/.envs/myrepo.also.yml"
 }
 
 @test "--also: a name collision between two paths gets -2/-3 suffixing" {
@@ -2009,9 +2023,9 @@ seed_env_doctor() {
     --also "$BATS_TEST_TMPDIR/three/lib" \
     "$repo"
   [ "$status" -eq 0 ]
-  grep -qF "/workspace-extra/lib:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
-  grep -qF "/workspace-extra/lib-2:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
-  grep -qF "/workspace-extra/lib-3:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/lib'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/lib-2'" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/workspace-extra/lib-3'" "$SANDBOX/.envs/myrepo.also.yml"
 }
 
 @test "--also: a nonexistent path dies with a clear message" {
@@ -2071,7 +2085,8 @@ seed_env_doctor() {
   grep -qF -- '`/workspace-extra/liba`' "$SANDBOX/.envs/myrepo.also-context.md"
   # overlay tells the image to load it via the generic hook (no --also knowledge image-side)
   grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" "$SANDBOX/.envs/myrepo.also.yml"
-  grep -qF -- "/etc/opencode/also-context.md:ro,z" "$SANDBOX/.envs/myrepo.also.yml"
+  grep -qF "target: '/etc/opencode/also-context.md'" "$SANDBOX/.envs/myrepo.also.yml"
+  [ "$(grep -c 'read_only: true' "$SANDBOX/.envs/myrepo.also.yml")" -eq 2 ]
 
   # a later boot with no --also removes the breadcrumb too, not just the overlay
   run_launcher --detach "$repo"
@@ -2087,7 +2102,7 @@ seed_env_doctor() {
   [ "$status" -eq 0 ]
   # the `pull` invocation lists every -f in COMPOSE_FILES order
   local pull_line
-  pull_line="$(grep -E 'compose .*pull$' "$FAKE_DOCKER_LOG")"
+  pull_line="$(grep -E ' .*pull$' "$FAKE_PODMAN_COMPOSE_LOG")"
   [[ "$pull_line" == *"docker-compose.podman.yml"* ]]
   [[ "$pull_line" == *"myrepo.also.yml"* ]]
   local podman_pos also_pos

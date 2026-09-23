@@ -6,6 +6,7 @@
 
 # Local allowlist drop-ins (the dir is tracked via .gitkeep; its contents are not).
 extra-allowlist.d/*.conf
+!extra-allowlist.d/placeholder.conf
 
 # Personal user-layer config (host-editable agents/skills/commands).
 user-layer/

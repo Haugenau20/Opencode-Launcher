@@ -19,17 +19,22 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
 > launcher-only system-package layer (see below), which builds one local image
 > from a Dockerfile that *does* live here.
 
-## Blocks that must match the maintainer repo exactly
+## Runtime contracts that must match the maintainer repo
 
-1. **SELinux relabels (`:z`).** Under enforcing SELinux, bind-mounted host paths
-   need a relabel or the container is denied access. Use `:z` (shared), never
-   `:Z` (private) — the same host dir (e.g. `extra-allowlist.d`) is mounted
-   across every project's stack.
-   - `docker/docker-compose.yml`: `${REPO_PATH}:/workspace:z`
-   - `docker/docker-compose.yml`: `${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z`
-     (short syntax, so the flag is expressible)
-   - `docker/docker-compose.user-layer.yml`: `${USER_LAYER_PATH:?…}:/home/dev/.config/opencode:z`
-   - Named volumes (`oc_state`, `oc_cfg`) are left alone — Docker auto-labels them.
+1. **Shared SELinux relabeling (`:z`).** Under enforcing SELinux, host bind
+   sources need a shared relabel because the same source can be used by several
+   projects. The launcher expresses this as long-form `bind.selinux: z`, with
+   `create_host_path: true` so Docker Compose retains the relabel operation.
+   `create_host_path: false` dropped the label in real-engine testing; see
+   [the runtime mount tradeoff](RUNTIMES.md#compose-configuration-and-host-paths).
+   The launcher checks existence, type and engine access before startup, then
+   rechecks immediately before `up`; the engine can still create a source that
+   disappears in the interval after validation.
+   - Workspace: resolved `REPO_PATH` → `/workspace`, read-write.
+   - Allowlist: resolved `EXTRA_ALLOWLIST_PATH` → `/etc/squid/extra-allowlist.d`, read-only.
+   - User layer: resolved `USER_LAYER_PATH` → `/home/dev/.config/opencode`, read-write.
+   - Named volumes (`oc_state`, `oc_cfg`) retain engine-managed labeling.
+   Use shared `z`, never private `Z`; do not disable service SELinux confinement.
 
 2. **`oc-publish` image tag.** The socat publisher sidecar must resolve to the
    **same image tag** as `opencode` and `squid`. All three read `${IMAGE_TAG}`
@@ -54,29 +59,26 @@ compose in either repo, walk this list and mirror the runtime-relevant changes.
    `oc-publish` would either fail to bind the second port or forward it to a
    host/port the opencode-pty server isn't actually listening on.
 
-4. **`env_file` per-project layering (`opencode` service).** Two entries,
-   last-wins, order IS the mechanism:
+4. **`env_file` per-project layering (`opencode` service).** Shared values
+   precede generated project values; last wins, including explicit blank values:
    ```yaml
        env_file:
-         - .env
-         - path: ${PROJECT_ENV_FILE:-.env}
-           required: false
+         - ${OCL_SHARED_ENV_FILE:?shared environment path is required}
+         - ${PROJECT_ENV_FILE:?project environment path is required}
    ```
-   `--env-file` (the `docker compose` CLI flag `start.sh`/`lib/project.sh`
-   already pass) only drives compose's `${VAR}` *interpolation* — it puts
-   nothing inside a container. Only an `env_file:` directive does that, and it
-   needs a literal path. Without this second layer every project's container
-   gets the exact same credentials as every other, no matter how many
-   `--env-file`s differ. `PROJECT_ENV_FILE` unset defaults to `.env`, so the
-   file is read twice and nothing changes — the single-project case, intact.
-   `required: false` keeps a project with no generated file yet from being an
-   error. See `PROJECT_ENV_FILE` under "Shared env-var contracts" below for
-   who sets it.
+   The launcher supplies existing absolute file paths to both providers. This
+   simple-list syntax is an intentional launcher compatibility delta from any
+   Setup definition using optional long-form `env_file` entries.
+   `--env-file` controls Compose interpolation; it does not itself inject
+   container environment values. Preserve both service `env_file` entries so
+   per-project credentials and explicit credential removal reach the container.
+   The generated project file contains a complete snapshot, allowing management
+   to reuse it if the shared `.env` was removed after startup.
 
 5. **`EXTRA_ALLOWLIST_PATH` squid allowlist override.** Mirrors item 1's
-   `:ro,z` bind mount above — `${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}` —
-   but is listed separately here because the override itself (not just the
-   SELinux flag) must match: unset, it resolves to the same shared directory
+   read-only shared-relabel bind above. The launcher resolves
+   `EXTRA_ALLOWLIST_PATH` before Compose sees it. The override itself (not just
+   the SELinux flag) must match: unset, it resolves to the same shared directory
    every project used before; set, it points one project's squid at its own
    allowlist directory instead.
 
@@ -154,18 +156,12 @@ the name and semantics in sync across both repos.
   deliberately never carries.
 
 - **`PROJECT_ENV_FILE`** — the absolute path to the generated per-project env
-  file (`.envs/<slug>.env`, produced by `write_project_env`/the boot flow's
-  own copy of it), passed to `docker/docker-compose.yml`'s `opencode`
-  `env_file:` layer (see block 4 above) so per-project credentials actually
-  reach the container instead of only driving `--env-file` interpolation.
-  Exported by `derive_project_settings` and `project_env_for_management` in
-  `lib/project.sh`, and by the equivalent inline step in `start.sh`'s boot
-  flow (`cmd_run`) — every code path that assembles the `COMPOSE` array sets
-  it. It must be **absolute**: `env_file:` paths resolve against
-  `--project-directory` (`$__OCL_DIR`), not against `$ENVS_DIR`'s own
-  (typically CWD-relative) meaning, so a relative value would resolve against
-  the wrong base and silently vanish behind `required: false` — no error, just
-  a project quietly back on shared credentials.
+  file (`.envs/<slug>.env`), supplied to the `opencode` service's `env_file`
+  layer so project credentials reach the container. `lib/compose.sh` exports
+  it through the shared `compose_prepare` assembly path used by startup and
+  management. Absolute paths prevent resolution against the first Compose
+  file's `docker/` directory; neither provider receives `--project-directory`.
+  `OCL_SHARED_ENV_FILE` similarly supplies the shared file's absolute location.
 
   Same symmetric-exclusion invariant as `OPENCODE_EXTRA_INSTRUCTIONS` and
   `PTY_WEB_HOSTNAME`/`PTY_WEB_PORT` above: this is **internal
@@ -177,31 +173,35 @@ the name and semantics in sync across both repos.
   in `.env` would just be overwritten (or, worse, read back through the very
   layering mechanism it's meant to select).
 
-- **`EXTRA_ALLOWLIST_PATH`** — optional per-project override of the squid
-  `extra-allowlist.d` bind-mount source (see block 5 above); unset, every
-  project shares the one committed `./extra-allowlist.d`. This launcher does
-  not currently generate or set a value for it anywhere (no per-project
-  allowlist-directory feature yet) — it exists in `docker/docker-compose.yml`
-  purely so the block matches the maintainer repo's contract, ready for that
-  feature to land. Same invariant as `PROJECT_ENV_FILE`: if/when a per-project
-  allowlist feature is added, this stays **launcher-computed, not a
-  `.env.example`/`manifest.json` entry** — do not add it to either.
+- **`EXTRA_ALLOWLIST_PATH`** — optional per-project override of Squid's
+  allowlist directory. `compose_prepare` resolves and exports it from the
+  saved project configuration; if unset, it selects the shared
+  `<launcher-root>/extra-allowlist.d`. This is launcher configuration, not an
+  environment key read by the image entrypoint, so do not add it to the image's
+  `manifest.json`. A custom directory must already exist and contain at least
+  one readable `.conf` file; the bundled placeholder is comment-only.
 
-## File location (a presentation-only delta)
+## File locations and runtime-specific representation
 
-The launcher keeps its compose stack under **`docker/`** (`docker/docker-compose.yml`,
-`docker/docker-compose.podman.yml`, `docker/docker-compose.user-layer.yml`,
-`docker/docker-compose.user-packages.yml`, `docker/Dockerfile.user-packages`) to keep
-the repo root uncluttered. The maintainer repo may keep them at its root — that's
-fine. **Only the folder differs; the contents of the synced files must still match
-block-for-block.** `start.sh` invokes them with `--project-directory <repo-root>`,
-so every relative path inside (build `context: .`, the `:z` bind mounts, `env_file`)
-still resolves from the root exactly as before. When you mirror a change, compare
-the file *bodies*, not their paths.
+Compose files and the optional package Dockerfile live under `docker/`.
+`lib/compose.sh` resolves workspace, allowlist, user-layer, additional-folder,
+environment-file and build paths against their documented bases before either
+provider is invoked. Providers receive absolute paths; `--project-directory`
+is not used. Runtime selection, saved bindings and operation dispatch live in
+`lib/runtime.sh` and the engine implementations under `lib/runtime/`.
 
-(The one exception is `docker/docker-compose.user-packages.yml`: because it's a
-launcher-only delta, its `dockerfile:` was updated to `docker/Dockerfile.user-packages`
-to match the new location. Nothing to mirror.)
+Compare shared image, environment, network and storage semantics with Setup,
+while retaining these intentional launcher representation differences:
+
+- Absolute path variables instead of checkout-relative Compose paths.
+- Required simple-list `env_file` entries for both providers.
+- Long-form binds with shared SELinux relabeling and source preflight checks.
+- Podman `keep-id` with an explicit startup `user: "0:0"`, preserving the
+  image's root initialization followed by its own privilege drop.
+- Absolute package-build context and Dockerfile paths supplied by the launcher.
+
+Do not overwrite these differences by copying whole Compose files from Setup.
+Use [the runtime guide](RUNTIMES.md) for provider limitations and validation.
 
 ## Intentional launcher-only deltas (not mirrored to the maintainer repo)
 

@@ -117,7 +117,7 @@ pty_enabled() {
 # read as a port conflict against itself.
 publish_container_running() {
   local slug="$1"
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "opencode-publish-${slug}"
+  runtime_container_running "opencode-publish-${slug}"
 }
 
 # resolve_project_port SLUG — echo the port SLUG's stack should use. Shared
@@ -190,90 +190,17 @@ open_url() {
   info "--open: launching $opener for $url"
 }
 
-# _project_compose_files SLUG — echo (as a COMPOSE-array-ready sequence, one
-# -f/path pair at a time via the caller's array-append idiom below) which
-# compose overlay files apply on top of docker-compose.yml, based on the
-# CURRENT USER_LAYER_PATH in $ENV_FILE and whether SLUG has a generated
-# --also overlay on disk. Internal helper shared by derive_project_settings
-# and write_project_env/project_env_for_management so all three agree on the
-# overlay set without duplicating the USER_LAYER_PATH resolution logic. Side
-# effect: mkdir -p's USER_LAYER_PATH if set (same as before this was split
-# out) so the bind mount target exists. The --also overlay (lib/also.sh) is
-# appended LAST, same as the boot flow (cmd_run in start.sh) — it is only
-# ever included when the file already exists (i.e. a previous boot with
-# --also wrote it); management commands never generate it themselves.
-_project_compose_files() {
-  local slug="$1"
-  local user_layer_path
-  user_layer_path="$(get_env USER_LAYER_PATH)"
-  compose_files=(-f "$__OCL_DIR/docker/docker-compose.yml")
-  if [ -n "$user_layer_path" ]; then
-    mkdir -p "$user_layer_path"
-    user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
-      || die "could not resolve USER_LAYER_PATH"
-    compose_files+=(-f "$__OCL_DIR/docker/docker-compose.user-layer.yml")
-  fi
-  # NOTE: as with write_project_env below, the LAST statement of this function
-  # must never be a bare `[ cond ] && cmd` — under set -euo pipefail a false
-  # (short-circuited) `&&` list would abort the whole script here. `if ... fi`
-  # returns 0 on a false condition, `&&` does not.
-  local also_overlay
-  also_overlay="$(also_overlay_file "$slug")"
-  if [ -f "$also_overlay" ]; then
-    compose_files+=(-f "$also_overlay")
-  fi
-}
-
-# derive_project_settings REPO_PATH — sets SLUG, PORT, PROJECT_ENV,
-# PROJECT_NAME, COMPOSE in the caller's scope: a pure COMPUTE step that never
-# touches .envs/<slug>.env (or any other state) — the exact values the boot
-# flow computes in steps 5/6, WITHOUT pulling/booting/attaching anything and
-# WITHOUT writing anything to disk. PORT comes from resolve_project_port, so
-# a currently-running or previously-recorded port is reused (sticky) rather
-# than recomputed from scratch on every call. Callers that need the per-project
-# env file to actually exist on disk must call write_project_env explicitly
-# (see below) — derive_project_settings alone is safe to call from read-only
-# commands (--status et al.) with no side effects.
-#
-# Also EXPORTS PROJECT_ENV_FILE, the absolute path to the same file PROJECT_ENV
-# names. This is what carries per-project credentials INTO the container: the
-# opencode service's `env_file:` directive (docker/docker-compose.yml) layers
-# `${PROJECT_ENV_FILE:-.env}` on top of the shared .env, and that is compose
-# `${VAR}` interpolation — it only ever reads the real process environment, so
-# the value must be exported, not merely assigned.
-#
-# It is resolved to an ABSOLUTE path deliberately, though a relative one would
-# work today: main() cd's to the launcher root, so ENVS_DIR's default `.envs`
-# and --project-directory ($__OCL_DIR) happen to share a base, and env_file
-# paths resolve against the latter. That agreement is a coincidence of two
-# independent facts, and ENVS_DIR is overridable (the test suite points it at a
-# sandbox). Resolving here costs nothing and removes the coupling — worth it
-# because the failure mode is SILENT: a path that misses is swallowed by
-# env_file's `required: false`, so the stack boots with no per-project
-# credentials instead of an error.
+# Derive identity only. Service configuration is assembled after the effective
+# environment exists, through compose_prepare in lib/compose.sh.
 derive_project_settings() {
   local repo_path="$1"
-
   SLUG="$(derive_slug "$repo_path")"
   PORT="$(resolve_project_port "$SLUG")" || die "$(port_exhausted_msg)"
-
-  local compose_files
-  _project_compose_files "$SLUG"
-
   mkdir -p "$ENVS_DIR"
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
   PROJECT_NAME="opencode-${SLUG}"
-  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
-    || die "could not resolve ENVS_DIR"
+  PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" && pwd)/${SLUG}.env"
   export PROJECT_ENV_FILE
-  # The compose files live under docker/, but their relative paths (build
-  # contexts, the :z bind mounts, env_file) must resolve from the repo root.
-  # --project-directory pins that base so moving the files stays transparent.
-  COMPOSE=(docker compose
-    --project-directory "$__OCL_DIR"
-    --env-file "$PROJECT_ENV"
-    -p "$PROJECT_NAME"
-    "${compose_files[@]}")
 }
 
 # project_overrides_file SLUG — echo the path to SLUG's hand-edited per-project
@@ -314,16 +241,12 @@ project_overrides_file() {
 #                           a stack unreachable at the port it printed.
 write_project_env() {
   local repo_path="$1"
-  local user_layer_path overrides
-  user_layer_path="$(get_env USER_LAYER_PATH)"
-  if [ -n "$user_layer_path" ]; then
-    mkdir -p "$user_layer_path"
-    user_layer_path="$(cd -- "$user_layer_path" >/dev/null 2>&1 && pwd)" \
-      || die "could not resolve USER_LAYER_PATH"
-  fi
+  local overrides temp_env
   overrides="$(project_overrides_file "$SLUG")"
 
   mkdir -p "$ENVS_DIR"
+  temp_env="$(mktemp "${PROJECT_ENV}.XXXXXX")" || return 1
+  chmod 600 "$temp_env"
   # NOTE: the last statement inside this group must never be a bare
   # `[ cond ] && cmd` — as the LAST command of this function, under
   # set -euo pipefail a false (short-circuited) `&&` list would abort the
@@ -340,9 +263,9 @@ write_project_env() {
     echo "# To override a value for this project, edit ${overrides}"
     echo "PROJECT_SLUG=${SLUG}"
     echo "OPENCODE_PORT=${PORT}"
-    echo "REPO_PATH=${repo_path}"
-    if [ -n "$user_layer_path" ]; then echo "USER_LAYER_PATH=${user_layer_path}"; fi
-  } > "$PROJECT_ENV"
+    compose_env_assignment REPO_PATH "$repo_path"
+  } > "$temp_env"
+  mv -f -- "$temp_env" "$PROJECT_ENV"
 }
 
 # project_env_for_management REPO_PATH — sets SLUG, PORT, PROJECT_ENV,
@@ -363,29 +286,31 @@ write_project_env() {
 # stack was booted with.
 project_env_for_management() {
   local repo_path="$1"
-
   SLUG="$(derive_slug "$repo_path")"
   mkdir -p "$ENVS_DIR"
   PROJECT_ENV="${ENVS_DIR}/${SLUG}.env"
   PROJECT_NAME="opencode-${SLUG}"
-
   if [ -f "$PROJECT_ENV" ]; then
     PORT="$(recorded_port "$SLUG")"
     [ -n "$PORT" ] || PORT=4096
-    local compose_files
-    _project_compose_files "$SLUG"
-    PROJECT_ENV_FILE="$(cd -- "$ENVS_DIR" >/dev/null 2>&1 && pwd)/${SLUG}.env" \
-      || die "could not resolve ENVS_DIR"
-    export PROJECT_ENV_FILE
-    COMPOSE=(docker compose
-      --project-directory "$__OCL_DIR"
-      --env-file "$PROJECT_ENV"
-      -p "$PROJECT_NAME"
-      "${compose_files[@]}")
   else
     derive_project_settings "$repo_path"
     write_project_env "$repo_path"
   fi
+  PROJECT_ENV_FILE="${RUNTIME_PROJECT_ENV_FILE:-$(cd -- "$ENVS_DIR" && pwd)/${SLUG}.env}"
+  local COMPOSE_FILES=()
+  compose_prepare "$SLUG" "$PROJECT_ENV_FILE" || return $?
+  if [ "${RUNTIME_BOUND:-0}" = 1 ] && [ "${#RUNTIME_CONFIG_FILES[@]}" -gt 0 ]; then
+    COMPOSE_FILES=()
+    local file
+    for file in "${RUNTIME_CONFIG_FILES[@]}"; do
+      [ -f "$file" ] || die "saved Compose file is missing: $file"
+      COMPOSE_FILES+=(-f "$file")
+    done
+  fi
+  # Dynamic output consumed by the management command that called us.
+  # shellcheck disable=SC2034
+  COMPOSE=(runtime_compose --env-file "$PROJECT_ENV_FILE" -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}")
 }
 
 # --- docker network address pools ------------------------------------------
@@ -415,7 +340,7 @@ project_env_for_management() {
 # nothing if that cannot be determined. Only bridge networks consume a pool
 # subnet (host/none/overlay do not), so count those.
 docker_network_count() {
-  docker network ls --filter driver=bridge --format '{{.Name}}' 2>/dev/null | grep -c . || true
+  runtime_network_count 2>/dev/null || printf '0\n'
 }
 
 # address_pool_advice — echo the multi-line explanation + fix for a pool
@@ -482,7 +407,7 @@ compose_up_or_explain() {
   else
     rc=${PIPESTATUS[0]}
   fi
-  if [ "$rc" -ne 0 ] && grep -qi 'address pools have been fully subnetted' "$log"; then
+  if [ "${RUNTIME_ENGINE:-docker}" = docker ] && [ "$rc" -ne 0 ] && grep -qi 'address pools have been fully subnetted' "$log"; then
     rm -f "$log"
     echo >&2
     err "could not create this stack's networks."
@@ -491,4 +416,23 @@ compose_up_or_explain() {
   fi
   rm -f "$log"
   return "$rc"
+}
+
+# Wait for the image entrypoint to finish and its local API to answer before
+# handing the session to dev. This checks the actual application, not merely
+# that the engine accepted `up -d`. Failures retain the binding for --logs/down.
+project_wait_ready() {
+  local project="$1" port="${2:-4096}" limit="${OCL_START_TIMEOUT:-60}" deadline
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || { err 'OCL_START_TIMEOUT must be a positive number of seconds'; return 1; }
+  deadline=$((SECONDS + limit))
+  while :; do
+    if runtime_exec -u dev "$project" curl --noproxy '*' --silent --fail --max-time 2 \
+      "http://127.0.0.1:${port}/global/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 1
+  done
+  err "$project did not become ready within ${limit}s; inspect it with --logs or stop it with --down (runtime binding retained)"
+  return 1
 }

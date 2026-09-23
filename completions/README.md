@@ -1,11 +1,12 @@
 # Shell completion
 
-Tab-completion for `start.sh`'s flags (bash and zsh). After flags, both
+Tab-completion for `start.sh`'s flags (bash and zsh), including `docker` and
+`podman` values after `--engine`. After flags, both
 complete a directory for the `<host-repo-path>` argument using the shell's
 native directory completion — no extra dependencies.
 
 The flag lists in both scripts are maintained as static arrays. If `start.sh`
-gains/renames/drops a flag, update `usage()` there first, then mirror the
+gains/renames/drops a flag, update `usage()` in `lib/usage.sh` first, then mirror the
 change in `opencode-launcher.bash` and `opencode-launcher.zsh` (each file has
 a comment pointing back here).
 
