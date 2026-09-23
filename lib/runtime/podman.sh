@@ -75,8 +75,9 @@ _runtime_podman_container_running() {
 _runtime_podman_projects() {
   local output
   # podman-compose has no equivalent of Docker Compose's global `ls`. Labels
-  # are its stable discovery mechanism, including stopped containers.
-  output="$(_runtime_podman_command ps --all --format $'{{.Label "com.docker.compose.project"}}\t{{.State}}')" || return 1
+  # are its stable discovery mechanism, including stopped containers. Podman
+  # exposes the Labels map; Docker's singular .Label template helper is absent.
+  output="$(_runtime_podman_command ps --all --format $'{{with index .Labels "com.docker.compose.project"}}{{.}}{{end}}\t{{.State}}')" || return 1
   printf '%s\n' "$output" | awk -F '\t' '
     $1 != "" { total[$1]++; if ($2 == "running") running[$1]++ }
     END { for (p in total) {
