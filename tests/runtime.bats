@@ -152,7 +152,8 @@ select_and_validate() { runtime_select "$@" && runtime_validate; }
   runtime_select podman demo
   runtime_compose --env-file '/some project/settings.env' -p opencode-demo -f '/some project/compose.yml' config --quiet
   log="$(cat "$FAKE_PODMAN_COMPOSE_LOG")"
-  [[ "$log" == *'--in-pod=false --podman-args=--remote=false'* ]]
+  [[ "$log" == *"--in-pod=false --podman-path $SANDBOX/lib/runtime/podman-command.sh"* ]]
+  [[ "$log" != *'--podman-args='* ]]
   [[ "$log" != *'--project-directory'* ]]
   [ ! -s "$FAKE_DOCKER_LOG" ]
 }

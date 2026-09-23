@@ -46,8 +46,13 @@ _runtime_podman_validate() {
 _runtime_podman_compose() {
   # --in-pod=false prevents a provider default from putting all services in a
   # shared network namespace and bypassing the proxy network boundary.
+  # podman-compose inserts --podman-args AFTER the Podman subcommand, where
+  # global --remote is invalid. An explicit executable wrapper puts it before
+  # the subcommand for every provider operation, including build and version.
+  local root
+  root="${__OCL_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
   env -u CONTAINER_HOST -u CONTAINER_CONNECTION podman-compose \
-    --in-pod=false --podman-args=--remote=false "$@"
+    --in-pod=false --podman-path "$root/lib/runtime/podman-command.sh" "$@"
 }
 _runtime_podman_exec() { _runtime_podman_command exec "$@"; }
 _runtime_podman_exec_replace() { exec env -u CONTAINER_HOST -u CONTAINER_CONNECTION podman --remote=false exec "$@"; }
@@ -55,7 +60,7 @@ _runtime_podman_run() { _runtime_podman_command run "$@"; }
 _runtime_podman_image_inspect() { _runtime_podman_command image inspect "$@"; }
 _runtime_podman_manifest_inspect() { _runtime_podman_command manifest inspect "$@"; }
 _runtime_podman_engine_version() { _runtime_podman_command version --format '{{.Client.Version}}'; }
-_runtime_podman_provider_version() { env -u CONTAINER_HOST -u CONTAINER_CONNECTION podman-compose --version; }
+_runtime_podman_provider_version() { _runtime_podman_compose --version; }
 _runtime_podman_default_address_pools() { printf '0\n'; }
 _runtime_podman_network_count() {
   local output

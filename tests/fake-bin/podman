@@ -3,6 +3,11 @@
 # fixture, but keep an independent invocation log and rootless controls.
 printf '%s\n' "$*" >> "${FAKE_PODMAN_LOG:-/dev/null}"
 [ "${1:-}" != --remote=false ] || shift
+for arg in "$@"; do
+  case "$arg" in
+    --remote|--remote=*) printf 'global --remote option must precede the Podman subcommand\n' >&2; exit 125 ;;
+  esac
+done
 case "${1:-}" in
   info)
     [ "${FAKE_PODMAN_INFO_RC:-0}" -eq 0 ] || exit "$FAKE_PODMAN_INFO_RC"

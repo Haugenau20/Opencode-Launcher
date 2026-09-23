@@ -4,6 +4,7 @@ printf 'ENV:PROJECT_ENV_FILE=%s\n' "${PROJECT_ENV_FILE:-<unset>}" >> "${FAKE_POD
 for arg in "$@"; do
   case "$arg" in
     --project-directory|--project-directory=*) printf 'unsupported argument: --project-directory\n' >&2; exit 2 ;;
+    --podman-args=*--remote*) printf 'podman-compose places --podman-args after the subcommand; use the explicit wrapper\n' >&2; exit 2 ;;
     --version) printf 'podman-compose version %s\n' "${FAKE_PODMAN_COMPOSE_VERSION:-1.5.0}"; exit "${FAKE_PODMAN_COMPOSE_VERSION_RC:-0}" ;;
   esac
 done

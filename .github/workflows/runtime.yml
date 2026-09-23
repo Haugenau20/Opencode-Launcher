@@ -14,7 +14,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y bats python3-yaml zsh
+      - run: sudo apt-get update && sudo apt-get install -y bats python3-yaml python3-venv zsh
+      - name: Install the real Compose parser for command-routing regression tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/provider-tests"
+          "$RUNNER_TEMP/provider-tests/bin/pip" install 'podman-compose==1.5.0'
+          echo "OCL_REAL_PODMAN_COMPOSE=$RUNNER_TEMP/provider-tests/bin/podman-compose" >> "$GITHUB_ENV"
+          echo "OCL_TEST_PODMAN_COMPOSE=$RUNNER_TEMP/provider-tests/bin/podman-compose" >> "$GITHUB_ENV"
       - run: bash tests/run.sh
 
   containers:

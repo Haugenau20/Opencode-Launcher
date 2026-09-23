@@ -38,6 +38,8 @@ make_sandbox() {
 seed_env() {
   cp "$SANDBOX/.env.example" "$SANDBOX/.env"
   sed -i 's|^IMAGE_REGISTRY=.*|IMAGE_REGISTRY=reg.test.local/opencode|' "$SANDBOX/.env"
+  # Keep rootless namespace fixtures valid on CI users whose IDs are not 1000.
+  sed -i "s/^HOST_UID=.*/HOST_UID=$(id -u)/; s/^HOST_GID=.*/HOST_GID=$(id -g)/" "$SANDBOX/.env"
 }
 
 # make_repo_arg [name] — create a throwaway dir to pass as <host-repo-path>
