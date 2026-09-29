@@ -26,7 +26,7 @@ setup() {
   run cat "$REPO_ROOT/completions/opencode-launcher.bash"
   [ "$status" -eq 0 ]
   for flag in --doctor --show-allowlist --logs --shell --status --down --stop \
-              --reconfigure --continue --persist --detach --podman --open --also --exec --help; do
+              --reconfigure --continue --persist --detach --engine --podman --open --also --exec --help; do
     [[ "$output" == *"$flag"* ]]
   done
 }
@@ -56,7 +56,7 @@ setup() {
   run cat "$REPO_ROOT/completions/opencode-launcher.zsh"
   [ "$status" -eq 0 ]
   for flag in --doctor --show-allowlist --logs --shell --status --down --stop \
-              --reconfigure --continue --persist --detach --podman --open --also --exec --help; do
+              --reconfigure --continue --persist --detach --engine --podman --open --also --exec --help; do
     [[ "$output" == *"$flag"* ]]
   done
 }
@@ -94,6 +94,7 @@ install_sandbox() {
   mkdir -p "$INSTALL_SANDBOX"
   cp "$REPO_ROOT/install.sh" "$INSTALL_SANDBOX/"
   cp "$REPO_ROOT/start.sh" "$INSTALL_SANDBOX/"
+  cp -r "$REPO_ROOT/lib" "$INSTALL_SANDBOX/"
   export PATH="$FAKE_BIN:$PATH"
 }
 
@@ -125,15 +126,16 @@ install_sandbox() {
   install_sandbox
   FAKE_DOCKER_INFO_RC=1 run bash "$INSTALL_SANDBOX/install.sh"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"cannot talk to the Docker daemon"* ]]
+  [[ "$output" == *"cannot connect to the selected Docker endpoint"* ]]
 }
 
-@test "install.sh: permission-denied daemon failure surfaces the usermod hint" {
+@test "install.sh: permission-denied daemon failure reports socket access advice" {
   install_sandbox
   FAKE_DOCKER_INFO_RC=1 FAKE_DOCKER_INFO_STDERR="permission denied" \
     run bash "$INSTALL_SANDBOX/install.sh"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"usermod -aG docker"* ]]
+  [[ "$output" == *"can access its socket"* ]]
+  [[ "$output" != *"usermod -aG docker"* ]]
 }
 
 @test "install.sh: does NOT overwrite an existing .env" {

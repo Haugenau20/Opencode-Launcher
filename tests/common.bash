@@ -22,6 +22,10 @@ make_sandbox() {
   cp "$REPO_ROOT"/docker/docker-compose*.yml "$SANDBOX/docker/" 2>/dev/null || true
   cp -r "$REPO_ROOT/extra-allowlist.d" "$SANDBOX/" 2>/dev/null || true
 
+  export FAKE_PODMAN_LOG="$BATS_TEST_TMPDIR/podman.log"
+  : > "$FAKE_PODMAN_LOG"
+  export FAKE_PODMAN_COMPOSE_LOG="$BATS_TEST_TMPDIR/podman-compose.log"
+  : > "$FAKE_PODMAN_COMPOSE_LOG"
   export FAKE_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
   : > "$FAKE_DOCKER_LOG"
   export FAKE_XDG_OPEN_LOG="$BATS_TEST_TMPDIR/xdg-open.log"
@@ -34,6 +38,8 @@ make_sandbox() {
 seed_env() {
   cp "$SANDBOX/.env.example" "$SANDBOX/.env"
   sed -i 's|^IMAGE_REGISTRY=.*|IMAGE_REGISTRY=reg.test.local/opencode|' "$SANDBOX/.env"
+  # Keep rootless namespace fixtures valid on CI users whose IDs are not 1000.
+  sed -i "s/^HOST_UID=.*/HOST_UID=$(id -u)/; s/^HOST_GID=.*/HOST_GID=$(id -g)/" "$SANDBOX/.env"
 }
 
 # make_repo_arg [name] — create a throwaway dir to pass as <host-repo-path>

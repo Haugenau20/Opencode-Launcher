@@ -42,8 +42,8 @@ grouped into folders so a fresh clone isn't overwhelming.
 ├── install.sh            # one-time bootstrap / prerequisite check
 ├── .env.example          # template copied to .env on first run (your secrets)
 ├── extra-packages.txt.example  # template for the optional system-package layer
-├── docker/               # the docker compose stack (overlays + the package Dockerfile)
-├── lib/                  # start.sh's logic, split into sourced modules (core, config, doctor, …)
+├── docker/               # shared Compose stack, runtime overlays and package Dockerfile
+├── lib/                  # shared workflows and separate runtime/docker.sh + podman.sh adapters
 ├── completions/          # bash/zsh tab-completion scripts
 ├── docs/                 # extra docs: customizing, models, compose-sync notes
 ├── tests/                # bats test suite
@@ -55,14 +55,21 @@ You only ever invoke `./start.sh` and `./install.sh` directly — they reach int
 
 ## Prerequisites
 
-- **Linux** with **Docker** (Engine + the `docker compose` v2 plugin).
-- Your user is in the **`docker` group**
-  (`sudo usermod -aG docker $USER && newgrp docker`).
+- **Linux** with either **Docker Engine + Docker Compose**, or **rootless
+  Podman + podman-compose 1.5.0 or newer**. The launcher invokes each engine and
+  provider explicitly; Podman does not need a `podman-docker` shim.
+- Access to the selected engine as your normal user. Rootless Podman needs a
+  working user namespace and subordinate UID/GID allocation set up by your
+  system administrator. The installer checks prerequisites; it does not alter
+  host permissions or system configuration.
 - **Access to Artifactory** for the images. If a pull fails with an auth error,
-  run: `docker login <registry-host>`.
-- **Podman** (rootless, with the `podman-docker` shim) works too — `start.sh`
-  auto-detects it and applies a `keep-id` userns overlay so bind-mount ownership
-  stays correct. Force it with `--podman` if detection misses.
+  run `docker login <registry-host>` or `podman login <registry-host>` for your
+  selected engine. Their credentials, images and volumes are separate.
+- The initial target is **local rootful Docker without user-namespace remapping**
+  or **local rootless Podman** on Linux. Rootless Docker, Docker `userns-remap`,
+  remote engines, Podman virtual machines and rootful Podman are rejected. Real
+  rootless Podman acceptance testing is still required before release; see
+  [runtime support and validation](docs/RUNTIMES.md).
 - **A git credential helper** (or an SSH remote) for this launcher's own
   checkout. Every boot runs `git fetch` on it to check for updates, so an HTTPS
   remote with nothing to authenticate for git prompts for a username/password
@@ -79,8 +86,9 @@ curl -fsSL https://CHANGEME.internal.example/opencode-launcher/install.sh | bash
 > intentionally not reachable.
 
 [`install.sh`](install.sh) clones this launcher (if it isn't already checked out
-next to the script), checks for Docker and the `docker compose` v2 plugin, and
-prints the exact `cd … && ./start.sh <your-repo>` command to run next. It's safe
+next to the script), checks the selected engine and its Compose provider, and
+prints the exact `cd … && ./start.sh <your-repo>` command to run next. Use
+`./install.sh --engine podman` (or `--podman`) to check Podman explicitly. It's safe
 to re-run — it never overwrites an existing clone or `.env`. Prefer to do it by
 hand? It's just a clone plus `./start.sh` — see [Quickstart](#quickstart).
 
@@ -97,6 +105,18 @@ git clone <this-launcher-repo>
 cd opencode-launcher
 ./start.sh ~/code/your-repo
 ```
+
+To select Podman explicitly, run `./start.sh --engine podman ~/code/your-repo`.
+`--podman` is an alias. `OCL_ENGINE=docker` or `OCL_ENGINE=podman` in `.env`
+sets the default for new projects. Without an explicit choice or default,
+Docker is preferred; Podman is selected when it is the only available engine.
+A failed engine connection never causes fallback to another engine.
+
+The first launch saves the project's runtime. Later starts, status, logs,
+shells and shutdown use that saved engine and endpoint, even if the default
+changes or both engines are installed. A conflicting explicit `--engine`
+selection fails instead of creating another stack. See [runtime bindings and
+switching engines](docs/RUNTIMES.md#project-bindings).
 
 On the **first run**, `start.sh` copies `.env.example` → `.env` and prompts for
 the only required fields — your LLM endpoint/key and Artifactory path. At a real
@@ -120,15 +140,16 @@ The default is "attach the TUI, then tear down on exit." These change that:
 
 | Flag (aliases) | What it does |
 | --- | --- |
+| `--engine docker\|podman` (`--podman`) | Select the engine for a new project; later commands reuse its saved binding. `--podman` selects Podman. |
 | `--persist` (`--web`) | Keep the stack and its web UI running after you exit; resume later with `./start.sh --continue --persist <repo>`. |
 | `--detach` (`--no-tui`) | Boot without attaching the TUI (CI, or web-UI-only); leaves the stack running. |
 | `--continue` (`-c`) | Resume your most recent session instead of a fresh one (opencode's own `-c`). |
 | `--open` | Open the web UI URL in your browser via `xdg-open`. Also opens the opencode-pty viewer URL when that plugin is enabled. Non-fatal if `xdg-open` is missing. |
 | `--also <path>[:rw]` | Mount an extra host folder for context, read-only by default — see [Extra folders for context](#extra-folders-for-context---also). |
 | `--exec "<prompt>"` | Boot, run one prompt non-interactively, tear down, exit with its rc — see [Non-interactive one-shot runs](#non-interactive-one-shot-runs---exec). |
-| `--doctor [<repo>]` | Print a PASS/WARN/FAIL environment report (Docker, compose, registry auth, `.env`, ports, disk, launcher update, image-tag pin). |
+| `--doctor [<repo>]` | Print a PASS/WARN/FAIL environment report (selected engine/provider, local mount access, registry auth, `.env`, disk, launcher update, image-tag pin). |
 | `--status [<repo>]` | Report running stacks — one project's state/URL/resume command, or every `opencode-*` stack. |
-| `--down`/`--stop` `<repo>` | Tear down a repo's stack the clean way (re-derives the same project `docker compose down` would). |
+| `--down`/`--stop` `<repo>` | Tear down a repo's stack using its saved runtime and project configuration. |
 | `--logs <repo>` | Follow the running stack's logs (Ctrl-C detaches). |
 | `--shell <repo>` | Open a shell in the running container as the `dev` user at `/workspace` (falls back to `sh`). |
 | `--reconfigure` | Edit `.env` settings interactively; the ncurses menu stages edits until you explicitly save or discard the session. |
@@ -495,19 +516,29 @@ deliberate pin you don't want to be asked about).
 
 ## Troubleshooting
 
-- **Start with `./start.sh --doctor`.** It checks Docker (PATH, daemon, compose
-  v2), the registry login state, and your `.env` (required/optional keys, plus
-  any new keys in `.env.example` you haven't picked up), then prints one
-  pasteable PASS/WARN/FAIL report — paste that when asking for help. Add a repo
-  path to also validate it. It never prints secrets, pulls an image, or attaches
+- **Start with `./start.sh --doctor <repo>`.** It checks the project's selected
+  engine and provider, local mount paths, registry login state, and your `.env`
+  (required/optional keys, plus any new keys in `.env.example` you haven't
+  picked up), then prints one pasteable PASS/WARN/FAIL report — paste that when
+  asking for help. Omit the repo path to check the configured default runtime. It never prints secrets, pulls an image, or attaches
   the TUI.
-- **`unauthorized`/`denied` on pull** — the most common first-time failure: run
-  `docker login <registry-host>` and retry (`--doctor` prints the exact command).
-- **`permission denied` from Docker** — you're not in the docker group:
-  `sudo usermod -aG docker $USER && newgrp docker`.
-- **Don't run `docker compose up`/`down` by hand** — always go through
-  `start.sh`, which wires up the per-project env file and project name and points
-  compose at `docker/` with `--project-directory`. The stack is pull-only
+- **`unauthorized`/`denied` on pull** — authenticate with the selected engine:
+  `docker login <registry-host>` or `podman login <registry-host>`.
+- **`permission denied` connecting to the Docker socket** — ask your system
+  administrator to check access to the configured socket. Docker-group access
+  grants control of the daemon and is only relevant to a rootful Docker socket.
+- **`permission denied` creating or mounting a source path** — check that
+  directory and its parents, the backing filesystem (especially NFS root
+  squashing), and SELinux. Successful access as your user does not establish
+  that the engine can access or relabel the same path. Changing Docker group
+  membership or disabling SELinux is not a general mount fix. See
+  [mount diagnostics](docs/RUNTIMES.md#mount-diagnostics). Source existence is
+  checked before startup; the SELinux-compatible mount path still has a small
+  check-to-mount race, described in [runtime path handling](docs/RUNTIMES.md#compose-configuration-and-host-paths).
+- **Don't run Compose `up`/`down` by hand** — always go through
+  `start.sh`, which supplies absolute host paths, the per-project environment,
+  runtime binding and project name. Neither provider needs
+  `--project-directory`. The stack is pull-only
   (everything comes from Artifactory; only the opt-in system-package layer
   builds). To tear a stack down, use `./start.sh --down <repo>`.
 - **Lost track of what's running?** `./start.sh --status` (all stacks) or

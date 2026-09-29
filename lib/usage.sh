@@ -10,7 +10,7 @@
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--continue] [--persist] [--detach] [--podman] [--open]
+  ./start.sh [--continue] [--persist] [--detach] [--engine docker|podman] [--open]
               [--also <path>[:rw]]... <host-repo-path>
   ./start.sh --exec "<prompt>" [--continue] [--persist] [--also <path>[:rw]]... [<host-repo-path>]
   ./start.sh --doctor [<host-repo-path>]
@@ -37,8 +37,11 @@ Run options:
   --detach   Boot headless — don't attach the TUI; the stack keeps running.
              For scripted/CI or web-only runs. Alias: --no-tui. Conflicts with
              --exec (both are non-interactive; pick one).
-  --podman   Add the Podman overlay (keep-id userns) for rootless Podman.
-             Auto-detected; pass the flag to force it.
+  --engine docker|podman
+             Choose the container engine for a new project. Docker uses Docker
+             Compose; rootless Podman uses podman-compose. Later commands reuse
+             the project's saved engine; conflicting selections are rejected.
+  --podman   Alias for --engine podman.
   --tui      Attach the TUI (the default; accepted for back-compat).
   --open     Open the web UI URL in your browser via xdg-open once it's known.
              Non-fatal if xdg-open is missing.
@@ -51,14 +54,15 @@ Run options:
 
 Inspect / manage (these report or act, then exit — no image pull, no secrets
 needed):
-  --doctor   Check the environment (Docker, compose, registry auth, .env keys
-             and .env.example drift, disk) and print a PASS/WARN/FAIL report. An
-             optional <host-repo-path> also validates that repo path; exits
+  --doctor   Check the selected engine/provider, registry auth, local mount
+             paths, .env keys, .env.example drift and disk; print a
+             PASS/WARN/FAIL report. An optional <host-repo-path> also validates
+             that repo path and selects its saved runtime; exits
              non-zero on any FAIL.
   --status   Report on running stacks. With <host-repo-path>, shows whether that
              project is up, its web UI URL, and the resume command; without one,
              lists every opencode-* stack.
-  --down     Tear down the stack for <host-repo-path> (docker compose down),
+  --down     Tear down the stack for <host-repo-path> using its saved runtime,
   --stop     re-deriving the same project boot uses. Safe if nothing is up.
   --logs     Follow the running stack's logs for <host-repo-path>. Ctrl-C
              detaches without affecting the stack.
@@ -92,6 +96,12 @@ needed):
   --help     Show this help.
 
 Notes:
+  * OCL_ENGINE in .env sets the default for new projects (docker or podman).
+    Without a default, Docker is preferred; Podman is selected when it is the
+    only available engine. A failed engine never causes automatic fallback.
+  * Local Linux engines only: rootful Docker without user-namespace remapping,
+    or rootless Podman with podman-compose 1.5.0 or newer.
+    See docs/RUNTIMES.md for validation status and limitations.
   * Image: IMAGE_TAG in .env picks the version (default 'latest'; pin e.g.
     IMAGE_TAG=0.0.2).
   * First run creates .env from .env.example and prompts for secrets; later

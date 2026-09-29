@@ -437,7 +437,7 @@ setup() {
   [ -f "$PROJECT_ENV" ]
   grep -q '^PROJECT_SLUG=demo$' "$PROJECT_ENV"
   grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
-  grep -q '^REPO_PATH=/some/repo$' "$PROJECT_ENV"
+  [ "$(compose_env_value REPO_PATH "$PROJECT_ENV")" = /some/repo ]
   grep -q '^FOO=bar$' "$PROJECT_ENV"
 }
 
@@ -482,7 +482,7 @@ setup() {
   project_env_for_management "$repo"
   [ -f "$PROJECT_ENV" ]
   grep -q '^OPENCODE_PORT=4096$' "$PROJECT_ENV"
-  grep -q "^REPO_PATH=${repo}\$" "$PROJECT_ENV"
+  [ "$(compose_env_value REPO_PATH "$PROJECT_ENV")" = "$repo" ]
 }
 
 @test "project_env_for_management: exports absolute PROJECT_ENV_FILE on the reuse-existing-file branch" {
@@ -609,7 +609,7 @@ SCRIPT
 }
 
 @test "open_url: warns (non-fatal) when the opener is missing" {
-  run env PATH="/usr/bin:/bin" \
+  run env OPENER=ocl-test-nonexistent-opener \
     bash -c 'source "'"$REPO_ROOT"'/start.sh"; open_url "http://localhost:4096"'
   [ "$status" -eq 0 ]
   [[ "$output" == *"not found on PATH"* ]]
@@ -1689,8 +1689,11 @@ older"
 }
 
 @test "tui_backend: empty when neither whiptail nor dialog is on PATH" {
-  run env PATH="/usr/bin:/bin" \
-    bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
+  local bin="$BATS_TEST_TMPDIR/no-tui-bin"
+  mkdir -p "$bin"
+  ln -s "$(command -v dirname)" "$bin/dirname"
+  run env PATH="$bin" \
+    /bin/bash -c 'source "'"$REPO_ROOT"'/start.sh"; tui_backend'
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -1708,8 +1711,11 @@ older"
 }
 
 @test "have_tui: false when no backend is installed at all" {
-  run env PATH="/usr/bin:/bin" \
-    bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
+  local bin="$BATS_TEST_TMPDIR/no-tui-bin"
+  mkdir -p "$bin"
+  ln -s "$(command -v dirname)" "$bin/dirname"
+  run env PATH="$bin" \
+    /bin/bash -c 'source "'"$REPO_ROOT"'/start.sh"; have_tui'
   [ "$status" -ne 0 ]
 }
 
@@ -2361,8 +2367,12 @@ older"
   local mounts; mounts="$(printf '/a/b\tro\tliba\n/c/d\trw\tlibb\n')"
   write_also_overlay myslug "$mounts"
   [ -f "${ENVS_DIR}/myslug.also.yml" ]
-  grep -qF -- "- /a/b:/workspace-extra/liba:ro,z" "${ENVS_DIR}/myslug.also.yml"
-  grep -qF -- "- /c/d:/workspace-extra/libb:z" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF "source: '/a/b'" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF "target: '/workspace-extra/liba'" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF "source: '/c/d'" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF "target: '/workspace-extra/libb'" "${ENVS_DIR}/myslug.also.yml"
+  [ "$(grep -c 'read_only: true' "${ENVS_DIR}/myslug.also.yml")" -eq 2 ]
+  [ "$(grep -c 'selinux: z' "${ENVS_DIR}/myslug.also.yml")" -eq 3 ]
 
   run also_mounts_from_overlay myslug
   [ "$status" -eq 0 ]
@@ -2403,9 +2413,10 @@ older"
   # the generic image hook: the var points at the breadcrumb's container path...
   grep -qF "OPENCODE_EXTRA_INSTRUCTIONS: /etc/opencode/also-context.md" \
     "${ENVS_DIR}/myslug.also.yml"
-  # ...and the breadcrumb itself is bind-mounted there read-only (ro,z).
-  grep -qF -- "- ${ENVS_DIR}/myslug.also-context.md:/etc/opencode/also-context.md:ro,z" \
-    "${ENVS_DIR}/myslug.also.yml"
+  # ...and the breadcrumb itself is bind-mounted there read-only.
+  grep -qF "source: '${ENVS_DIR}/myslug.also-context.md'" "${ENVS_DIR}/myslug.also.yml"
+  grep -qF "target: '/etc/opencode/also-context.md'" "${ENVS_DIR}/myslug.also.yml"
+  [ "$(grep -c 'read_only: true' "${ENVS_DIR}/myslug.also.yml")" -eq 2 ]
 }
 
 @test "write_also_overlay: the breadcrumb names each mount, its container path, and ro/rw" {

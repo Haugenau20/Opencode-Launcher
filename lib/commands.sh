@@ -19,17 +19,13 @@
 # and pull the fields out by key: no jq dependency, order-independent, and
 # robust to compose's column formatting.
 compose_ls_pairs() {
-  # Trailing `|| true` keeps this best-effort: a daemon-down `docker compose ls`
-  # (or simply no stacks) must yield empty output and success, never abort the
-  # caller under `set -euo pipefail`.
-  docker compose ls --all --format json 2>/dev/null \
-    | sed 's/}[[:space:]]*,[[:space:]]*{/}\n{/g' \
-    | while IFS= read -r _obj; do
-        local name status
-        name="$(printf '%s' "$_obj"   | sed -n 's/.*"Name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        status="$(printf '%s' "$_obj" | sed -n 's/.*"Status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        if [ -n "$name" ]; then printf '%s\t%s\n' "$name" "$status"; fi
-      done || true
+  runtime_projects
+}
+
+# Resolve the binding before any management operation consults containers.
+select_project_runtime() {
+  runtime_select "${OCL_ENGINE_REQUESTED:-}" "$(derive_slug "$1")" || return $?
+  runtime_validate
 }
 
 # cmd_status [REPO_ARG] — read-only report on running launcher stacks. Never
@@ -39,16 +35,36 @@ cmd_status() {
 
   if [ -z "$repo_arg" ]; then
     info "running launcher stacks:"
-    local found=0 name status_str
+    local found=0 name status_str binding bound_slug projects seen='|' failed=0
+    local bindings=("$ENVS_DIR"/*.runtime)
+    if [ -z "${OCL_ENGINE_REQUESTED:-}" ] && [ -f "${bindings[0]}" ]; then
+      for binding in "${bindings[@]}"; do
+        bound_slug="$(basename -- "$binding" .runtime)"
+        seen+="opencode-$bound_slug|"
+        found=1
+        (
+          runtime_select "" "$bound_slug" && runtime_validate || exit $?
+          local state
+          state="$(runtime_projects | awk -F '\t' -v p="opencode-$bound_slug" '$1==p {print $2}')" || exit $?
+          printf '  %-30s %s [%s]\n' "opencode-$bound_slug" "${state:-down}" "$RUNTIME_ENGINE"
+        ) || failed=1
+      done
+    fi
+    # Also show legacy projects from the current default engine. A new binding
+    # must not make older, unbound stacks disappear from the status overview.
+    runtime_select "${OCL_ENGINE_REQUESTED:-}" || return $?
+    runtime_validate || return $?
+    projects="$(compose_ls_pairs)" || return $?
     while IFS=$'\t' read -r name status_str; do
-      [ -n "$name" ] || continue
+      [[ "$name" == opencode-* ]] || continue
+      case "$seen" in *"|$name|"*) continue ;; esac
       found=1
       printf '  %-30s %s\n' "$name" "$status_str"
-    done < <(compose_ls_pairs | grep '^opencode-' || true)
+    done <<< "$projects"
     if [ "$found" -eq 0 ]; then
-      info "no launcher stacks found (docker compose ls shows nothing matching opencode-*)"
+      info "no launcher stacks found (nothing matching opencode-*)"
     fi
-    return 0
+    return "$failed"
   fi
 
   [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
@@ -57,6 +73,7 @@ cmd_status() {
   repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
 
   local slug project_name port penv running
+  select_project_runtime "$repo_path" || return $?
   slug="$(derive_slug "$repo_path")"
   project_name="opencode-${slug}"
 
@@ -73,7 +90,9 @@ cmd_status() {
 
   info "project: $project_name"
   info "repo:    $repo_path"
-  if [ -n "$running" ]; then
+  local is_running=0
+  if [[ "$running" =~ running\([1-9][0-9]*\) ]]; then
+    is_running=1
     info "status:  up ($running)"
     # Attached TUIs (lib/attach.sh). Worth reporting because it is what decides
     # whether `./start.sh` on this repo will tear the stack down when its TUI
@@ -90,7 +109,7 @@ cmd_status() {
     fi
     info "resume:  ./start.sh --continue $repo_arg"
   else
-    info "status:  down"
+    if [ -n "$running" ]; then info "status:  stopped ($running)"; else info "status:  down"; fi
     info "resume:  ./start.sh $repo_arg"
   fi
 
@@ -120,7 +139,7 @@ cmd_status() {
   # in main() (before its own `return 0`), so a false/short-circuited `&&`
   # here would abort the whole script on the (common!) down/no-mcps case
   # rather than just skipping the print. `if ... fi` returns 0 either way.
-  if [ -n "$running" ]; then
+  if [ "$is_running" -eq 1 ]; then
     local mcps_line
     mcps_line="$(mcp_status_line "$project_name")"
     if [ -n "$mcps_line" ]; then
@@ -137,7 +156,7 @@ cmd_status() {
 # The `|| rc=$?` idiom keeps this set -e safe regardless of caller context.
 mcp_status_line() {
   local project_name="$1" out rc=0
-  out="$(docker exec "$project_name" jq -r '(.mcp // {}) | keys | join(", ")' \
+  out="$(runtime_exec "$project_name" jq -r '(.mcp // {}) | keys | join(", ")' \
     /home/dev/.config/opencode/opencode.json 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] || return 0
   if [ -n "$out" ]; then
@@ -158,22 +177,28 @@ mcp_status_line() {
 cmd_down() {
   local repo_arg="${1:-}"
   [ -n "$repo_arg" ] || { usage; die "missing <host-repo-path>"; }
-  [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
-  [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
-
-  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
-
   local repo_path
-  repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+  if [ -d "$repo_arg" ]; then
+    repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
+  else
+    repo_path="$(realpath -m -- "$repo_arg")" || return $?
+    [ -f "$(runtime_binding_file "$(derive_slug "$repo_path")")" ] \
+      || die "repo path does not exist and has no saved runtime binding: $repo_arg"
+  fi
 
-  if [ ! -f "$ENV_FILE" ]; then
+  if [ ! -f "$ENV_FILE" ] && [ ! -f "${ENVS_DIR}/$(derive_slug "$repo_path").env" ] \
+    && [ ! -f "$(runtime_binding_file "$(derive_slug "$repo_path")")" ]; then
     info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
     return 0
   fi
 
+  runtime_lock_project "$(derive_slug "$repo_path")" || return $?
+  select_project_runtime "$repo_path" || return $?
+  # Dynamic outputs from project_env_for_management.
+  # shellcheck disable=SC2034
   local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  project_env_for_management "$repo_path"
+  project_env_for_management "$repo_path" || return $?
 
   # An explicit --down is a deliberate teardown, so it goes through even with
   # TUIs attached (unlike a TUI exiting, which stands down for the others) —
@@ -186,11 +211,15 @@ cmd_down() {
   fi
 
   info "tearing down $PROJECT_NAME ..."
+  local down_rc=0
   if "${COMPOSE[@]}" down; then
     info "$PROJECT_NAME is down."
   else
+    down_rc=$?
     warn "compose down reported an error for $PROJECT_NAME (it may not have been running)."
   fi
+  runtime_release_project
+  return "$down_rc"
 }
 
 # project_running PROJECT_NAME — exit 0 iff `docker compose ls` reports
@@ -199,7 +228,11 @@ cmd_down() {
 project_running() {
   local project_name="$1"
   compose_ls_pairs \
-    | awk -F'\t' -v p="$project_name" '$1==p{found=1} END{exit !found}'
+    | awk -F'\t' -v p="$project_name" '$1==p && $2 ~ /running\([1-9][0-9]*\)/ {found=1} END{exit !found}'
+}
+
+project_exists() {
+  compose_ls_pairs | awk -F'\t' -v p="$1" '$1==p{found=1} END{exit !found}'
 }
 
 # cmd_logs REPO_ARG — reuse the recorded per-project settings, then tail its
@@ -215,21 +248,23 @@ cmd_logs() {
   [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
   [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
 
-  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
-
   local repo_path
   repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
 
-  if [ ! -f "$ENV_FILE" ]; then
+  if [ ! -f "$ENV_FILE" ] && [ ! -f "${ENVS_DIR}/$(derive_slug "$repo_path").env" ] \
+    && [ ! -f "$(runtime_binding_file "$(derive_slug "$repo_path")")" ]; then
     info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
     return 0
   fi
 
+  select_project_runtime "$repo_path" || return $?
+  # Dynamic outputs from project_env_for_management.
+  # shellcheck disable=SC2034
   local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  project_env_for_management "$repo_path"
+  project_env_for_management "$repo_path" || return $?
 
-  if ! project_running "$PROJECT_NAME"; then
+  if ! project_exists "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to tail. Start it with ./start.sh $repo_arg"
     return 0
   fi
@@ -250,19 +285,21 @@ cmd_shell() {
   [ -e "$repo_arg" ] || die "repo path does not exist: $repo_arg"
   [ -d "$repo_arg" ] || die "repo path is not a directory: $repo_arg"
 
-  command -v docker >/dev/null 2>&1 || die "docker not found on PATH. Install Docker first."
-
   local repo_path
   repo_path="$(cd -- "$repo_arg" >/dev/null 2>&1 && pwd)" || die "could not resolve repo path: $repo_arg"
 
-  if [ ! -f "$ENV_FILE" ]; then
+  if [ ! -f "$ENV_FILE" ] && [ ! -f "${ENVS_DIR}/$(derive_slug "$repo_path").env" ] \
+    && [ ! -f "$(runtime_binding_file "$(derive_slug "$repo_path")")" ]; then
     info "no $ENV_FILE found — nothing has ever been started for this launcher checkout."
     return 0
   fi
 
+  select_project_runtime "$repo_path" || return $?
+  # Dynamic outputs from project_env_for_management.
+  # shellcheck disable=SC2034
   local SLUG PORT PROJECT_ENV PROJECT_NAME
   local COMPOSE
-  project_env_for_management "$repo_path"
+  project_env_for_management "$repo_path" || return $?
 
   if ! project_running "$PROJECT_NAME"; then
     info "$PROJECT_NAME is not running — nothing to shell into. Start it with ./start.sh $repo_arg"
@@ -273,9 +310,9 @@ cmd_shell() {
   # Prefer bash; fall back to sh for a minimal image that lacks it. The `sh -c`
   # probe runs inside the container, so this works regardless of what's
   # installed on the host.
-  if docker exec "opencode-${SLUG}" sh -c 'command -v bash' >/dev/null 2>&1; then
-    exec docker exec -u dev -w /workspace -it "opencode-${SLUG}" bash
+  if runtime_exec "opencode-${SLUG}" sh -c 'command -v bash' >/dev/null 2>&1; then
+    runtime_exec_replace -u dev -w /workspace -it "opencode-${SLUG}" bash
   else
-    exec docker exec -u dev -w /workspace -it "opencode-${SLUG}" sh
+    runtime_exec_replace -u dev -w /workspace -it "opencode-${SLUG}" sh
   fi
 }

@@ -1,0 +1,19 @@
+# Test image substitutions retain the checked-in mounts, user namespaces,
+# publisher command/ports, named volumes, and network topology.
+services:
+  opencode:
+    image: ${OCL_SMOKE_IMAGE}
+    build:
+      context: ${OCL_SMOKE_FIXTURES}
+      dockerfile: Dockerfile
+  squid:
+    image: ${OCL_SMOKE_IMAGE}
+    entrypoint: ["python", "/fixture/proxy.py"]
+  oc-publish:
+    image: ${OCL_SMOKE_IMAGE}
+  origin:
+    image: ${OCL_SMOKE_IMAGE}
+    container_name: opencode-origin-${PROJECT_SLUG}
+    entrypoint: ["python", "/fixture/origin.py"]
+    networks:
+      - oc_external
