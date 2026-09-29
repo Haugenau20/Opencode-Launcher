@@ -211,6 +211,12 @@ SELinux as a generic workaround.
 The separate [container smoke harness](../tests/integration/README.md) exercises
 both providers with disposable fixture services; CI has independent Docker and
 rootless Podman jobs. Those fixtures do not replace production-image acceptance.
+The opt-in [production acceptance harness](../tests/integration/README.md#production-image-acceptance)
+uses the real images and the launcher's runtime and Compose assembly on a
+prepared target host. It records versions, image digests, and outcomes, and
+marks scenarios it cannot safely automate as `NOT_RUN`. Run it separately for
+each intended engine, UID, SELinux mode, and feature combination. A passing
+automated run is evidence for that exact combination only.
 Run the same scenarios against real Docker and rootless Podman using the actual
 OpenCode Setup images and registry configuration:
 
